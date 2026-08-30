@@ -10,7 +10,8 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { request } from "./herdr.ts";
-import { branchFor, spawn, teardown } from "./runner.ts";
+import { spawn, teardown } from "./runner.ts";
+import { branchFor } from "./lifecycle.ts";
 import { claim, findTicket, freshDiagnostics, tickets } from "./tickets.ts";
 
 const PORT = Number(process.env.PORT ?? 4010);
@@ -38,7 +39,7 @@ async function handle(method: string, path: string) {
       cwd: REPO,
     }).catch(() => ({ worktrees: [] }));
 
-    const ours = new Set(tickets.map(branchFor));
+    const ours = new Set(tickets.map((t) => branchFor(t.project, t.number)));
 
     return json({
       repo: REPO,
@@ -55,7 +56,7 @@ async function handle(method: string, path: string) {
         paneId: t.paneId,
         busy: inFlight.has(`${t.project}-${t.number}`),
         /* Derived from Herdr, not from our own store — the read model in §5.2. */
-        hasWorktree: listed.worktrees.some((w) => w.branch === branchFor(t)),
+        hasWorktree: listed.worktrees.some((w) => w.branch === branchFor(t.project, t.number)),
         diagnostics: t.diagnostics,
       })),
       /**

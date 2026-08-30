@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { HerdrError, request, subscribe } from "./herdr.ts";
+import { agentNameFor, branchFor, isAgentReady, normalizeEvent } from "./lifecycle.ts";
 import type { Diagnostics, Ticket } from "./tickets.ts";
 
 const run = promisify(execFile);
@@ -54,18 +55,6 @@ type AgentRecord = {
 };
 type AgentEnvelope = { agent?: AgentRecord };
 
-/**
- * Namespaced so reconciliation can tell our worktrees from a hand-made one (§5.2).
- *
- * The slashes deliberately mirror `agentNameFor`: Herdr derives the worktree directory
- * from the branch by lowercasing and replacing `/` with `-`, so `ticket/target/1` lands
- * in `ticket-target-1` — identical to the agent name. Verified against 0.8.2.
- *
- * `project` MUST NOT contain a slash, or the ref gains an extra path segment.
- */
-export const branchFor = (t: Ticket) => `ticket/${t.project}/${t.number}`;
-/** Must start with a letter, <=32 chars, unique across the whole Herdr session (§6.7). */
-export const agentNameFor = (t: Ticket) => `ticket-${t.project}-${t.number}`;
 
 /**
  * Mirror of the CLI's readiness loop. Returns once the agent is genuinely
@@ -73,7 +62,7 @@ export const agentNameFor = (t: Ticket) => `ticket-${t.project}-${t.number}`;
  * race fired on this run.
  */
 async function startAgentAndWait(ticket: Ticket, paneId: string, diag: Diagnostics) {
-  const name = agentNameFor(ticket);
+  const name = agentNameFor(ticket.project, ticket.number);
   const promptFile = join(STATE_DIR, "prompts", `${ticket.project}-${ticket.number}.md`);
   await mkdir(dirname(promptFile), { recursive: true });
   await writeFile(promptFile, SYSTEM_PROMPT, "utf8");
@@ -147,13 +136,11 @@ async function startAgentAndWait(ticket: Ticket, paneId: string, diag: Diagnosti
   // `idle` and `done` are the SAME underlying ready state (§4.1): `done` just means it
   // settled while the tab was unseen. Accepting only `idle` hangs for the full timeout on
   // any agent that finished a turn unobserved — which is every reused agent.
-  const isReady = (r: AgentRecord | undefined) =>
-    (r?.agent_status === "idle" || r?.agent_status === "done") && r?.interactive_ready === true;
 
-  diag.neededReadinessPoll = !isReady(record);
+  diag.neededReadinessPoll = !isAgentReady(record);
 
   const readyDeadline = Date.now() + READY_WAIT_MS;
-  while (!isReady(record)) {
+  while (!isAgentReady(record)) {
     if (Date.now() > readyDeadline) {
       throw new HerdrError(
         "agent_not_ready",
@@ -201,7 +188,7 @@ export async function spawn(
   onStatus: (status: string) => void,
   onPaneExit: () => void,
 ): Promise<SpawnResult> {
-  const branch = branchFor(ticket);
+  const branch = branchFor(ticket.project, ticket.number);
 
   // 1. Worktree + branch + workspace + tab + root pane in one call. Reuse by BRANCH,
   //    never a predicted path (§6.2); create is not idempotent (§6.6), so open first.
@@ -256,7 +243,7 @@ export async function spawn(
       ],
       (event, data) => {
         if (typeof data !== "object" || data === null) return;
-        const kind = event.replaceAll(".", "_");
+        const kind = normalizeEvent(event);
         if (kind === "pane_agent_status_changed") {
           if ("agent_status" in data && typeof data.agent_status === "string") {
             onStatus(data.agent_status);
@@ -301,7 +288,7 @@ export async function spawn(
 
   for (let attempt = 1; attempt <= 40; attempt++) {
     try {
-      await request("agent.prompt", { target: agentNameFor(ticket), text });
+      await request("agent.prompt", { target: agentNameFor(ticket.project, ticket.number), text });
       ticket.diagnostics.promptAttempts = attempt;
       break;
     } catch (err) {
@@ -328,8 +315,8 @@ export async function teardown(ticket: Ticket, repoPath: string, deleteBranch: b
   ticket.stream?.close();
   ticket.stream = undefined;
 
-  const branch = branchFor(ticket);
-  const name = agentNameFor(ticket);
+  const branch = branchFor(ticket.project, ticket.number);
+  const name = agentNameFor(ticket.project, ticket.number);
 
   // Resolve the session directory BEFORE killing the pane, while the agent can still
   // be asked. `ticket.sessionDir` is a fallback for when the agent is already gone
