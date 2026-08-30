@@ -418,11 +418,27 @@ matter: it reclaims the disk but keeps the branch, so nothing is lost.
 worktrees for completed-but-unmerged tickets accumulate until you act. Reconciliation makes them
 visible (§5.2); `pnpm` keeps each one cheap (§5.3).
 
-**Currently unreachable:** the re-dispatch row. Cancel is the only route from In Progress back to
-Backlog and it destroys everything, so no ticket can return to Backlog still holding a worktree. It
-becomes reachable the moment either In Review → In Progress or a "reset without teardown" action
-exists — at which point `agent.start` will fail against a pane that still holds a live agent, and
-the code must prompt the existing agent instead.
+**Re-dispatch is reachable today, and currently broken (verified).** Re-dispatch means spawning a
+ticket whose worktree — and possibly whose live agent — already exists. The route is a **10x backend
+restart**: Herdr owns the panes and agents, so they survive untouched, but the in-memory ticket
+store resets every ticket to Backlog. Pressing spawn then hits an existing worktree *and* an agent
+still registered under the same name:
+
+```
+agent.start → agent_name_taken: agent name ticket-target-1 is already used;
+              candidates: pane_id=w34:p1 workspace_id=w34 status=Done
+```
+
+It fails in 75 ms rather than retrying, because §1's guard correctly treats anything other than
+`agent_pane_busy` as fatal. So the symptom is honest, but the operation is unusable.
+
+**The fix:** on `agent_name_taken`, the agent for this ticket already exists — reuse it. Call
+`agent.get` to confirm it is idle, then `agent.prompt` instead of `agent.start`. The alternative
+(kill the pane and start fresh) discards a possibly-working agent and its context, so prompting is
+preferred.
+
+The same path opens up again with In Review → In Progress, where a ticket legitimately returns to a
+spawnable state while its worktree still exists.
 
 ### Unforced removal on a dirty worktree fails safely (verified)
 
@@ -449,6 +465,7 @@ asked:
 | `worktree_not_found` | `worktree.open` found no such branch or path | with a branch: nothing on disk, already clean |
 | `agent_pane_busy` | pane's shell is not at its prompt yet | retry with backoff (§1) |
 | `invalid_agent_name` | name broke `[a-z][a-z0-9_-]{1,32}` — usually a leading digit | prefix it (§6.7) |
+| `agent_name_taken` | an agent with that name is already live, with its pane/workspace listed | reuse it: `agent.prompt`, not `agent.start` (§5.0) |
 
 ### 5.1 A closed workspace orphans its worktree
 
