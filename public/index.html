@@ -1,126 +1,1220 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>10x harness</title>
-    <style>
-      body { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 24px; background: #111; color: #ddd; }
-      h1 { font-size: 16px; margin: 0 0 4px; }
-      .repo { color: #888; margin-bottom: 20px; font-size: 12px; }
-      .cols { display: flex; gap: 16px; align-items: flex-start; }
-      .col { flex: 1; border: 1px solid #333; padding: 10px; min-height: 220px; }
-      .col h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #888; margin: 0 0 10px; }
-      .card { border: 1px solid #444; padding: 8px; margin-bottom: 8px; background: #191919; }
-      .card .id { color: #6cf; }
-      .card .title { margin: 2px 0 6px; }
-      button { font: inherit; background: #222; color: #ddd; border: 1px solid #555; padding: 3px 8px; cursor: pointer; }
-      button:hover:not(:disabled) { background: #2c2c2c; }
-      button:disabled { opacity: .4; cursor: default; }
-      .status { font-size: 12px; color: #999; margin-top: 6px; }
-      .working { color: #fc6; }
-      .done { color: #6f6; }
-      .blocked { color: #f66; }
-      .dead { color: #f66; font-weight: bold; }
-      .unowned { margin-top: 20px; border: 1px solid #553; padding: 10px; }
-      .unowned h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #fc6; margin: 0 0 8px; }
-      .err { color: #f66; font-size: 12px; margin-top: 6px; white-space: pre-wrap; }
-      .diag { margin-top: 8px; border-top: 1px dashed #444; padding-top: 6px; font-size: 12px; color: #888; }
-      .diag table { border-collapse: collapse; }
-      .diag td { padding: 0 8px 0 0; vertical-align: top; }
-      .flag { color: #fc6; }
-      .ok { color: #6f6; }
-      .wt { font-size: 11px; color: #888; }
-    </style>
-  </head>
-  <body>
-    <h1>10x harness — Backlog ↔ In Progress</h1>
-    <div class="repo" id="repo"></div>
-    <div id="unowned"></div>
-    <div class="cols">
-      <div class="col"><h2>Backlog</h2><div id="backlog"></div></div>
-      <div class="col"><h2>In Progress</h2><div id="in_progress"></div></div>
+<head>
+<meta charset="utf-8" />
+<meta name="color-scheme" content="dark" />
+<title>10x — Backlog ↔ In Progress</title>
+<style>
+  :root {
+    --bg: #14161a;
+    --bg-raised: #1b1e24;
+    --bg-sunken: #101216;
+    --border: #2a2e36;
+    --border-soft: #22252c;
+    --text: #d7dae0;
+    --text-dim: #8b909c;
+    --text-faint: #5c6169;
+    --accent: #5b9dd9;
+    --accent-dim: #3a5f7d;
+    --amber: #e0a940;
+    --amber-bg: rgba(224, 169, 64, 0.12);
+    --red: #e2554f;
+    --red-bg: rgba(226, 85, 79, 0.14);
+    --green: #57b06b;
+    --green-bg: rgba(87, 176, 107, 0.12);
+    --grey: #7d828c;
+    --grey-bg: rgba(125, 130, 140, 0.1);
+    --radius: 4px;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.5 var(--sans);
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+
+  code, .mono { font-family: var(--mono); }
+
+  /* ---------- header ---------- */
+
+  header.topbar {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 10px 16px;
+    background: var(--bg-raised);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+
+  .brand {
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: 0.02em;
+    color: var(--text);
+  }
+
+  .brand small {
+    font-weight: 400;
+    color: var(--text-faint);
+    font-size: 11px;
+    margin-left: 6px;
+  }
+
+  .field-inline {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .field-inline label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+  }
+
+  select, input[type="text"], textarea {
+    background: var(--bg-sunken);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 5px 8px;
+    font: inherit;
+    font-family: var(--sans);
+  }
+
+  select:focus, input:focus, textarea:focus, button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    border-color: var(--accent);
+  }
+
+  .repo-path {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .repo-path .label {
+    color: var(--text-faint);
+    margin-right: 4px;
+  }
+
+  .conn-status {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-faint);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .conn-status .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    flex: none;
+  }
+
+  .conn-status.error .dot { background: var(--red); }
+  .conn-status.error { color: var(--red); }
+
+  /* ---------- layout ---------- */
+
+  main.board {
+    display: flex;
+    gap: 14px;
+    padding: 14px 16px;
+    flex: 1;
+    align-items: flex-start;
+  }
+
+  .column {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 240px);
+  }
+
+  .column h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin: 0;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-soft);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    position: sticky;
+    top: 0;
+    background: var(--bg-raised);
+  }
+
+  .column h2 .count {
+    background: var(--bg-sunken);
+    color: var(--text-faint);
+    border-radius: 10px;
+    padding: 1px 7px;
+    font-size: 10px;
+  }
+
+  .cards {
+    padding: 8px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .empty-hint {
+    color: var(--text-faint);
+    font-size: 12px;
+    padding: 12px 4px;
+    font-style: italic;
+  }
+
+  /* ---------- composer ---------- */
+
+  section.composer {
+    margin: 14px 16px 0;
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+  }
+
+  section.composer h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin: 0 0 8px;
+  }
+
+  #composer-form {
+    display: grid;
+    grid-template-columns: 1.4fr 0.8fr 2fr auto;
+    gap: 8px 10px;
+    align-items: start;
+  }
+
+  #composer-form .field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  #composer-form .field.field-submit {
+    justify-content: flex-start;
+    padding-top: 18px;
+  }
+
+  #composer-form label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-faint);
+  }
+
+  #composer-form input, #composer-form select, #composer-form textarea {
+    width: 100%;
+  }
+
+  #composer-form textarea {
+    resize: vertical;
+    min-height: 32px;
+    font-family: var(--sans);
+  }
+
+  .field-error {
+    color: var(--red);
+    font-size: 11px;
+    min-height: 14px;
+  }
+
+  /* ---------- buttons ---------- */
+
+  button {
+    font: inherit;
+    background: var(--bg-sunken);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 5px 10px;
+    cursor: pointer;
+    line-height: 1.3;
+  }
+
+  button:hover:not(:disabled) { background: #23262d; border-color: #3a3f49; }
+  button:disabled { opacity: 0.45; cursor: default; }
+
+  button.primary { background: var(--accent-dim); border-color: var(--accent); color: #eaf3fb; }
+  button.primary:hover:not(:disabled) { background: #46708f; }
+
+  button.danger { color: var(--red); border-color: #5a2e2c; }
+  button.danger:hover:not(:disabled) { background: var(--red-bg); }
+
+  button.ghost { background: transparent; }
+
+  button.icon-btn {
+    padding: 4px 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  button.icon-btn svg { width: 15px; height: 15px; display: block; }
+
+  /* ---------- unowned panel ---------- */
+
+  .unowned {
+    margin: 14px 16px 0;
+    background: var(--amber-bg);
+    border: 1px solid #5c4a24;
+    border-radius: var(--radius);
+    padding: 10px 12px;
+  }
+
+  .unowned.hidden { display: none; }
+
+  .unowned h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--amber);
+    margin: 0 0 4px;
+  }
+
+  .unowned .note {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+
+  .unowned-row {
+    font-family: var(--mono);
+    font-size: 12px;
+    display: flex;
+    gap: 10px;
+    padding: 3px 0;
+    color: var(--text-dim);
+    border-top: 1px dashed rgba(224, 169, 64, 0.25);
+  }
+
+  .unowned-row:first-of-type { border-top: none; }
+  .unowned-row .branch { color: var(--amber); min-width: 220px; }
+  .unowned-row .path { color: var(--text-faint); overflow-wrap: anywhere; }
+
+  /* ---------- board-level error ---------- */
+
+  .board-error {
+    margin: 14px 16px 0;
+    background: var(--red-bg);
+    border: 1px solid #5a2e2c;
+    color: var(--red);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+
+  .board-error.hidden { display: none; }
+
+  /* ---------- card ---------- */
+
+  .card {
+    background: var(--bg-sunken);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 9px 10px;
+  }
+
+  .card.is-busy { border-color: var(--accent-dim); }
+  .card.is-blocked { border-color: #6b2f2c; }
+  .card.is-died { border-color: #6b2f2c; }
+
+  .card-top {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    margin-bottom: 4px;
+  }
+
+  .card-id {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    white-space: nowrap;
+  }
+
+  .card-badges {
+    margin-left: auto;
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    flex: none;
+  }
+
+  .badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    line-height: 1.6;
+  }
+
+  .badge.status-working { background: var(--amber-bg); color: var(--amber); }
+  .badge.status-blocked { background: var(--red-bg); color: var(--red); font-weight: 700; }
+  .badge.status-idle, .badge.status-done { background: var(--green-bg); color: var(--green); }
+  .badge.status-unknown, .badge.status-none { background: var(--grey-bg); color: var(--grey); }
+
+  .badge-icon {
+    font-size: 11px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+  }
+
+  .badge-icon.finished { background: var(--green-bg); color: var(--green); }
+  .badge-icon.died { background: var(--red-bg); color: var(--red); font-weight: 700; }
+  .badge-icon.worktree { background: var(--bg-raised); color: var(--text-dim); border: 1px solid var(--border); }
+
+  .card-title {
+    font-weight: 600;
+    color: var(--text);
+    margin: 2px 0 3px;
+    overflow-wrap: anywhere;
+  }
+
+  .card-desc {
+    color: var(--text-dim);
+    font-size: 12px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    margin-bottom: 6px;
+    cursor: default;
+  }
+
+  .card-desc:empty::before {
+    content: "(no description)";
+    color: var(--text-faint);
+    font-style: italic;
+  }
+
+  .card-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    margin-bottom: 6px;
+  }
+
+  .died-note {
+    background: var(--red-bg);
+    color: var(--red);
+    border-radius: var(--radius);
+    padding: 4px 6px;
+    font-size: 11px;
+    margin-bottom: 6px;
+  }
+
+  .busy-hint {
+    color: var(--accent);
+    font-size: 11px;
+    margin-bottom: 6px;
+  }
+
+  .card-error {
+    background: var(--red-bg);
+    color: var(--red);
+    border-radius: var(--radius);
+    padding: 4px 6px;
+    font-size: 11px;
+    margin-top: 6px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .card-actions button { font-size: 12px; }
+
+  .copy-confirm {
+    font-size: 11px;
+    color: var(--green);
+    animation: fade-out 1.8s ease-out forwards;
+  }
+
+  @keyframes fade-out {
+    0% { opacity: 1; }
+    70% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  /* ---------- diagnostics ---------- */
+
+  details.diag {
+    margin-top: 7px;
+    border-top: 1px dashed var(--border);
+    padding-top: 5px;
+  }
+
+  details.diag summary {
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--text-faint);
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  details.diag summary::-webkit-details-marker { display: none; }
+  details.diag summary::before { content: "▸"; font-size: 9px; }
+  details.diag[open] summary::before { content: "▾"; }
+
+  details.diag summary .race-tag {
+    color: var(--amber);
+  }
+
+  details.diag table {
+    border-collapse: collapse;
+    margin-top: 5px;
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+
+  details.diag td {
+    padding: 1px 8px 1px 0;
+    vertical-align: top;
+    color: var(--text-dim);
+  }
+
+  details.diag td.flagged { color: var(--amber); }
+  details.diag .diag-note {
+    font-size: 10px;
+    color: var(--text-faint);
+    margin-top: 4px;
+    max-width: 340px;
+  }
+
+  /* ---------- edit form ---------- */
+
+  .edit-form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .edit-form textarea { min-height: 50px; resize: vertical; font-family: var(--sans); }
+
+  .edit-form .row { display: flex; gap: 6px; }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">10x<small>backlog ↔ in progress</small></div>
+  <div class="field-inline">
+    <label for="project-select">Project</label>
+    <select id="project-select"></select>
+  </div>
+  <div class="repo-path" id="repo-path"></div>
+  <div class="conn-status" id="conn-status"><span class="dot"></span><span id="conn-status-text">live</span></div>
+</header>
+
+<section class="composer">
+  <h2>New ticket</h2>
+  <form id="composer-form">
+    <div class="field">
+      <label for="c-title">Title</label>
+      <input id="c-title" type="text" autocomplete="off" placeholder="Short summary" />
+      <span class="field-error" id="c-title-error"></span>
     </div>
+    <div class="field">
+      <label for="c-project">Project</label>
+      <select id="c-project"></select>
+      <span class="field-error" id="c-project-error"></span>
+    </div>
+    <div class="field">
+      <label for="c-desc">Description</label>
+      <textarea id="c-desc" rows="1" placeholder="What should the agent do?"></textarea>
+      <span class="field-error" id="c-desc-error"></span>
+    </div>
+    <div class="field field-submit">
+      <button type="submit" class="primary" id="c-submit">Add ticket</button>
+      <span class="field-error" id="c-form-error"></span>
+    </div>
+  </form>
+</section>
 
-    <script type="module">
-      const post = async (url, method = "POST") => {
-        const res = await fetch(url, { method });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) console.warn(url, res.status, body);
-        await render();
-      };
+<div class="board-error hidden" id="board-error"></div>
 
-      const diagRows = (d) => {
-        const rows = [
-          ["agent.start attempts", d.startAttempts, d.startAttempts > 1],
-          ["agent_pane_busy retries", d.paneBusyRetries, d.paneBusyRetries > 0],
-          ["start returned status", d.startReturnedStatus ?? "—", d.startReturnedStatus !== "idle"],
-          ["start returned ready", String(d.startReturnedReady), d.startReturnedReady !== true],
-          ["start returned after", d.startReturnedAfterMs == null ? "—" : d.startReturnedAfterMs + "ms", false],
-          ["needed readiness poll", String(d.neededReadinessPoll), d.neededReadinessPoll],
-          ["readiness polls", d.readinessPolls, d.readinessPolls > 0],
-          ["ready after", d.readyAfterMs == null ? "—" : d.readyAfterMs + "ms", false],
-          ["prompt not_ready retries", d.promptNotReadyRetries, d.promptNotReadyRetries > 0],
-          ["reused running agent", String(d.reusedExistingAgent), d.reusedExistingAgent],
-        ];
-        return rows
-          .map(([k, v, flag]) => `<tr><td>${k}</td><td class="${flag ? "flag" : "ok"}">${v}</td></tr>`)
-          .join("");
-      };
+<section class="unowned hidden" id="unowned-panel">
+  <h2>Unowned worktrees</h2>
+  <div class="note">Reported only — nothing here is ever removed automatically. Clean these up by hand if they are no longer needed.</div>
+  <div id="unowned-rows"></div>
+</section>
 
-      const card = (t) => {
-        const cls = t.died ? "dead"
-          : t.agentStatus === "working" ? "working"
-          : t.agentStatus === "blocked" ? "blocked"
-          : t.finished ? "done" : "";
-        const action = t.status === "backlog"
-          ? `<button ${t.busy ? "disabled" : ""} onclick="window.__spawn('${t.id}')">→ In Progress</button>`
-          : `<button ${t.busy ? "disabled" : ""} onclick="window.__cancel('${t.id}')">← Backlog (cancel)</button>`;
-        const raced = t.diagnostics.paneBusyRetries > 0 || t.diagnostics.neededReadinessPoll;
-        return `
-          <div class="card">
-            <div class="id">${t.id} ${t.died ? "✗" : t.finished ? "✓" : ""}</div>
-            <div class="title">${t.title}</div>
-            ${action}
-            <div class="status ${cls}">
-              ${t.died
-                ? "pane exited — run is dead, worktree kept for inspection"
-                : `agent: ${t.agentStatus ?? "—"}${t.busy ? " · working…" : ""}`}
-            </div>
-            ${t.hasWorktree
-              ? `<button ${t.busy ? "disabled" : ""} onclick="window.__drop('${t.id}')">remove worktree (keep branch)</button>`
-              : ""}
-            ${t.branch ? `<div class="wt">branch: ${t.branch}</div>` : ""}
-            ${t.hasWorktree ? `<div class="wt">🌳 worktree exists</div>` : ""}
-            ${t.error ? `<div class="err">${t.error}</div>` : ""}
-            ${t.diagnostics.startAttempts > 0 ? `
-              <div class="diag">
-                <div>${raced ? '<span class="flag">race fired on this run</span>' : '<span class="ok">no race observed</span>'}</div>
-                <table>${diagRows(t.diagnostics)}</table>
-              </div>` : ""}
-          </div>`;
-      };
+<main class="board">
+  <div class="column" data-status="backlog">
+    <h2>Backlog <span class="count" id="backlog-count">0</span></h2>
+    <div class="cards" id="backlog-cards"></div>
+  </div>
+  <div class="column" data-status="in_progress">
+    <h2>In Progress <span class="count" id="in-progress-count">0</span></h2>
+    <div class="cards" id="in-progress-cards"></div>
+  </div>
+</main>
 
-      async function render() {
-        const res = await fetch("/tickets");
-        const data = await res.json();
-        document.getElementById("repo").textContent = "target repo: " + data.repo;
-        const un = data.unowned ?? [];
-        document.getElementById("unowned").innerHTML = un.length
-          ? `<div class="unowned"><h2>Unowned worktrees (${un.length}) — reported only, never auto-removed</h2>`
-            + un.map((w) => `<div class="wt">${w.branch} → ${w.path}</div>`).join("") + "</div>"
-          : "";
-        for (const col of ["backlog", "in_progress"]) {
-          document.getElementById(col).innerHTML =
-            data.tickets.filter((t) => t.status === col).map(card).join("") || "<i style='color:#555'>empty</i>";
-        }
+<script type="module">
+  /* ---------------------------------------------------------------------
+   * State
+   * ------------------------------------------------------------------- */
+
+  /** @type {Array<{id:string,name:string,repoPath:string,baseBranch:string}>} */
+  let projects = [];
+  /** null = "All projects" */
+  let currentProjectId = null;
+  let ticketsData = { tickets: [], unowned: [] };
+  let boardErrorMsg = null;
+
+  /** id of the ticket currently being edited inline; that card is frozen against re-render. */
+  let editingId = null;
+  /** live buffer for the open edit form, so a poll landing mid-edit can't clobber keystrokes. */
+  let editBuffer = { title: "", description: "" };
+  let editFieldError = null;
+
+  /** per-ticket last action error, surfaced on the card until the next action clears it. */
+  const actionErrors = new Map();
+  /** ticket ids with an action in flight client-side (belt-and-suspenders on top of server `busy`). */
+  const pendingActions = new Set();
+
+  const cardEls = new Map(); // ticket id -> element, for in-place reconciliation
+
+  /* ---------------------------------------------------------------------
+   * HTTP helpers — every non-2xx is surfaced, never swallowed.
+   * ------------------------------------------------------------------- */
+
+  async function api(path, options) {
+    try {
+      const res = await fetch(path, options);
+      let body = null;
+      try {
+        body = await res.json();
+      } catch {
+        body = null; // empty or non-JSON body is fine for e.g. a bare 404
+      }
+      return { ok: res.ok, status: res.status, body };
+    } catch (err) {
+      return { ok: false, status: 0, body: { error: "network_error", message: String(err) } };
+    }
+  }
+
+  function messageFor(body, status) {
+    if (body && typeof body.error === "string") {
+      return body.message ? `${body.error}: ${body.message}` : body.error;
+    }
+    return `request failed (HTTP ${status})`;
+  }
+
+  /* ---------------------------------------------------------------------
+   * Data loading
+   * ------------------------------------------------------------------- */
+
+  async function loadProjects() {
+    const { ok, body } = await api("/projects");
+    projects = ok && Array.isArray(body) ? body : [];
+    renderProjectSelectors();
+  }
+
+  async function loadTickets() {
+    const qs = currentProjectId ? `?project=${encodeURIComponent(currentProjectId)}` : "";
+    const { ok, status, body } = await api(`/tickets${qs}`);
+    if (ok && body && Array.isArray(body.tickets)) {
+      ticketsData = { tickets: body.tickets, unowned: Array.isArray(body.unowned) ? body.unowned : [] };
+      boardErrorMsg = null;
+      setConnStatus(true);
+    } else {
+      // Keep the last-known board on screen; a transient poll failure shouldn't blank it.
+      boardErrorMsg = messageFor(body, status);
+      setConnStatus(false);
+    }
+    render();
+  }
+
+  function setConnStatus(live) {
+    const el = document.getElementById("conn-status");
+    const text = document.getElementById("conn-status-text");
+    el.classList.toggle("error", !live);
+    text.textContent = live ? "live" : "poll failing";
+  }
+
+  /* ---------------------------------------------------------------------
+   * Project selectors (header + composer)
+   * ------------------------------------------------------------------- */
+
+  function renderProjectSelectors() {
+    fillSelect(document.getElementById("project-select"), [
+      { id: "", name: "All projects" },
+      ...projects.map((p) => ({ id: p.id, name: p.name })),
+    ], currentProjectId ?? "");
+
+    fillSelect(document.getElementById("c-project"), projects.map((p) => ({ id: p.id, name: p.name })), null);
+
+    const repoEl = document.getElementById("repo-path");
+    const selected = projects.find((p) => p.id === currentProjectId);
+    repoEl.innerHTML = selected
+      ? `<span class="label">repo:</span>${escapeHtml(selected.repoPath)}`
+      : `<span class="label">repo:</span><span style="color:var(--text-faint)">— select a project —</span>`;
+  }
+
+  /** Rebuild a <select>'s options without disturbing it while the user has it open/focused. */
+  function fillSelect(select, options, desiredValue) {
+    if (document.activeElement === select) return; // don't yank a mid-choice select
+    const prior = select.value;
+    select.innerHTML = options
+      .map((o) => `<option value="${escapeAttr(o.id)}">${escapeHtml(o.name)}</option>`)
+      .join("");
+    const target = desiredValue !== null ? desiredValue : prior;
+    if (options.some((o) => o.id === target)) {
+      select.value = target;
+    } else if (options.length > 0) {
+      select.value = options[0].id;
+    }
+  }
+
+  document.getElementById("project-select").addEventListener("change", (e) => {
+    currentProjectId = e.target.value || null;
+    renderProjectSelectors();
+    loadTickets();
+  });
+
+  /* ---------------------------------------------------------------------
+   * Composer
+   * ------------------------------------------------------------------- */
+
+  const composerForm = document.getElementById("composer-form");
+  const composerErrors = {
+    title: document.getElementById("c-title-error"),
+    projectId: document.getElementById("c-project-error"),
+    description: document.getElementById("c-desc-error"),
+    form: document.getElementById("c-form-error"),
+  };
+
+  function clearComposerErrors() {
+    for (const el of Object.values(composerErrors)) el.textContent = "";
+  }
+
+  composerForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    clearComposerErrors();
+
+    const title = document.getElementById("c-title").value.trim();
+    const description = document.getElementById("c-desc").value;
+    const projectId = document.getElementById("c-project").value;
+
+    if (!title) {
+      composerErrors.title.textContent = "required";
+      return;
+    }
+    if (!projectId) {
+      composerErrors.projectId.textContent = "pick a project";
+      return;
+    }
+
+    const submitBtn = document.getElementById("c-submit");
+    submitBtn.disabled = true;
+    try {
+      const { ok, status, body } = await api("/tickets", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId, title, description }),
+      });
+      if (ok) {
+        document.getElementById("c-title").value = "";
+        document.getElementById("c-desc").value = "";
+        await loadTickets();
+        return;
+      }
+      if (body && typeof body.field === "string" && composerErrors[body.field]) {
+        composerErrors[body.field].textContent = body.message || body.error || "invalid";
+      } else {
+        composerErrors.form.textContent = messageFor(body, status);
+      }
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+
+  /* ---------------------------------------------------------------------
+   * Unowned worktrees panel
+   * ------------------------------------------------------------------- */
+
+  function renderUnowned() {
+    const panel = document.getElementById("unowned-panel");
+    const rows = ticketsData.unowned;
+    panel.classList.toggle("hidden", rows.length === 0);
+    if (rows.length === 0) return;
+    document.getElementById("unowned-rows").innerHTML = rows
+      .map(
+        (w) =>
+          `<div class="unowned-row"><span class="branch">${escapeHtml(w.branch)}</span><span class="path">${escapeHtml(w.path)}</span></div>`,
+      )
+      .join("");
+  }
+
+  /* ---------------------------------------------------------------------
+   * Board-level error banner
+   * ------------------------------------------------------------------- */
+
+  function renderBoardError() {
+    const el = document.getElementById("board-error");
+    el.classList.toggle("hidden", !boardErrorMsg);
+    el.textContent = boardErrorMsg ? `board fetch failed — ${boardErrorMsg}` : "";
+  }
+
+  /* ---------------------------------------------------------------------
+   * Ship's-wheel icon + attach/steer action
+   * ------------------------------------------------------------------- */
+
+  const WHEEL_SVG = `
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+      <circle cx="12" cy="12" r="7.2"/>
+      <circle cx="12" cy="12" r="1.8" fill="currentColor" stroke="none"/>
+      <path d="M12 4.8V2 M12 22v-2.8 M19.2 12H22 M2 12h2.8
+                M17.1 6.9l1.6-1.6 M5.3 18.7l1.6-1.6 M6.9 6.9L5.3 5.3 M18.7 18.7l-1.6-1.6"/>
+    </svg>`;
+
+  /** Best-effort attach command; agentName is only set once a ticket has actually spawned. */
+  function attachCommandFor(ticket) {
+    if (!ticket.agentName) return null;
+    return `herdr agent attach ${ticket.agentName}`;
+  }
+
+  async function steer(ticket, btn) {
+    const cmd = attachCommandFor(ticket);
+    if (!cmd) {
+      setActionError(ticket.id, "no agent attached to this ticket yet");
+      renderOne(ticket);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(cmd);
+      markCopied(ticket.id);
+      setActionError(ticket.id, null);
+      renderOne(ticket);
+      setTimeout(() => renderOne(findTicket(ticket.id) || ticket), 1850);
+    } catch (err) {
+      setActionError(ticket.id, `clipboard write failed: ${String(err)}`);
+      renderOne(ticket);
+    }
+    const { ok, status, body } = await api(`/tickets/${encodeURIComponent(ticket.id)}/focus`, { method: "POST" });
+    if (!ok) {
+      setActionError(ticket.id, messageFor(body, status));
+      renderOne(ticket);
+    }
+  }
+
+  /** Ticket id -> epoch ms when its "copied" confirmation should stop showing. Map-backed (not a
+   *  DOM-appended sibling) so a poll landing mid-flash re-renders the card without erasing it. */
+  const copyConfirms = new Map();
+
+  function markCopied(id) {
+    copyConfirms.set(id, Date.now() + 1800);
+  }
+
+  function copyConfirmActive(id) {
+    const until = copyConfirms.get(id);
+    if (until === undefined) return false;
+    if (Date.now() >= until) {
+      copyConfirms.delete(id);
+      return false;
+    }
+    return true;
+  }
+
+  /* ---------------------------------------------------------------------
+   * Actions
+   * ------------------------------------------------------------------- */
+
+  function setActionError(id, msg) {
+    if (msg) actionErrors.set(id, msg);
+    else actionErrors.delete(id);
+  }
+
+  function findTicket(id) {
+    return ticketsData.tickets.find((t) => t.id === id);
+  }
+
+  async function runAction(ticket, fn, { skipConfirm } = {}) {
+    if (pendingActions.has(ticket.id)) return;
+    pendingActions.add(ticket.id);
+    renderOne(ticket);
+    try {
+      const { ok, status, body } = await fn();
+      if (ok) {
+        setActionError(ticket.id, null);
+      } else {
+        setActionError(ticket.id, messageFor(body, status));
+      }
+    } finally {
+      pendingActions.delete(ticket.id);
+      await loadTickets();
+    }
+  }
+
+  function doSpawn(ticket) {
+    runAction(ticket, () => api(`/tickets/${encodeURIComponent(ticket.id)}/spawn`, { method: "POST" }));
+  }
+
+  function doCancel(ticket) {
+    if (!confirm(`Cancel "${ticket.title}"? This DISCARDS the in-progress attempt: the branch and worktree are deleted and cannot be recovered.`)) return;
+    runAction(ticket, () => api(`/tickets/${encodeURIComponent(ticket.id)}/cancel`, { method: "POST" }));
+  }
+
+  function doDropWorktree(ticket) {
+    runAction(ticket, () => api(`/tickets/${encodeURIComponent(ticket.id)}/worktree`, { method: "DELETE" }));
+  }
+
+  function doDelete(ticket) {
+    if (!confirm(`Delete ticket "${ticket.title}"? This cannot be undone.`)) return;
+    runAction(ticket, () => api(`/tickets/${encodeURIComponent(ticket.id)}`, { method: "DELETE" }));
+  }
+
+  function startEdit(ticket) {
+    editingId = ticket.id;
+    editBuffer = { title: ticket.title, description: ticket.description };
+    editFieldError = null;
+    renderOne(ticket);
+  }
+
+  function cancelEdit(ticket) {
+    editingId = null;
+    editFieldError = null;
+    renderOne(ticket);
+  }
+
+  async function saveEdit(ticket) {
+    editFieldError = null;
+    const { ok, status, body } = await api(`/tickets/${encodeURIComponent(ticket.id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: editBuffer.title, description: editBuffer.description }),
+    });
+    if (ok) {
+      editingId = null;
+      await loadTickets();
+      return;
+    }
+    editFieldError = messageFor(body, status);
+    renderOne(ticket);
+  }
+
+  /* ---------------------------------------------------------------------
+   * Diagnostics
+   * ------------------------------------------------------------------- */
+
+  const DIAG_FIELDS = [
+    ["startAttempts", "agent.start attempts", (v) => v > 1],
+    ["paneBusyRetries", "agent_pane_busy retries", (v) => v > 0],
+    ["startReturnedStatus", "start returned status", (v) => v != null && v !== "idle"],
+    ["startReturnedReady", "start returned ready", (v) => v !== true],
+    ["startReturnedAfterMs", "start returned after", () => false],
+    ["neededReadinessPoll", "needed readiness poll", (v) => v === true],
+    ["readinessPolls", "readiness polls", (v) => v > 0],
+    ["readyAfterMs", "ready after", () => false],
+    ["promptAttempts", "agent.prompt attempts", (v) => v > 1],
+    ["promptNotReadyRetries", "prompt not_ready retries", (v) => v > 0],
+    ["reusedExistingAgent", "reused running agent", (v) => v === true],
+  ];
+
+  function fmtDiagValue(v) {
+    if (v === null || v === undefined) return "—";
+    if (typeof v === "boolean") return v ? "true" : "false";
+    if (typeof v === "number" && /Ms$/.test("")) return String(v);
+    return String(v);
+  }
+
+  function diagBlock(diagnostics) {
+    if (!diagnostics) return "";
+    const rows = DIAG_FIELDS.map(([key, label, flagFn]) => {
+      const raw = diagnostics[key];
+      const flagged = flagFn(raw);
+      const suffix = key.endsWith("Ms") && typeof raw === "number" ? "ms" : "";
+      return `<tr><td>${escapeHtml(label)}</td><td class="${flagged ? "flagged" : ""}">${escapeHtml(fmtDiagValue(raw))}${suffix}</td></tr>`;
+    }).join("");
+    const raced = Boolean(diagnostics.paneBusyRetries > 0 || diagnostics.neededReadinessPoll || diagnostics.promptNotReadyRetries > 0);
+    return `
+      <details class="diag">
+        <summary>diagnostics ${raced ? '<span class="race-tag">· spawn race fired (guard worked, this is normal)</span>' : ""}</summary>
+        <table>${rows}</table>
+        <div class="diag-note">Highlighted values mean a retry guard caught a transient race (e.g. a freshly created pane not yet at its prompt) and recovered on its own — not a failure.</div>
+      </details>`;
+  }
+
+  /* ---------------------------------------------------------------------
+   * Card rendering
+   * ------------------------------------------------------------------- */
+
+  /**
+   * `null` means no agent has ever run for this ticket. Herdr's `unknown` means an agent
+   * IS present but could not be classified — which per memory §4 never proves anything and
+   * must never be read as success. Rendering both as "UNKNOWN" conflates "not started"
+   * with "running but unreadable", so they get different labels.
+   */
+  function statusBadge(status) {
+    if (!status) return `<span class="badge status-none" title="no agent has run for this ticket">idle · not started</span>`;
+    return `<span class="badge status-${escapeAttr(status)}" ${
+      status === "unknown"
+        ? 'title="an agent is present but Herdr cannot classify it — this is NOT completion"'
+        : ""
+    }>${escapeHtml(status)}</span>`;
+  }
+
+  function truncate(text, n) {
+    if (!text) return "";
+    return text.length > n ? text.slice(0, n - 1) + "…" : text;
+  }
+
+  function cardIsProtected(id) {
+    return editingId === id;
+  }
+
+  function buildCardBody(ticket) {
+    const busy = ticket.busy || pendingActions.has(ticket.id);
+    const badges = [];
+    if (ticket.agentStatus) badges.push(statusBadge(ticket.agentStatus));
+    else badges.push(statusBadge(null));
+    if (ticket.finished && !ticket.died) badges.push(`<span class="badge-icon finished" title="finished">✓</span>`);
+    if (ticket.died) badges.push(`<span class="badge-icon died" title="run died">✗</span>`);
+    if (ticket.hasWorktree) badges.push(`<span class="badge-icon worktree" title="worktree exists">⌂</span>`);
+
+    const err = actionErrors.get(ticket.id);
+
+    const actions = [];
+    if (ticket.status === "backlog") {
+      actions.push(`<button class="primary" data-act="spawn" ${busy ? "disabled" : ""}>Start</button>`);
+    } else {
+      actions.push(`<button class="danger" data-act="cancel" ${busy ? "disabled" : ""} title="Discards the attempt: deletes the branch and worktree.">Cancel (discard)</button>`);
+      if (ticket.hasWorktree) {
+        actions.push(`<button data-act="drop-worktree" ${busy ? "disabled" : ""} title="Reclaims disk space. The branch and its commits are kept.">Remove worktree</button>`);
+      }
+    }
+    actions.push(`<button class="ghost" data-act="edit" ${busy ? "disabled" : ""}>Edit</button>`);
+    actions.push(`<button class="danger ghost" data-act="delete" ${busy ? "disabled" : ""}>Delete</button>`);
+    const hasAttach = Boolean(ticket.agentName);
+    actions.push(
+      `<button class="icon-btn ghost" data-act="steer" ${busy ? "disabled" : ""} ` +
+        `title="${hasAttach ? "Copy the terminal command to attach to this agent's pane, and pre-focus it in Herdr — steer it like a captain at the wheel." : "No agent attached yet."}">${WHEEL_SVG}</button>`,
+    );
+
+    if (editingId === ticket.id) {
+      return `
+        <div class="card-top">
+          <span class="card-id">${escapeHtml(ticket.id)}</span>
+        </div>
+        <div class="edit-form">
+          <input type="text" data-field="title" value="${escapeAttr(editBuffer.title)}" />
+          <textarea data-field="description" rows="3">${escapeHtml(editBuffer.description)}</textarea>
+          ${editFieldError ? `<div class="card-error">${escapeHtml(editFieldError)}</div>` : ""}
+          <div class="row">
+            <button class="primary" data-act="save-edit">Save</button>
+            <button class="ghost" data-act="cancel-edit">Cancel</button>
+          </div>
+        </div>`;
+    }
+
+    return `
+      <div class="card-top">
+        <span class="card-id">${escapeHtml(ticket.id)}</span>
+        <div class="card-badges">${badges.join("")}</div>
+      </div>
+      <div class="card-title">${escapeHtml(ticket.title)}</div>
+      <div class="card-desc" title="${escapeAttr(ticket.description || "")}">${escapeHtml(truncate(ticket.description, 140))}</div>
+      ${ticket.branch ? `<div class="card-meta"><span>branch: ${escapeHtml(ticket.branch)}</span></div>` : ""}
+      ${
+        ticket.died
+          ? `<div class="died-note">Run died — the pane exited unexpectedly. This is NOT a finished ticket. The worktree was deliberately kept so you can inspect it before deciding what to do.</div>`
+          : ""
+      }
+      ${busy ? `<div class="busy-hint">⏳ operation in flight — actions disabled</div>` : ""}
+      <div class="card-actions">${actions.join("")}</div>
+      ${copyConfirmActive(ticket.id) ? `<div class="copy-confirm">copied — command ready to paste</div>` : ""}
+      ${err ? `<div class="card-error">${escapeHtml(err)}</div>` : ""}
+      ${diagBlock(ticket.diagnostics)}
+    `;
+  }
+
+  function attachCardHandlers(el, ticket) {
+    el.querySelectorAll("button[data-act]").forEach((btn) => {
+      const act = btn.getAttribute("data-act");
+      btn.addEventListener("click", () => {
+        const live = findTicket(ticket.id) || ticket;
+        if (act === "spawn") doSpawn(live);
+        else if (act === "cancel") doCancel(live);
+        else if (act === "drop-worktree") doDropWorktree(live);
+        else if (act === "edit") startEdit(live);
+        else if (act === "delete") doDelete(live);
+        else if (act === "steer") steer(live, btn);
+        else if (act === "save-edit") saveEdit(live);
+        else if (act === "cancel-edit") cancelEdit(live);
+      });
+    });
+    if (editingId === ticket.id) {
+      const titleInput = el.querySelector('[data-field="title"]');
+      const descInput = el.querySelector('[data-field="description"]');
+      titleInput.addEventListener("input", (e) => { editBuffer.title = e.target.value; });
+      descInput.addEventListener("input", (e) => { editBuffer.description = e.target.value; });
+    }
+  }
+
+  /** Re-render exactly one card in place, used after actions/edits without touching the rest of the board. */
+  function renderOne(ticket) {
+    const el = cardEls.get(ticket.id);
+    if (!el) return;
+    el.innerHTML = buildCardBody(ticket);
+    el.className = cardClassName(ticket);
+    attachCardHandlers(el, ticket);
+  }
+
+  function cardClassName(ticket) {
+    const busy = ticket.busy || pendingActions.has(ticket.id);
+    const cls = ["card"];
+    if (busy) cls.push("is-busy");
+    if (ticket.agentStatus === "blocked") cls.push("is-blocked");
+    if (ticket.died) cls.push("is-died");
+    return cls.join(" ");
+  }
+
+  /* ---------------------------------------------------------------------
+   * Board reconciliation — keyed diff so a card mid-edit or a control the
+   * user is focused on is never destroyed by a poll landing underneath it.
+   * ------------------------------------------------------------------- */
+
+  function renderColumn(containerId, countId, status) {
+    const container = document.getElementById(containerId);
+    const rows = ticketsData.tickets.filter((t) => t.status === status);
+    document.getElementById(countId).textContent = String(rows.length);
+
+    const seen = new Set();
+    let cursor = container.firstElementChild;
+
+    for (const ticket of rows) {
+      seen.add(ticket.id);
+      let el = cardEls.get(ticket.id);
+      if (!el || !el.isConnected) {
+        el = document.createElement("div");
+        cardEls.set(ticket.id, el);
+        el.dataset.id = ticket.id;
       }
 
-      window.__spawn = (id) => post(`/tickets/${id}/spawn`);
-      window.__cancel = (id) => post(`/tickets/${id}/cancel`);
-      window.__drop = (id) => post(`/tickets/${id}/worktree`, "DELETE");
+      // Position it correctly.
+      if (cursor !== el) {
+        container.insertBefore(el, cursor);
+      }
+      cursor = el.nextElementSibling;
 
-      await render();
-      setInterval(render, 1000);
-    </script>
-  </body>
+      if (cardIsProtected(ticket.id)) {
+        // Leave an actively-edited or focused-input card alone this cycle.
+        if (!el.dataset.rendered) {
+          el.className = cardClassName(ticket);
+          el.innerHTML = buildCardBody(ticket);
+          attachCardHandlers(el, ticket);
+          el.dataset.rendered = "1";
+        }
+        continue;
+      }
+
+      el.className = cardClassName(ticket);
+      el.innerHTML = buildCardBody(ticket);
+      el.dataset.rendered = "1";
+      attachCardHandlers(el, ticket);
+    }
+
+    // Remove cards no longer present.
+    for (const [id, el] of cardEls) {
+      if (!seen.has(id) && el.parentElement === container) {
+        el.remove();
+        cardEls.delete(id);
+      }
+    }
+
+    if (rows.length === 0) {
+      container.innerHTML = `<div class="empty-hint">empty</div>`;
+    } else if (container.querySelector(".empty-hint")) {
+      container.querySelector(".empty-hint").remove();
+    }
+  }
+
+  function render() {
+    renderBoardError();
+    renderUnowned();
+    renderColumn("backlog-cards", "backlog-count", "backlog");
+    renderColumn("in-progress-cards", "in-progress-count", "in_progress");
+  }
+
+  /* ---------------------------------------------------------------------
+   * Escaping helpers
+   * ------------------------------------------------------------------- */
+
+  function escapeHtml(s) {
+    return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+  }
+  function escapeAttr(s) { return escapeHtml(s); }
+
+  /* ---------------------------------------------------------------------
+   * Boot + poll loop.
+   * TODO: replace with SSE once the backend pushes Herdr events directly
+   * (memory/INDEX.md §02 parking lot) — this 1000ms poll is a placeholder.
+   * ------------------------------------------------------------------- */
+
+  await loadProjects();
+  await loadTickets();
+  setInterval(loadTickets, 1000);
+  setInterval(loadProjects, 5000);
+</script>
+</body>
 </html>

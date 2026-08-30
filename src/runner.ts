@@ -15,7 +15,27 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { HerdrError, request, subscribe } from "./herdr.ts";
 import { agentNameFor, branchFor, isAgentReady, normalizeEvent } from "./lifecycle.ts";
-import type { Diagnostics, Ticket } from "./tickets.ts";
+import type { Diagnostics } from "./diagnostics.ts";
+
+/**
+ * Everything a run needs, passed explicitly so this module never touches the store.
+ * `repoPath` and `base` come from the ticket's project, not the ticket.
+ */
+export type RunSpec = {
+  projectId: string;
+  number: number;
+  title: string;
+  description: string;
+  repoPath: string;
+  base: string;
+};
+
+/** Mutable per-run state the caller owns and persists. */
+export type RunState = {
+  diagnostics: Diagnostics;
+  sessionDir: string | null;
+  stream?: { close: () => void };
+};
 
 const run = promisify(execFile);
 const STATE_DIR = process.env.STATE_DIR ?? join(homedir(), ".10x");
@@ -61,9 +81,9 @@ type AgentEnvelope = { agent?: AgentRecord };
  * interactive, or throws. Records what happened so the UI can show whether the
  * race fired on this run.
  */
-async function startAgentAndWait(ticket: Ticket, paneId: string, diag: Diagnostics) {
-  const name = agentNameFor(ticket.project, ticket.number);
-  const promptFile = join(STATE_DIR, "prompts", `${ticket.project}-${ticket.number}.md`);
+async function startAgentAndWait(spec: RunSpec, state: RunState, paneId: string, diag: Diagnostics) {
+  const name = agentNameFor(spec.projectId, spec.number);
+  const promptFile = join(STATE_DIR, "prompts", `${spec.projectId}-${spec.number}.md`);
   await mkdir(dirname(promptFile), { recursive: true });
   await writeFile(promptFile, SYSTEM_PROMPT, "utf8");
 
@@ -167,7 +187,7 @@ async function startAgentAndWait(ticket: Ticket, paneId: string, diag: Diagnosti
 
   diag.readyAfterMs = Date.now() - started;
   // Canonical location, not a diagnostic: teardown needs it and diagnostics get reset.
-  ticket.sessionDir = record.agent_session?.value ? dirname(record.agent_session.value) : null;
+  state.sessionDir = record.agent_session?.value ? dirname(record.agent_session.value) : null;
 
   // A reused agent may live in a different pane than the one we resolved from the
   // worktree, so report the authoritative pane back for the subscription to follow.
@@ -183,12 +203,12 @@ export type SpawnResult = {
 
 /** Backlog -> In Progress. The caller must already have claimed the ticket (CAS). */
 export async function spawn(
-  ticket: Ticket,
-  repoPath: string,
+  spec: RunSpec,
+  state: RunState,
   onStatus: (status: string) => void,
   onPaneExit: () => void,
 ): Promise<SpawnResult> {
-  const branch = branchFor(ticket.project, ticket.number);
+  const branch = branchFor(spec.projectId, spec.number);
 
   // 1. Worktree + branch + workspace + tab + root pane in one call. Reuse by BRANCH,
   //    never a predicted path (§6.2); create is not idempotent (§6.6), so open first.
@@ -197,7 +217,7 @@ export async function spawn(
   let worktreePath: string;
   try {
     const opened = await request<WorktreeOpened>("worktree.open", {
-      cwd: repoPath,
+      cwd: spec.repoPath,
       branch,
       focus: false,
     });
@@ -212,9 +232,9 @@ export async function spawn(
   } catch (err) {
     if (!(err instanceof HerdrError) || err.code !== "worktree_not_found") throw err;
     const created = await request<WorktreeCreated>("worktree.create", {
-      cwd: repoPath,
+      cwd: spec.repoPath,
       branch,
-      base: ticket.base,
+      base: spec.base,
       focus: false,
     });
     workspaceId = created.workspace.workspace_id;
@@ -234,8 +254,8 @@ export async function spawn(
   // underscored. Normalise before comparing; matching either form literally silently drops
   // half the events, which is a failure with no error attached to it.
   const watch = (watched: string) => {
-    ticket.stream?.close();
-    ticket.stream = subscribe(
+    state.stream?.close();
+    state.stream = subscribe(
       [
         { type: "pane.agent_status_changed", pane_id: watched },
         { type: "pane.exited" },
@@ -261,9 +281,10 @@ export async function spawn(
 
   // 3. Start, with the readiness guard.
   const { reused, paneId: actualPane } = await startAgentAndWait(
-    ticket,
+    spec,
+    state,
     paneId,
-    ticket.diagnostics,
+    state.diagnostics,
   );
 
   // A reused agent can sit in a different pane than the worktree's first pane, so follow it.
@@ -281,19 +302,19 @@ export async function spawn(
   if (reused) return { workspaceId, paneId, worktreePath, branch };
 
   const text = [
-    `TICKET ${ticket.project.toUpperCase()}-${ticket.number}: ${ticket.title}`,
+    `TICKET ${spec.projectId.toUpperCase()}-${spec.number}: ${spec.title}`,
     "",
-    ticket.body,
+    spec.description,
   ].join("\n");
 
   for (let attempt = 1; attempt <= 40; attempt++) {
     try {
-      await request("agent.prompt", { target: agentNameFor(ticket.project, ticket.number), text });
-      ticket.diagnostics.promptAttempts = attempt;
+      await request("agent.prompt", { target: agentNameFor(spec.projectId, spec.number), text });
+      state.diagnostics.promptAttempts = attempt;
       break;
     } catch (err) {
       if (err instanceof HerdrError && err.code === "agent_not_ready" && attempt < 40) {
-        ticket.diagnostics.promptNotReadyRetries++;
+        state.diagnostics.promptNotReadyRetries++;
         await delay(250);
         continue;
       }
@@ -311,18 +332,18 @@ export async function spawn(
  * `force: true` is correct here because this only ever runs for an explicit user
  * action. Reconciliation must never call this.
  */
-export async function teardown(ticket: Ticket, repoPath: string, deleteBranch: boolean) {
-  ticket.stream?.close();
-  ticket.stream = undefined;
+export async function teardown(spec: RunSpec, state: RunState, deleteBranch: boolean) {
+  state.stream?.close();
+  state.stream = undefined;
 
-  const branch = branchFor(ticket.project, ticket.number);
-  const name = agentNameFor(ticket.project, ticket.number);
+  const branch = branchFor(spec.projectId, spec.number);
+  const name = agentNameFor(spec.projectId, spec.number);
 
   // Resolve the session directory BEFORE killing the pane, while the agent can still
-  // be asked. `ticket.sessionDir` is a fallback for when the agent is already gone
+  // be asked. `state.sessionDir` is a fallback for when the agent is already gone
   // (crash, Herdr restart, backend restart). Never derive the path — the slug is a
   // mangled form of the worktree path and is not ours to reconstruct (§5.3).
-  let sessionDir = ticket.sessionDir;
+  let sessionDir = state.sessionDir;
   try {
     const live = await request<AgentEnvelope>("agent.get", { target: name });
     const value = live.agent?.agent_session?.value;
@@ -339,7 +360,7 @@ export async function teardown(ticket: Ticket, repoPath: string, deleteBranch: b
 
   try {
     const opened = await request<WorktreeOpened>("worktree.open", {
-      cwd: repoPath,
+      cwd: spec.repoPath,
       branch,
       focus: false,
     });
@@ -352,12 +373,12 @@ export async function teardown(ticket: Ticket, repoPath: string, deleteBranch: b
   // The OMP transcript lives outside the worktree and survives removal (§5.3).
   if (sessionDir) {
     await rm(sessionDir, { recursive: true, force: true });
-    ticket.sessionDir = null;
+    state.sessionDir = null;
   }
 
   if (deleteBranch) {
     try {
-      await run("git", ["-C", repoPath, "branch", "-D", branch]);
+      await run("git", ["-C", spec.repoPath, "branch", "-D", branch]);
     } catch (err) {
       // Expected when the branch was never created or already removed. Anything else
       // means the branch is still there, so say so rather than swallowing it.
