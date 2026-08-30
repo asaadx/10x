@@ -10,6 +10,9 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": false,
     "verbatimModuleSyntax": true,
+    // Node strips types rather than compiling them, so parameter properties and enums
+    // fail at LOAD time. This makes tsc reject them instead of finding out at runtime.
+    "erasableSyntaxOnly": true,
     "skipLibCheck": true,
     "types": ["node"]
   },

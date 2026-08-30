@@ -2,7 +2,7 @@
  * Spawn and teardown for one ticket.
  *
  * The point of this file is the readiness guard in `startAgentAndWait`. See
- * memory/herdr-omp-lifecycle.md §1: the raw `agent.start` socket method returns
+ * memory/herdr-omp-lifecycle.md memory/spawn.md: the raw `agent.start` socket method returns
  * BEFORE the agent is usable, and the `herdr` CLI is what does the waiting
  * (strace shows agent.start x2 then agent.get x24). A socket client that trusts
  * the return value loses the prompt.
@@ -14,7 +14,28 @@ import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { HerdrError, request, subscribe } from "./herdr.ts";
-import type { Diagnostics, Ticket } from "./tickets.ts";
+import { agentNameFor, branchFor, isAgentReady, normalizeEvent } from "./lifecycle.ts";
+import type { Diagnostics } from "./diagnostics.ts";
+
+/**
+ * Everything a run needs, passed explicitly so this module never touches the store.
+ * `repoPath` and `base` come from the ticket's project, not the ticket.
+ */
+export type RunSpec = {
+  projectId: string;
+  number: number;
+  title: string;
+  description: string;
+  repoPath: string;
+  base: string;
+};
+
+/** Mutable per-run state the caller owns and persists. */
+export type RunState = {
+  diagnostics: Diagnostics;
+  sessionDir: string | null;
+  stream?: { close: () => void };
+};
 
 const run = promisify(execFile);
 const STATE_DIR = process.env.STATE_DIR ?? join(homedir(), ".10x");
@@ -54,27 +75,15 @@ type AgentRecord = {
 };
 type AgentEnvelope = { agent?: AgentRecord };
 
-/**
- * Namespaced so reconciliation can tell our worktrees from a hand-made one (§5.2).
- *
- * The slashes deliberately mirror `agentNameFor`: Herdr derives the worktree directory
- * from the branch by lowercasing and replacing `/` with `-`, so `ticket/target/1` lands
- * in `ticket-target-1` — identical to the agent name. Verified against 0.8.2.
- *
- * `project` MUST NOT contain a slash, or the ref gains an extra path segment.
- */
-export const branchFor = (t: Ticket) => `ticket/${t.project}/${t.number}`;
-/** Must start with a letter, <=32 chars, unique across the whole Herdr session (§6.7). */
-export const agentNameFor = (t: Ticket) => `ticket-${t.project}-${t.number}`;
 
 /**
  * Mirror of the CLI's readiness loop. Returns once the agent is genuinely
  * interactive, or throws. Records what happened so the UI can show whether the
  * race fired on this run.
  */
-async function startAgentAndWait(ticket: Ticket, paneId: string, diag: Diagnostics) {
-  const name = agentNameFor(ticket);
-  const promptFile = join(STATE_DIR, "prompts", `${ticket.project}-${ticket.number}.md`);
+async function startAgentAndWait(spec: RunSpec, state: RunState, paneId: string, diag: Diagnostics) {
+  const name = agentNameFor(spec.projectId, spec.number);
+  const promptFile = join(STATE_DIR, "prompts", `${spec.projectId}-${spec.number}.md`);
   await mkdir(dirname(promptFile), { recursive: true });
   await writeFile(promptFile, SYSTEM_PROMPT, "utf8");
 
@@ -140,20 +149,18 @@ async function startAgentAndWait(ticket: Ticket, paneId: string, diag: Diagnosti
     }
   }
 
-  // Phase 2 — agent.start returning is NOT readiness (§1). Poll until the record actually
+  // Phase 2 — agent.start returning is NOT readiness (memory/spawn.md). Poll until the record actually
   // reports ready. 125ms mirrors the cadence the herdr CLI itself uses, and the whole wait
   // is normally ~3s, so this is short-lived.
   //
-  // `idle` and `done` are the SAME underlying ready state (§4.1): `done` just means it
+  // `idle` and `done` are the SAME underlying ready state (memory/agent-status.md): `done` just means it
   // settled while the tab was unseen. Accepting only `idle` hangs for the full timeout on
   // any agent that finished a turn unobserved — which is every reused agent.
-  const isReady = (r: AgentRecord | undefined) =>
-    (r?.agent_status === "idle" || r?.agent_status === "done") && r?.interactive_ready === true;
 
-  diag.neededReadinessPoll = !isReady(record);
+  diag.neededReadinessPoll = !isAgentReady(record);
 
   const readyDeadline = Date.now() + READY_WAIT_MS;
-  while (!isReady(record)) {
+  while (!isAgentReady(record)) {
     if (Date.now() > readyDeadline) {
       throw new HerdrError(
         "agent_not_ready",
@@ -180,7 +187,7 @@ async function startAgentAndWait(ticket: Ticket, paneId: string, diag: Diagnosti
 
   diag.readyAfterMs = Date.now() - started;
   // Canonical location, not a diagnostic: teardown needs it and diagnostics get reset.
-  ticket.sessionDir = record.agent_session?.value ? dirname(record.agent_session.value) : null;
+  state.sessionDir = record.agent_session?.value ? dirname(record.agent_session.value) : null;
 
   // A reused agent may live in a different pane than the one we resolved from the
   // worktree, so report the authoritative pane back for the subscription to follow.
@@ -196,21 +203,21 @@ export type SpawnResult = {
 
 /** Backlog -> In Progress. The caller must already have claimed the ticket (CAS). */
 export async function spawn(
-  ticket: Ticket,
-  repoPath: string,
+  spec: RunSpec,
+  state: RunState,
   onStatus: (status: string) => void,
   onPaneExit: () => void,
 ): Promise<SpawnResult> {
-  const branch = branchFor(ticket);
+  const branch = branchFor(spec.projectId, spec.number);
 
   // 1. Worktree + branch + workspace + tab + root pane in one call. Reuse by BRANCH,
-  //    never a predicted path (§6.2); create is not idempotent (§6.6), so open first.
+  //    never a predicted path (memory/naming.md); create is not idempotent (memory/naming.md), so open first.
   let workspaceId: string;
   let paneId: string;
   let worktreePath: string;
   try {
     const opened = await request<WorktreeOpened>("worktree.open", {
-      cwd: repoPath,
+      cwd: spec.repoPath,
       branch,
       focus: false,
     });
@@ -225,9 +232,9 @@ export async function spawn(
   } catch (err) {
     if (!(err instanceof HerdrError) || err.code !== "worktree_not_found") throw err;
     const created = await request<WorktreeCreated>("worktree.create", {
-      cwd: repoPath,
+      cwd: spec.repoPath,
       branch,
-      base: ticket.base,
+      base: spec.base,
       focus: false,
     });
     workspaceId = created.workspace.workspace_id;
@@ -235,7 +242,7 @@ export async function spawn(
     worktreePath = created.worktree.path;
   }
 
-  // 2. Subscribe BEFORE starting the agent, or the first `working` transition is missed (§1).
+  // 2. Subscribe BEFORE starting the agent, or the first `working` transition is missed (memory/spawn.md).
   //
   // `pane.exited` and `pane.closed` are DIFFERENT events and we need both: `pane_exited`
   // fires when the process in the pane dies (agent crash, someone typing `exit`), while
@@ -247,8 +254,8 @@ export async function spawn(
   // underscored. Normalise before comparing; matching either form literally silently drops
   // half the events, which is a failure with no error attached to it.
   const watch = (watched: string) => {
-    ticket.stream?.close();
-    ticket.stream = subscribe(
+    state.stream?.close();
+    state.stream = subscribe(
       [
         { type: "pane.agent_status_changed", pane_id: watched },
         { type: "pane.exited" },
@@ -256,7 +263,7 @@ export async function spawn(
       ],
       (event, data) => {
         if (typeof data !== "object" || data === null) return;
-        const kind = event.replaceAll(".", "_");
+        const kind = normalizeEvent(event);
         if (kind === "pane_agent_status_changed") {
           if ("agent_status" in data && typeof data.agent_status === "string") {
             onStatus(data.agent_status);
@@ -274,9 +281,10 @@ export async function spawn(
 
   // 3. Start, with the readiness guard.
   const { reused, paneId: actualPane } = await startAgentAndWait(
-    ticket,
+    spec,
+    state,
     paneId,
-    ticket.diagnostics,
+    state.diagnostics,
   );
 
   // A reused agent can sit in a different pane than the worktree's first pane, so follow it.
@@ -287,26 +295,26 @@ export async function spawn(
 
   // 4. Prompt — but ONLY for a fresh start.
   //
-  // Reuse means we re-attached to an agent that is already running this ticket (§5.0
+  // Reuse means we re-attached to an agent that is already running this ticket (memory/teardown.md
   // re-dispatch). Re-sending the ticket text would make it redo work it may have already
   // done, so re-attaching is silent. A deliberate "work on this again" is a separate
-  // action, and will arrive with In Review -> In Progress.
+  // action. No such action exists yet — see memory/parking-lot.md.
   if (reused) return { workspaceId, paneId, worktreePath, branch };
 
   const text = [
-    `TICKET ${ticket.project.toUpperCase()}-${ticket.number}: ${ticket.title}`,
+    `TICKET ${spec.projectId.toUpperCase()}-${spec.number}: ${spec.title}`,
     "",
-    ticket.body,
+    spec.description,
   ].join("\n");
 
   for (let attempt = 1; attempt <= 40; attempt++) {
     try {
-      await request("agent.prompt", { target: agentNameFor(ticket), text });
-      ticket.diagnostics.promptAttempts = attempt;
+      await request("agent.prompt", { target: agentNameFor(spec.projectId, spec.number), text });
+      state.diagnostics.promptAttempts = attempt;
       break;
     } catch (err) {
       if (err instanceof HerdrError && err.code === "agent_not_ready" && attempt < 40) {
-        ticket.diagnostics.promptNotReadyRetries++;
+        state.diagnostics.promptNotReadyRetries++;
         await delay(250);
         continue;
       }
@@ -319,23 +327,23 @@ export async function spawn(
 
 /**
  * Teardown. One path, resolved by branch, so it works whether the workspace is
- * open, was closed behind our back, or is already gone (§5).
+ * open, was closed behind our back, or is already gone (memory/teardown.md).
  *
  * `force: true` is correct here because this only ever runs for an explicit user
  * action. Reconciliation must never call this.
  */
-export async function teardown(ticket: Ticket, repoPath: string, deleteBranch: boolean) {
-  ticket.stream?.close();
-  ticket.stream = undefined;
+export async function teardown(spec: RunSpec, state: RunState, deleteBranch: boolean) {
+  state.stream?.close();
+  state.stream = undefined;
 
-  const branch = branchFor(ticket);
-  const name = agentNameFor(ticket);
+  const branch = branchFor(spec.projectId, spec.number);
+  const name = agentNameFor(spec.projectId, spec.number);
 
   // Resolve the session directory BEFORE killing the pane, while the agent can still
-  // be asked. `ticket.sessionDir` is a fallback for when the agent is already gone
+  // be asked. `state.sessionDir` is a fallback for when the agent is already gone
   // (crash, Herdr restart, backend restart). Never derive the path — the slug is a
-  // mangled form of the worktree path and is not ours to reconstruct (§5.3).
-  let sessionDir = ticket.sessionDir;
+  // mangled form of the worktree path and is not ours to reconstruct (memory/reconciliation.md).
+  let sessionDir = state.sessionDir;
   try {
     const live = await request<AgentEnvelope>("agent.get", { target: name });
     const value = live.agent?.agent_session?.value;
@@ -352,7 +360,7 @@ export async function teardown(ticket: Ticket, repoPath: string, deleteBranch: b
 
   try {
     const opened = await request<WorktreeOpened>("worktree.open", {
-      cwd: repoPath,
+      cwd: spec.repoPath,
       branch,
       focus: false,
     });
@@ -362,15 +370,15 @@ export async function teardown(ticket: Ticket, repoPath: string, deleteBranch: b
     if (!(err instanceof HerdrError) || err.code !== "worktree_not_found") throw err;
   }
 
-  // The OMP transcript lives outside the worktree and survives removal (§5.3).
+  // The OMP transcript lives outside the worktree and survives removal (memory/reconciliation.md).
   if (sessionDir) {
     await rm(sessionDir, { recursive: true, force: true });
-    ticket.sessionDir = null;
+    state.sessionDir = null;
   }
 
   if (deleteBranch) {
     try {
-      await run("git", ["-C", repoPath, "branch", "-D", branch]);
+      await run("git", ["-C", spec.repoPath, "branch", "-D", branch]);
     } catch (err) {
       // Expected when the branch was never created or already removed. Anything else
       // means the branch is still there, so say so rather than swallowing it.

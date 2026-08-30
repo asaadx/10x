@@ -1,7 +1,7 @@
 /**
  * Herdr socket client.
  *
- * Transport facts that drive this design (memory/herdr-omp-lifecycle.md §3):
+ * Transport facts that drive this design (memory/herdr-omp-lifecycle.md memory/socket.md):
  *  - newline-delimited JSON over a unix socket, NOT WebSocket
  *  - the server closes the connection after every response, so one connection per request
  *  - `events.subscribe` is the sole exception: its connection stays open and streams
@@ -104,7 +104,7 @@ export type Subscription = { type: string; [key: string]: unknown };
  * every later line is a pushed event.
  *
  * NOTE: `pane.agent_status_changed` REQUIRES a pane_id — there is no global
- * agent-status stream, so this is one connection per running ticket (§4).
+ * agent-status stream, so this is one connection per running ticket (memory/socket.md).
  */
 export function subscribe(
   subscriptions: Subscription[],
