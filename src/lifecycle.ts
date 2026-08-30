@@ -13,19 +13,27 @@ export const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
  * constraint in the system. `ticket-` costs 7 characters and the separator 1, leaving 24
  * for slug + number — about 20 characters of slug beside a 4-digit ticket number.
  *
- * Dots are legal in git branches but NOT in agent names, so they are rejected here: a
- * slug like `my.app` would produce a valid branch and an invalid agent name, failing
- * only at spawn time after the worktree already exists.
+ * A LEADING DIGIT IS ALLOWED. Herdr agent names must start with a letter, but
+ * `agentNameFor` always prefixes `ticket-`, so the letter is already guaranteed and the
+ * slug itself is unconstrained in that respect. Requiring a leading letter here would
+ * reject `10x` — this project's own name — for no reason. Verified: branch `ticket/10x/1`
+ * passes `git check-ref-format`, `ticket-10x-7` matches Herdr's agent-name regex, and a
+ * real worktree was created on that branch.
+ *
+ * Dots and underscores are excluded deliberately. Dots are legal in git branches but NOT
+ * in agent names, so a slug like `my.app` would yield a valid branch and an invalid agent
+ * name — failing only at spawn time, after the worktree already exists. Underscores are
+ * legal in both but excluded to keep one canonical separator.
  */
-export const PROJECT_SLUG_RE = /^[a-z][a-z0-9-]{0,19}$/;
+export const PROJECT_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,19}$/;
 
 export function validateProjectSlug(slug: string): { ok: true } | { ok: false; message: string } {
   if (!PROJECT_SLUG_RE.test(slug)) {
     return {
       ok: false,
       message:
-        "must be 1-20 chars, start with a lowercase letter, and contain only a-z, 0-9 or '-' " +
-        "(dots are legal in branches but not in Herdr agent names)",
+        "must be 1-20 chars, start with a lowercase letter or digit, and contain only " +
+        "a-z, 0-9 or '-' (dots are legal in branches but not in Herdr agent names)",
     };
   }
   return { ok: true };

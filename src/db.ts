@@ -59,6 +59,11 @@ CREATE TABLE IF NOT EXISTS projects (
   name        TEXT NOT NULL,
   repo_path   TEXT NOT NULL,
   base_branch TEXT NOT NULL DEFAULT 'main',
+  -- Monotonic ticket counter. NEVER derive the next number from MAX(number): deleting the
+  -- highest ticket would hand its number to the next one, and since deleting a ticket does
+  -- not remove its worktree (§5.0), the new ticket's branch would collide with the orphan
+  -- left behind — silently adopting another ticket's work.
+  next_number INTEGER NOT NULL DEFAULT 1,
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
