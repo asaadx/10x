@@ -30,12 +30,15 @@ const json = (body: unknown, status = 200) => ({
   body: JSON.stringify(body),
 });
 
+type ListedWorktree = { branch: string | null; path: string; is_linked_worktree?: boolean };
+
 async function handle(method: string, path: string) {
   if (method === "GET" && path === "/tickets") {
-    const worktrees = await request<{ worktrees: { branch: string | null; path: string }[] }>(
-      "worktree.list",
-      { cwd: REPO },
-    ).catch(() => ({ worktrees: [] }));
+    const listed = await request<{ worktrees: ListedWorktree[] }>("worktree.list", {
+      cwd: REPO,
+    }).catch(() => ({ worktrees: [] }));
+
+    const ours = new Set(tickets.map(branchFor));
 
     return json({
       repo: REPO,
@@ -45,22 +48,34 @@ async function handle(method: string, path: string) {
         status: t.status,
         agentStatus: t.agentStatus,
         finished: t.finished,
+        died: t.died,
         error: t.error,
         branch: t.branch,
         worktreePath: t.worktreePath,
         paneId: t.paneId,
         busy: inFlight.has(`${t.project}-${t.number}`),
         /* Derived from Herdr, not from our own store — the read model in §5.2. */
-        hasWorktree: worktrees.worktrees.some((w) => w.branch === branchFor(t)),
+        hasWorktree: listed.worktrees.some((w) => w.branch === branchFor(t)),
         diagnostics: t.diagnostics,
       })),
+      /**
+       * Linked worktrees Herdr knows about that no ticket claims. Reported only —
+       * reconciliation never deletes (§5.2). Non-ticket branches are excluded entirely
+       * rather than listed, so a hand-made worktree is never even a candidate.
+       */
+      unowned: listed.worktrees
+        .filter((w) => w.is_linked_worktree !== false)
+        .filter((w) => w.branch?.startsWith("ticket/") && !ours.has(w.branch))
+        .map((w) => ({ branch: w.branch, path: w.path })),
     });
   }
 
   const spawnMatch = /^\/tickets\/([^/]+)\/spawn$/.exec(path);
   const cancelMatch = /^\/tickets\/([^/]+)\/cancel$/.exec(path);
-  const id = spawnMatch?.[1] ?? cancelMatch?.[1];
-  if (method !== "POST" || !id) return json({ error: "not_found" }, 404);
+  const dropWorktreeMatch = /^\/tickets\/([^/]+)\/worktree$/.exec(path);
+  const id = spawnMatch?.[1] ?? cancelMatch?.[1] ?? dropWorktreeMatch?.[1];
+  const isDrop = dropWorktreeMatch !== null && method === "DELETE";
+  if (!id || (method !== "POST" && !isDrop)) return json({ error: "not_found" }, 404);
 
   const ticket = findTicket(id);
   if (!ticket) return json({ error: "no_such_ticket", id }, 404);
@@ -75,21 +90,34 @@ async function handle(method: string, path: string) {
     ticket.diagnostics = freshDiagnostics();
     ticket.error = null;
     ticket.finished = false;
+    ticket.died = false;
     ticket.agentStatus = null;
 
     try {
       // §4.1: the FIRST `idle` arrives before the prompt, so it is not completion.
       // Only honour idle/done once a `working` turn has actually been observed.
       let sawWorking = false;
-      const res = await spawn(ticket, REPO, (status) => {
-        ticket.agentStatus = status;
-        if (status === "working") {
-          sawWorking = true;
+      const res = await spawn(
+        ticket,
+        REPO,
+        (status) => {
+          ticket.agentStatus = status;
+          if (status === "working") {
+            sawWorking = true;
+            ticket.finished = false;
+          } else if (sawWorking && (status === "idle" || status === "done")) {
+            ticket.finished = true;
+          }
+        },
+        () => {
+          // §5.0 rule 3: a dead pane is NOT a finished ticket. Keep the worktree and the
+          // transcript so the failure can be inspected; surface it instead of tearing down.
+          ticket.died = true;
           ticket.finished = false;
-        } else if (sawWorking && (status === "idle" || status === "done")) {
-          ticket.finished = true;
-        }
-      });
+          ticket.agentStatus = null;
+          console.warn(`[${id}] pane exited — run is dead, worktree kept for inspection`);
+        },
+      );
       ticket.branch = res.branch;
       ticket.worktreePath = res.worktreePath;
       ticket.paneId = res.paneId;
@@ -104,6 +132,28 @@ async function handle(method: string, path: string) {
     }
   }
 
+  if (isDrop) {
+    // §5.0 "Manual remove worktree": the escape hatch for a crashed or abandoned run
+    // whose commits matter. Reclaims the disk, KEEPS the branch, so nothing is lost.
+    inFlight.add(id);
+    try {
+      await teardown(ticket, REPO, false);
+      ticket.status = "backlog";
+      ticket.died = false;
+      ticket.finished = false;
+      ticket.agentStatus = null;
+      ticket.worktreePath = null;
+      ticket.paneId = null;
+      ticket.workspaceId = null;
+      return json({ ok: true, branchKept: ticket.branch });
+    } catch (err) {
+      ticket.error = err instanceof Error ? err.message : String(err);
+      return json({ error: ticket.error }, 500);
+    } finally {
+      inFlight.delete(id);
+    }
+  }
+
   if (!claim(ticket, "in_progress", "backlog")) {
     return json({ error: "not_in_progress", status: ticket.status }, 409);
   }
@@ -113,6 +163,7 @@ async function handle(method: string, path: string) {
     await teardown(ticket, REPO, true);
     ticket.agentStatus = null;
     ticket.finished = false;
+    ticket.died = false;
     ticket.branch = null;
     ticket.worktreePath = null;
     ticket.paneId = null;

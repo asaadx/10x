@@ -260,8 +260,26 @@ cap is 2 concurrent tickets for now (§7). The count is not the interesting part
 
 Subscription types requiring a `pane_id`: `pane.agent_status_changed`, `pane.scroll_changed`,
 `pane.output_matched` (also needs `source` and `match`). All other subscription types are
-global and take no arguments — including `pane.exited`, `pane.agent_detected`,
+global and take no arguments — including `pane.exited`, `pane.closed`, `pane.agent_detected`,
 `worktree.removed`, and `workspace.closed`.
+
+#### `pane.exited` and `pane.closed` are different events — subscribe to both (verified)
+
+A dead run can arrive as either, and subscribing to only one silently misses half the cases:
+
+| Event | Fires when |
+|---|---|
+| `pane_exited` | the **process** in the pane dies — agent crash, someone typing `exit` |
+| `pane_closed` | the **pane** goes away — user closes the tab, or the workspace is closed |
+
+Verified: `pane.close` emits `pane_closed` and then `workspace_closed`, and **never** emits
+`pane_exited`. A subscription to `pane.exited` alone therefore never notices a hand-closed tab —
+the exact case §5.1 warns about.
+
+**Event names arrive on the wire in UNDERSCORE form** (`pane_agent_status_changed`, `pane_closed`)
+even though subscription types are dotted (`pane.agent_status_changed`). The payload repeats the
+kind in `data.type`. Match exactly against the underscore form; substring matching on `pane.exited`
+matches nothing.
 
 **Agent status values:** `idle`, `working`, `blocked`, `done`, `unknown`.
 
@@ -348,34 +366,63 @@ describe the **latest** release, so treat any doc-versus-behaviour mismatch as a
 Prior attempts accumulated ~10 GB of stale worktrees for a simple reason: **they had no cleanup
 code at all.** Any teardown that runs is therefore a large improvement.
 
-### 5.0 When a worktree is removed — the only authority on this
+### 5.0 Teardown triggers and depths — the only authority on this
 
-**Removal is always an explicit user action. Nothing removes a worktree automatically.**
+**Settled.** Every trigger is enumerated below with a decision for each of the five independent
+dials. Anything not in this table is a bug, not a judgement call.
 
-| Trigger | Worktree | Branch | `force` |
-|---|---|---|---|
-| **Cancel** — dragged In Progress → Backlog | removed | deleted | **yes** |
-| **Ticket deleted** | removed | deleted | **yes** |
-| **Manual "remove worktree"** action on a card | removed | kept | **yes** |
-| Agent finished its turn | **kept** | kept | — |
-| Agent crashed, pane exited, Herdr restarted | **kept**, surfaced as needs-attention | kept | — |
-| Reconciliation found it unowned | **kept**, surfaced as unowned | kept | **never** |
+The dials: **agent process**, **Herdr pane/workspace**, **worktree directory**, **branch**,
+**OMP transcript**.
 
-Rationale for the "kept" rows: a ticket sitting in Backlog *with* a worktree does not imply the
-worktree is garbage — the agent may simply have been stopped. Destroying it would discard real
-work to save kilobytes. The user deletes it manually if they want a clean restart.
+| Trigger | Agent | Pane / workspace | Worktree | Branch | Transcript |
+|---|---|---|---|---|---|
+| **Cancel** (In Progress → Backlog) | stop | close | **force-remove** | **delete** | **delete** |
+| **Ticket deleted** | stop | close | **force-remove** | **delete** | **delete** |
+| **Project deleted** | stop all | close all, incl. source workspace | **force-remove all** | **delete all** | **delete all** |
+| **Manual "remove worktree"** | stop | close | **force-remove** | keep | **delete** |
+| Agent finished its turn | leave running | leave open | keep | keep | keep |
+| Agent crashed / `pane.exited` | gone | gone | keep | keep | **keep — evidence** |
+| Herdr server restarted | gone | gone | keep | keep | keep |
+| 10x backend restarted | leave running | leave open | keep | keep | keep |
+| User closed the tab in Herdr | gone | gone | keep (orphaned) | keep | keep |
+| Reconciliation finds it unowned | — | — | keep, **report** | keep | keep |
+| Re-dispatch onto an existing worktree | reuse if live, else start | reuse | keep | keep | keep |
 
-**A finished agent keeps its worktree.** That is expected, not a leak. The implementation is only
-genuinely finished once the work is merged, and a passing review does not imply merge — more work
-may still be added. So nothing reclaims a completed ticket's worktree until the user says so.
+Five rules fall out of that table, and they are the whole policy:
 
-**Cancel is deliberately destructive.** Dragging out of In Progress means "discard this attempt":
-force-remove the worktree *and* delete the branch, losing any commits the agent made. That is the
-intended semantics of cancel, chosen knowingly.
+1. **Only the first four rows destroy anything, and all four are explicit user actions.** Nothing
+   else removes a worktree, ever.
+2. **A finished agent triggers nothing at all.** No teardown, no column change (§7) — just a
+   checkmark. The work is only genuinely done once merged, and a passing review does not imply
+   merge, so nothing reclaims a completed ticket's worktree until the user says so.
+3. **A dead pane is not a finished ticket.** Crash, `pane.exited`, Herdr restart and a
+   hand-closed tab all leave the worktree alone and surface the ticket as needing attention. A
+   ticket in Backlog *with* a worktree does not imply garbage — the agent may just have been
+   stopped, and destroying it would discard real work to save kilobytes.
+4. **The transcript dies with the worktree, except on a crash** — there it is the only record of
+   what went wrong, so it is kept. Note the corollary: cancelling a crashed ticket *does* delete
+   it, so read it first.
+5. **`force: true` only ever follows an explicit user action.** Reconciliation never forces, never
+   deletes (§5.2).
+
+**Cancel is deliberately destructive**, and knowingly so: it means "discard this attempt". It does
+*not* destroy as much as it appears to, though — deleting a branch only makes its commits
+unreachable, and git keeps unreachable objects for `gc.pruneExpire` (default 2 weeks). Recovery is
+`git fsck --unreachable | grep commit` then `git branch <name> <sha>`. Verified: a cancelled
+ticket's commit was resurrected intact. Uncommitted work in the worktree is genuinely gone.
+
+**"Manual remove worktree" is the escape hatch** for a crashed or abandoned run where the commits
+matter: it reclaims the disk but keeps the branch, so nothing is lost.
 
 **Consequence, accepted:** disk is user-managed. Nothing reclaims space behind your back, so
 worktrees for completed-but-unmerged tickets accumulate until you act. Reconciliation makes them
 visible (§5.2); `pnpm` keeps each one cheap (§5.3).
+
+**Currently unreachable:** the re-dispatch row. Cancel is the only route from In Progress back to
+Backlog and it destroys everything, so no ticket can return to Backlog still holding a worktree. It
+becomes reachable the moment either In Review → In Progress or a "reset without teardown" action
+exists — at which point `agent.start` will fail against a pane that still holds a live agent, and
+the code must prompt the existing agent instead.
 
 ### Unforced removal on a dirty worktree fails safely (verified)
 
@@ -851,9 +898,10 @@ In Review, Done, merge policy, and re-dispatch live in [parking-lot.md](./parkin
   lifecycle change within 5 s returns this rather than hanging.
 - **`agent_blocked`** — `agent.prompt` refuses a blocked agent and sends nothing (§4.1). Reliable
   on 0.8.2; was broken on 0.8.0.
-- **`pane.exited`** — subscribe to it. It is **global** (needs no `pane_id`), so one connection
-  covers every ticket. Without it, an OMP crash or a user typing `exit` leaves a ticket hanging in
-  In Progress with no status change coming.
+- **`pane.exited` and `pane.closed`** — subscribe to **both**. Both are global (no `pane_id`), so
+  one connection covers every ticket. Without them, an OMP crash, a typed `exit`, or a hand-closed
+  tab leaves a ticket hanging in In Progress with no status change coming. They are not
+  interchangeable — see §4.
 - **`agent_not_ready`** — two causes. From `agent.start`: the agent was blocked during startup, and
   the name stays usable for `agent.read` / `agent.send_keys`. From `agent.prompt`: the agent is not
   registered yet, i.e. the fresh-pane race (§1). Both mean "wait for idle, then prompt" — retry,

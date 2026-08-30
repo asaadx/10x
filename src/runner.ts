@@ -171,6 +171,7 @@ export async function spawn(
   ticket: Ticket,
   repoPath: string,
   onStatus: (status: string) => void,
+  onPaneExit: () => void,
 ): Promise<SpawnResult> {
   const branch = branchFor(ticket);
 
@@ -207,17 +208,32 @@ export async function spawn(
   }
 
   // 2. Subscribe BEFORE starting the agent, or the first `working` transition is missed (§1).
+  //
+  // `pane.exited` and `pane.closed` are DIFFERENT events and we need both: `pane_exited`
+  // fires when the process in the pane dies (agent crash, someone typing `exit`), while
+  // `pane_closed` fires when the pane itself goes away (user closes the tab, or the
+  // workspace is closed). Subscribing only to `pane.exited` misses a closed tab entirely.
+  //
+  // Event names arrive on the wire in UNDERSCORE form (`pane_agent_status_changed`),
+  // even though subscription types are dotted (`pane.agent_status_changed`). Verified.
   ticket.stream?.close();
   ticket.stream = subscribe(
-    [{ type: "pane.agent_status_changed", pane_id: paneId }, { type: "pane.exited" }],
+    [
+      { type: "pane.agent_status_changed", pane_id: paneId },
+      { type: "pane.exited" },
+      { type: "pane.closed" },
+    ],
     (event, data) => {
       if (typeof data !== "object" || data === null) return;
-      if (event.includes("agent_status_changed")) {
+      if (event === "pane_agent_status_changed") {
         if ("agent_status" in data && typeof data.agent_status === "string") {
           onStatus(data.agent_status);
         }
-      } else if (event.includes("pane_exited") || event.includes("pane.exited")) {
-        if ("pane_id" in data && data.pane_id === paneId) onStatus("pane_exited");
+        return;
+      }
+      if (event === "pane_exited" || event === "pane_closed") {
+        // Both are global subscriptions, so filter to our own pane.
+        if ("pane_id" in data && data.pane_id === paneId) onPaneExit();
       }
     },
   );

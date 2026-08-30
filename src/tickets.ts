@@ -35,6 +35,11 @@ export type Ticket = {
   /** Set when the agent finishes a turn. There is no In Review column yet (§7). */
   finished: boolean;
   /**
+   * The pane exited: the run is dead. NOT the same as finished (§5.0 rule 3) — the
+   * worktree and transcript are deliberately kept so the failure can be inspected.
+   */
+  died: boolean;
+  /**
    * OMP transcript directory for the current run, captured from agent.start.
    * Lives on the ticket, NOT in Diagnostics, because Diagnostics is reset on every
    * spawn and teardown still needs this. Refreshed from the live agent at teardown.
@@ -76,6 +81,7 @@ export const tickets: Ticket[] = [
     status: "backlog",
     agentStatus: null,
     finished: false,
+    died: false,
     sessionDir: null,
     error: null,
     branch: null,
@@ -93,6 +99,7 @@ export const tickets: Ticket[] = [
     status: "backlog",
     agentStatus: null,
     finished: false,
+    died: false,
     sessionDir: null,
     error: null,
     branch: null,

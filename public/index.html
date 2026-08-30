@@ -20,6 +20,9 @@
       .working { color: #fc6; }
       .done { color: #6f6; }
       .blocked { color: #f66; }
+      .dead { color: #f66; font-weight: bold; }
+      .unowned { margin-top: 20px; border: 1px solid #553; padding: 10px; }
+      .unowned h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #fc6; margin: 0 0 8px; }
       .err { color: #f66; font-size: 12px; margin-top: 6px; white-space: pre-wrap; }
       .diag { margin-top: 8px; border-top: 1px dashed #444; padding-top: 6px; font-size: 12px; color: #888; }
       .diag table { border-collapse: collapse; }
@@ -32,14 +35,15 @@
   <body>
     <h1>10x harness — Backlog ↔ In Progress</h1>
     <div class="repo" id="repo"></div>
+    <div id="unowned"></div>
     <div class="cols">
       <div class="col"><h2>Backlog</h2><div id="backlog"></div></div>
       <div class="col"><h2>In Progress</h2><div id="in_progress"></div></div>
     </div>
 
     <script type="module">
-      const post = async (url) => {
-        const res = await fetch(url, { method: "POST" });
+      const post = async (url, method = "POST") => {
+        const res = await fetch(url, { method });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) console.warn(url, res.status, body);
         await render();
@@ -63,7 +67,8 @@
       };
 
       const card = (t) => {
-        const cls = t.agentStatus === "working" ? "working"
+        const cls = t.died ? "dead"
+          : t.agentStatus === "working" ? "working"
           : t.agentStatus === "blocked" ? "blocked"
           : t.finished ? "done" : "";
         const action = t.status === "backlog"
@@ -72,12 +77,17 @@
         const raced = t.diagnostics.paneBusyRetries > 0 || t.diagnostics.neededReadinessPoll;
         return `
           <div class="card">
-            <div class="id">${t.id} ${t.finished ? "✓" : ""}</div>
+            <div class="id">${t.id} ${t.died ? "✗" : t.finished ? "✓" : ""}</div>
             <div class="title">${t.title}</div>
             ${action}
             <div class="status ${cls}">
-              agent: ${t.agentStatus ?? "—"}${t.busy ? " · working…" : ""}
+              ${t.died
+                ? "pane exited — run is dead, worktree kept for inspection"
+                : `agent: ${t.agentStatus ?? "—"}${t.busy ? " · working…" : ""}`}
             </div>
+            ${t.hasWorktree
+              ? `<button ${t.busy ? "disabled" : ""} onclick="window.__drop('${t.id}')">remove worktree (keep branch)</button>`
+              : ""}
             ${t.branch ? `<div class="wt">branch: ${t.branch}</div>` : ""}
             ${t.hasWorktree ? `<div class="wt">🌳 worktree exists</div>` : ""}
             ${t.error ? `<div class="err">${t.error}</div>` : ""}
@@ -93,6 +103,11 @@
         const res = await fetch("/tickets");
         const data = await res.json();
         document.getElementById("repo").textContent = "target repo: " + data.repo;
+        const un = data.unowned ?? [];
+        document.getElementById("unowned").innerHTML = un.length
+          ? `<div class="unowned"><h2>Unowned worktrees (${un.length}) — reported only, never auto-removed</h2>`
+            + un.map((w) => `<div class="wt">${w.branch} → ${w.path}</div>`).join("") + "</div>"
+          : "";
         for (const col of ["backlog", "in_progress"]) {
           document.getElementById(col).innerHTML =
             data.tickets.filter((t) => t.status === col).map(card).join("") || "<i style='color:#555'>empty</i>";
@@ -101,6 +116,7 @@
 
       window.__spawn = (id) => post(`/tickets/${id}/spawn`);
       window.__cancel = (id) => post(`/tickets/${id}/cancel`);
+      window.__drop = (id) => post(`/tickets/${id}/worktree`, "DELETE");
 
       await render();
       setInterval(render, 1000);
