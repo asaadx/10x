@@ -21,6 +21,8 @@ export type Diagnostics = {
   readyAfterMs: number | null;
   promptAttempts: number;
   promptNotReadyRetries: number;
+  /** True when spawn re-attached to an already-running agent instead of starting one. */
+  reusedExistingAgent: boolean;
 };
 
 export type Ticket = {
@@ -66,6 +68,7 @@ export function freshDiagnostics(): Diagnostics {
     readyAfterMs: null,
     promptAttempts: 0,
     promptNotReadyRetries: 0,
+    reusedExistingAgent: false,
   };
 }
 

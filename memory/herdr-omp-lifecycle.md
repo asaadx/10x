@@ -432,10 +432,21 @@ agent.start → agent_name_taken: agent name ticket-target-1 is already used;
 It fails in 75 ms rather than retrying, because §1's guard correctly treats anything other than
 `agent_pane_busy` as fatal. So the symptom is honest, but the operation is unusable.
 
-**The fix:** on `agent_name_taken`, the agent for this ticket already exists — reuse it. Call
-`agent.get` to confirm it is idle, then `agent.prompt` instead of `agent.start`. The alternative
-(kill the pane and start fresh) discards a possibly-working agent and its context, so prompting is
-preferred.
+**Fixed:** on `agent_name_taken`, resolve the existing agent with `agent.get` and re-attach to it
+rather than starting one — killing a working agent would discard its context. Re-attaching is
+**silent**: no prompt is re-sent, because the agent is already working this ticket and re-prompting
+would make it redo work. A deliberate "work on this again" is a separate action that arrives with
+In Review → In Progress. `agent.get` also returns `pane_id`, so the event subscription is re-pointed
+at the agent's actual pane if it differs from the worktree's first pane.
+
+Verified: after a backend restart, spawn re-attaches in 67 ms with zero readiness polls and the
+commit count unchanged.
+
+**This exposed a second bug worth recording.** The readiness predicate accepted only
+`agent_status === "idle"`, so re-attaching to an agent that had finished a turn *unobserved* — status
+`done` — polled for the full 60 s and failed with `agent_not_ready`. `idle` and `done` are the same
+underlying ready state (§4.1); any readiness check must accept **both**. Every reused agent is
+`done`, so this made the reuse path fail 100% of the time.
 
 The same path opens up again with In Review → In Progress, where a ticket legitimately returns to a
 spawnable state while its worktree still exists.

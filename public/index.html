@@ -60,6 +60,7 @@
           ["readiness polls", d.readinessPolls, d.readinessPolls > 0],
           ["ready after", d.readyAfterMs == null ? "—" : d.readyAfterMs + "ms", false],
           ["prompt not_ready retries", d.promptNotReadyRetries, d.promptNotReadyRetries > 0],
+          ["reused running agent", String(d.reusedExistingAgent), d.reusedExistingAgent],
         ];
         return rows
           .map(([k, v, flag]) => `<tr><td>${k}</td><td class="${flag ? "flag" : "ok"}">${v}</td></tr>`)

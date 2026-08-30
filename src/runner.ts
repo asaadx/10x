@@ -49,6 +49,8 @@ type AgentRecord = {
   agent_status?: string;
   interactive_ready?: boolean;
   agent_session?: { value?: string };
+  pane_id?: string;
+  workspace_id?: string;
 };
 type AgentEnvelope = { agent?: AgentRecord };
 
@@ -106,6 +108,19 @@ async function startAgentAndWait(ticket: Ticket, paneId: string, diag: Diagnosti
       diag.startReturnedAfterMs = Date.now() - started;
       break;
     } catch (err) {
+      // The agent for this ticket is already live — the usual cause is a 10x backend
+      // restart, since Herdr keeps panes and agents running while our in-memory ticket
+      // store resets. Reuse it: killing a working agent would throw away its context.
+      if (err instanceof HerdrError && err.code === "agent_name_taken") {
+        diag.startAttempts = attempt;
+        diag.reusedExistingAgent = true;
+        const existing = await request<AgentEnvelope>("agent.get", { target: name });
+        record = existing.agent;
+        diag.startReturnedStatus = record?.agent_status ?? null;
+        diag.startReturnedReady = record?.interactive_ready ?? null;
+        diag.startReturnedAfterMs = Date.now() - started;
+        break;
+      }
       const transient = err instanceof HerdrError && err.code === "agent_pane_busy";
       if (!transient) {
         diag.startAttempts = attempt;
@@ -125,15 +140,20 @@ async function startAgentAndWait(ticket: Ticket, paneId: string, diag: Diagnosti
     }
   }
 
-  // Phase 2 — agent.start returning is NOT readiness (§1). Poll until the record
-  // actually reports idle + interactive_ready. 125ms mirrors the cadence the herdr
-  // CLI itself uses, and the whole wait is normally ~3s, so this is short-lived.
-  diag.neededReadinessPoll = !(
-    record?.agent_status === "idle" && record?.interactive_ready === true
-  );
+  // Phase 2 — agent.start returning is NOT readiness (§1). Poll until the record actually
+  // reports ready. 125ms mirrors the cadence the herdr CLI itself uses, and the whole wait
+  // is normally ~3s, so this is short-lived.
+  //
+  // `idle` and `done` are the SAME underlying ready state (§4.1): `done` just means it
+  // settled while the tab was unseen. Accepting only `idle` hangs for the full timeout on
+  // any agent that finished a turn unobserved — which is every reused agent.
+  const isReady = (r: AgentRecord | undefined) =>
+    (r?.agent_status === "idle" || r?.agent_status === "done") && r?.interactive_ready === true;
+
+  diag.neededReadinessPoll = !isReady(record);
 
   const readyDeadline = Date.now() + READY_WAIT_MS;
-  while (!(record?.agent_status === "idle" && record?.interactive_ready === true)) {
+  while (!isReady(record)) {
     if (Date.now() > readyDeadline) {
       throw new HerdrError(
         "agent_not_ready",
@@ -154,9 +174,17 @@ async function startAgentAndWait(ticket: Ticket, paneId: string, diag: Diagnosti
     }
   }
 
+  // The loop only exits when isReady() passed, so a record exists — but express that for
+  // the type system rather than asserting it.
+  if (!record) throw new HerdrError("agent_not_ready", `agent ${name} disappeared while starting`);
+
   diag.readyAfterMs = Date.now() - started;
   // Canonical location, not a diagnostic: teardown needs it and diagnostics get reset.
   ticket.sessionDir = record.agent_session?.value ? dirname(record.agent_session.value) : null;
+
+  // A reused agent may live in a different pane than the one we resolved from the
+  // worktree, so report the authoritative pane back for the subscription to follow.
+  return { reused: diag.reusedExistingAgent, paneId: record.pane_id ?? paneId };
 }
 
 export type SpawnResult = {
@@ -216,32 +244,52 @@ export async function spawn(
   //
   // Event names arrive on the wire in UNDERSCORE form (`pane_agent_status_changed`),
   // even though subscription types are dotted (`pane.agent_status_changed`). Verified.
-  ticket.stream?.close();
-  ticket.stream = subscribe(
-    [
-      { type: "pane.agent_status_changed", pane_id: paneId },
-      { type: "pane.exited" },
-      { type: "pane.closed" },
-    ],
-    (event, data) => {
-      if (typeof data !== "object" || data === null) return;
-      if (event === "pane_agent_status_changed") {
-        if ("agent_status" in data && typeof data.agent_status === "string") {
-          onStatus(data.agent_status);
+  const watch = (watched: string) => {
+    ticket.stream?.close();
+    ticket.stream = subscribe(
+      [
+        { type: "pane.agent_status_changed", pane_id: watched },
+        { type: "pane.exited" },
+        { type: "pane.closed" },
+      ],
+      (event, data) => {
+        if (typeof data !== "object" || data === null) return;
+        if (event === "pane_agent_status_changed") {
+          if ("agent_status" in data && typeof data.agent_status === "string") {
+            onStatus(data.agent_status);
+          }
+          return;
         }
-        return;
-      }
-      if (event === "pane_exited" || event === "pane_closed") {
-        // Both are global subscriptions, so filter to our own pane.
-        if ("pane_id" in data && data.pane_id === paneId) onPaneExit();
-      }
-    },
-  );
+        if (event === "pane_exited" || event === "pane_closed") {
+          // Both are global subscriptions, so filter to the pane we care about.
+          if ("pane_id" in data && data.pane_id === watched) onPaneExit();
+        }
+      },
+    );
+  };
+  watch(paneId);
 
   // 3. Start, with the readiness guard.
-  await startAgentAndWait(ticket, paneId, ticket.diagnostics);
+  const { reused, paneId: actualPane } = await startAgentAndWait(
+    ticket,
+    paneId,
+    ticket.diagnostics,
+  );
 
-  // 4. Prompt. `agent_not_ready` here means still registering — retry (§1).
+  // A reused agent can sit in a different pane than the worktree's first pane, so follow it.
+  if (actualPane !== paneId) {
+    paneId = actualPane;
+    watch(paneId);
+  }
+
+  // 4. Prompt — but ONLY for a fresh start.
+  //
+  // Reuse means we re-attached to an agent that is already running this ticket (§5.0
+  // re-dispatch). Re-sending the ticket text would make it redo work it may have already
+  // done, so re-attaching is silent. A deliberate "work on this again" is a separate
+  // action, and will arrive with In Review -> In Progress.
+  if (reused) return { workspaceId, paneId, worktreePath, branch };
+
   const text = [
     `TICKET ${ticket.project.toUpperCase()}-${ticket.number}: ${ticket.title}`,
     "",
