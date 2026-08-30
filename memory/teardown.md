@@ -59,11 +59,15 @@ worktrees for completed-but-unmerged tickets accumulate until you act. Reconcili
 visible ([reconciliation](./reconciliation.md)); `pnpm` keeps each one cheap
 ([reconciliation](./reconciliation.md)).
 
-**Re-dispatch is reachable today, and currently broken (verified).** Re-dispatch means spawning a
-ticket whose worktree — and possibly whose live agent — already exists. The route is a **10x backend
-restart**: Herdr owns the panes and agents, so they survive untouched, but the in-memory ticket
-store resets every ticket to Backlog. Pressing spawn then hits an existing worktree *and* an agent
-still registered under the same name:
+**Re-dispatch means spawning a ticket whose worktree — and possibly whose live agent — already
+exists.** Herdr owns the panes and agents, so both survive a 10x backend restart untouched.
+
+**The route is no longer a backend restart (verified).** Status lives in SQLite, so a restart
+brings the ticket back still `in_progress` and pressing Start answers **409 `not_in_backlog`** —
+the claim is the lock and it outlives the process ([operations](./operations.md)). What remains
+reachable is a **spawn that fails after `agent.start` succeeded**: the handler releases the claim
+back to Backlog while Herdr keeps the agent, so the next spawn hits an existing worktree *and* an
+agent still registered under the same name:
 
 ```
 agent.start → agent_name_taken: agent name ticket-target-1 is already used;
@@ -81,8 +85,11 @@ would make it redo work. A deliberate "work on this again" is a separate action 
 In Review → In Progress. `agent.get` also returns `pane_id`, so the event subscription is re-pointed
 at the agent's actual pane if it differs from the worktree's first pane.
 
-Verified: after a backend restart, spawn re-attaches in 67 ms with zero readiness polls and the
-commit count unchanged.
+Measured when a backend restart still reset tickets to Backlog: re-attach took 67 ms with zero
+readiness polls and the commit count unchanged. The code path is unchanged; only its trigger is.
+
+**Consequence: the reuse path has no route left through the UI, so it is untested end to end.**
+The e2e suite asserts the rejection above instead. In Review → In Progress will reopen it.
 
 **This exposed a second bug worth recording.** The readiness predicate accepted only
 `agent_status === "idle"`, so re-attaching to an agent that had finished a turn *unobserved* — status
