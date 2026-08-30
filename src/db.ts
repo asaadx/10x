@@ -3,13 +3,13 @@
  *
  * Two design rules, both from memory/herdr-omp-lifecycle.md:
  *
- *  1. Store what WE own, never what Herdr owns (§6.2). `branch` and `agent_name` are
+ *  1. Store what WE own, never what Herdr owns (memory/naming.md). `branch` and `agent_name` are
  *     values we choose and hand to Herdr, so they are persisted: if their format ever
  *     changes, existing tickets keep pointing at the branch that actually exists.
  *     Worktree paths, pane ids and workspace ids are Herdr's and are never stored —
  *     they are read live on every request.
  *
- *  2. Status is the lock (§9). `claimTicket` is a conditional UPDATE and reports whether
+ *  2. Status is the lock (memory/operations.md). `claimTicket` is a conditional UPDATE and reports whether
  *     it won, so a double-click cannot start two spawns.
  */
 import { DatabaseSync } from "node:sqlite";
@@ -40,14 +40,14 @@ export type Ticket = {
   title: string;
   description: string;
   status: Status;
-  /** A turn ended after `working` was observed (§4.1). */
+  /** A turn ended after `working` was observed (memory/agent-status.md). */
   finished: boolean;
-  /** The pane exited. NOT the same as finished (§5.0 rule 3). */
+  /** The pane exited. NOT the same as finished (memory/teardown.md rule 3). */
   died: boolean;
   /** Persisted, not derived — see rule 1 above. Null until first spawn. */
   branch: string | null;
   agentName: string | null;
-  /** OMP transcript directory, needed by teardown and outliving the worktree (§5.3). */
+  /** OMP transcript directory, needed by teardown and outliving the worktree (memory/reconciliation.md). */
   sessionDir: string | null;
   createdAt: string;
   updatedAt: string;
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS projects (
   base_branch TEXT NOT NULL DEFAULT 'main',
   -- Monotonic ticket counter. NEVER derive the next number from MAX(number): deleting the
   -- highest ticket would hand its number to the next one, and since deleting a ticket does
-  -- not remove its worktree (§5.0), the new ticket's branch would collide with the orphan
+  -- not remove its worktree (memory/teardown.md), the new ticket's branch would collide with the orphan
   -- left behind — silently adopting another ticket's work.
   next_number INTEGER NOT NULL DEFAULT 1,
   created_at  TEXT NOT NULL,

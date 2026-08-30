@@ -17,7 +17,7 @@ import {
 
 describe("normalizeEvent", () => {
   // Herdr emits `pane.agent_status_changed` DOTTED but `pane_closed` UNDERSCORED, while the
-  // schema declares both underscored (§4). An exact match on either form silently drops half
+  // schema declares both underscored (memory/socket.md). An exact match on either form silently drops half
   // the stream with no error — the run that cost this project its status pipeline.
   for (const name of ["pane_agent_status_changed", "pane_closed", "pane_exited"]) {
     const dotted = name.replace("pane_", "pane.");
@@ -36,7 +36,7 @@ describe("normalizeEvent", () => {
 
 describe("isAgentReady", () => {
   // `done` is the same underlying ready state as `idle`, reached while the tab was unseen
-  // (§4.1). Every re-attached agent reports `done`, so accepting only `idle` broke agent
+  // (memory/agent-status.md). Every re-attached agent reports `done`, so accepting only `idle` broke agent
   // reuse 100% of the time and hung for the full readiness timeout.
   test("idle + interactive_ready is ready", () => {
     assert.equal(isAgentReady({ agent_status: "idle", interactive_ready: true }), true);
@@ -47,7 +47,7 @@ describe("isAgentReady", () => {
   });
 
   // `interactive_ready` is the tell for a premature `agent.start` return: true on a real
-  // start, absent when premature (§1). A settled status alone proves nothing.
+  // start, absent when premature (memory/spawn.md). A settled status alone proves nothing.
   for (const status of ["idle", "done"]) {
     test(`${status} with interactive_ready false is not ready`, () => {
       assert.equal(isAgentReady({ agent_status: status, interactive_ready: false }), false);
@@ -77,7 +77,7 @@ describe("isSettled", () => {
   for (const status of ["idle", "done"]) {
     test(`${status} is settled`, () => assert.equal(isSettled(status), true));
   }
-  // `unknown` means "an agent is present but unclassified" — it never proves completion (§4).
+  // `unknown` means "an agent is present but unclassified" — it never proves completion (memory/agent-status.md).
   for (const status of ["working", "blocked", "unknown"]) {
     test(`${status} is not settled`, () => assert.equal(isSettled(status), false));
   }
@@ -89,7 +89,7 @@ describe("branchFor / agentNameFor", () => {
     assert.equal(agentNameFor("10x", 7), "ticket-10x-7");
   });
 
-  // §6.2, the highest-risk trap: Herdr derives the worktree DIRECTORY from the branch by
+  // memory/naming.md, the highest-risk trap: Herdr derives the worktree DIRECTORY from the branch by
   // lowercasing and replacing `/` with `-`. The two helpers are aligned on purpose so that
   // worktree dir and agent name are the same string; if they drift, reuse, teardown and
   // dispatch all break at once.

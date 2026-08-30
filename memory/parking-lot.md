@@ -4,7 +4,7 @@
 
 Deliberately deferred items. Each has enough research attached that picking it up later does not
 mean starting from zero. Nothing here is in scope; nothing here blocks
-[node 01](./herdr-omp-lifecycle.md).
+[the Herdr nodes](./INDEX.md).
 
 ---
 
@@ -99,7 +99,7 @@ the human sitting at a second machine. Unverified.
 Out of scope until Backlog ↔ In Progress is solid. Decisions already reached, so they are not
 re-litigated later:
 
-- **A worktree is only reclaimed on merge.** A completed agent keeps its worktree (node 01 §5.0).
+- **A worktree is only reclaimed on merge.** A completed agent keeps its worktree ([teardown](./teardown.md)).
   Even with In Review, the *only* point at which a run's worktree is genuinely finished with is when
   the ticket is merged — because a passing review does **not** imply merge. Review can pass and more
   work can still be added to the same branch.
@@ -110,7 +110,7 @@ re-litigated later:
 - **In Review → In Progress is never automatic.** That is the infinite-loop guard. Performed by
   hand, it must check for a live agent first: `agent.prompt` if one exists, `agent.start` if not.
 - **Success is not verified by the app.** No commit counting or diffing; human PR review is the
-  gate (node 01 §4.1).
+  gate ([agent status](./agent-status.md)).
 
 Consequence to keep in mind: until merge exists, disk is user-managed. Completed-but-unmerged
 tickets keep their worktrees indefinitely, and reconciliation only makes them visible.
@@ -120,7 +120,7 @@ tickets keep their worktrees indefinitely, and reconciliation only makes them vi
 ## Open question: revisit teardown as a whole
 
 **Deliberately unresolved.** The teardown rules were built up incrementally across several
-conversations, and the pieces have not been reviewed together. Node 01 §5.0 holds the current
+conversations, and the pieces have not been reviewed together. The [teardown](./teardown.md) trigger matrix holds the current
 provisional answer; treat it as provisional until this is done in one sitting.
 
 The question to answer, in one pass with full context:
@@ -143,8 +143,8 @@ finished, agent crashed, pane exited, Herdr server restart, 10x backend restart,
 manually, reconciliation found an unowned worktree, and re-dispatch of a ticket that already has a
 worktree.
 
-Constraints already settled and not up for renegotiation: reconciliation never deletes (§5.2);
-`force: true` only ever follows an explicit user action (§5.0); a completed agent keeps its
+Constraints already settled and not up for renegotiation: reconciliation never deletes ([reconciliation](./reconciliation.md));
+`force: true` only ever follows an explicit user action ([teardown](./teardown.md)); a completed agent keeps its
 worktree; a worktree is only truly reclaimable at merge (above).
 
 ---
@@ -270,6 +270,6 @@ filter for one project or all. That makes a **project** a first-class concept, n
 - A ticket belongs to a project; dispatch uses that project's repo.
 - The board filters tickets by project, or shows all.
 
-This subsumes the "never point 10x at its own repo" safety rule in node 01 §9: with an explicit
+This subsumes the "never point 10x at its own repo" safety rule in [operations](./operations.md): with an explicit
 project per ticket, there is no implicit default repo to fall into. Data-model consequence only —
 not designed yet.

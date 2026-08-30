@@ -4,7 +4,7 @@
  * Deliberately NOT persisted: these describe one attempt at starting an agent and are
  * debugging output, not ticket state. Losing them on restart is correct.
  *
- * Their reason for existing is §1 — `agent.start` returns before the agent is usable, so
+ * Their reason for existing is memory/spawn.md — `agent.start` returns before the agent is usable, so
  * the guard retries and polls. These fields let the UI show whether that fired, which is
  * normal rather than a fault.
  */

@@ -67,5 +67,5 @@ export type AgentLike = { agent_status?: string; interactive_ready?: boolean };
 export const isAgentReady = (a: AgentLike | undefined) =>
   (a?.agent_status === "idle" || a?.agent_status === "done") && a?.interactive_ready === true;
 
-/** A turn ended. Only meaningful once `working` has been observed (§4.1). */
+/** A turn ended. Only meaningful once `working` has been observed (memory/agent-status.md). */
 export const isSettled = (status: string) => status === "idle" || status === "done";

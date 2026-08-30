@@ -2,7 +2,7 @@
  * Spawn and teardown for one ticket.
  *
  * The point of this file is the readiness guard in `startAgentAndWait`. See
- * memory/herdr-omp-lifecycle.md §1: the raw `agent.start` socket method returns
+ * memory/herdr-omp-lifecycle.md memory/spawn.md: the raw `agent.start` socket method returns
  * BEFORE the agent is usable, and the `herdr` CLI is what does the waiting
  * (strace shows agent.start x2 then agent.get x24). A socket client that trusts
  * the return value loses the prompt.
@@ -149,11 +149,11 @@ async function startAgentAndWait(spec: RunSpec, state: RunState, paneId: string,
     }
   }
 
-  // Phase 2 — agent.start returning is NOT readiness (§1). Poll until the record actually
+  // Phase 2 — agent.start returning is NOT readiness (memory/spawn.md). Poll until the record actually
   // reports ready. 125ms mirrors the cadence the herdr CLI itself uses, and the whole wait
   // is normally ~3s, so this is short-lived.
   //
-  // `idle` and `done` are the SAME underlying ready state (§4.1): `done` just means it
+  // `idle` and `done` are the SAME underlying ready state (memory/agent-status.md): `done` just means it
   // settled while the tab was unseen. Accepting only `idle` hangs for the full timeout on
   // any agent that finished a turn unobserved — which is every reused agent.
 
@@ -211,7 +211,7 @@ export async function spawn(
   const branch = branchFor(spec.projectId, spec.number);
 
   // 1. Worktree + branch + workspace + tab + root pane in one call. Reuse by BRANCH,
-  //    never a predicted path (§6.2); create is not idempotent (§6.6), so open first.
+  //    never a predicted path (memory/naming.md); create is not idempotent (memory/naming.md), so open first.
   let workspaceId: string;
   let paneId: string;
   let worktreePath: string;
@@ -242,7 +242,7 @@ export async function spawn(
     worktreePath = created.worktree.path;
   }
 
-  // 2. Subscribe BEFORE starting the agent, or the first `working` transition is missed (§1).
+  // 2. Subscribe BEFORE starting the agent, or the first `working` transition is missed (memory/spawn.md).
   //
   // `pane.exited` and `pane.closed` are DIFFERENT events and we need both: `pane_exited`
   // fires when the process in the pane dies (agent crash, someone typing `exit`), while
@@ -295,10 +295,10 @@ export async function spawn(
 
   // 4. Prompt — but ONLY for a fresh start.
   //
-  // Reuse means we re-attached to an agent that is already running this ticket (§5.0
+  // Reuse means we re-attached to an agent that is already running this ticket (memory/teardown.md
   // re-dispatch). Re-sending the ticket text would make it redo work it may have already
   // done, so re-attaching is silent. A deliberate "work on this again" is a separate
-  // action, and will arrive with In Review -> In Progress.
+  // action. No such action exists yet — see memory/parking-lot.md.
   if (reused) return { workspaceId, paneId, worktreePath, branch };
 
   const text = [
@@ -327,7 +327,7 @@ export async function spawn(
 
 /**
  * Teardown. One path, resolved by branch, so it works whether the workspace is
- * open, was closed behind our back, or is already gone (§5).
+ * open, was closed behind our back, or is already gone (memory/teardown.md).
  *
  * `force: true` is correct here because this only ever runs for an explicit user
  * action. Reconciliation must never call this.
@@ -342,7 +342,7 @@ export async function teardown(spec: RunSpec, state: RunState, deleteBranch: boo
   // Resolve the session directory BEFORE killing the pane, while the agent can still
   // be asked. `state.sessionDir` is a fallback for when the agent is already gone
   // (crash, Herdr restart, backend restart). Never derive the path — the slug is a
-  // mangled form of the worktree path and is not ours to reconstruct (§5.3).
+  // mangled form of the worktree path and is not ours to reconstruct (memory/reconciliation.md).
   let sessionDir = state.sessionDir;
   try {
     const live = await request<AgentEnvelope>("agent.get", { target: name });
@@ -370,7 +370,7 @@ export async function teardown(spec: RunSpec, state: RunState, deleteBranch: boo
     if (!(err instanceof HerdrError) || err.code !== "worktree_not_found") throw err;
   }
 
-  // The OMP transcript lives outside the worktree and survives removal (§5.3).
+  // The OMP transcript lives outside the worktree and survives removal (memory/reconciliation.md).
   if (sessionDir) {
     await rm(sessionDir, { recursive: true, force: true });
     state.sessionDir = null;

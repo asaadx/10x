@@ -1,12 +1,12 @@
 /**
- * Reconciliation read model (memory/herdr-omp-lifecycle.md §5.2).
+ * Reconciliation read model (memory/herdr-omp-lifecycle.md memory/reconciliation.md).
  *
  * Herdr owns worktrees, panes and agents; our store only remembers what we chose. A Herdr
  * restart, a backend crash or the user closing a tab all diverge the two behind our back,
  * so the board reads reality on every render instead of trusting the store.
  *
  * **This file reports. It never deletes.** Removing a worktree can destroy uncommitted work
- * and is unrecoverable, so it is only ever an explicit user action (§5.0 rows 1-4). Hence no
+ * and is unrecoverable, so it is only ever an explicit user action (memory/teardown.md rows 1-4). Hence no
  * `worktree.remove`, no `force: true` and no branch deletion appears here, and none may be
  * added. `reconcileTickets` returns findings only — the caller decides what to act on.
  */
@@ -14,7 +14,7 @@ import { request } from "./herdr.ts";
 import { agentNameFor, branchFor } from "./lifecycle.ts";
 import type { Ticket } from "./db.ts";
 
-/** Ticket branches are namespaced, and that namespace is the whole ownership test (§5.2). */
+/** Ticket branches are namespaced, and that namespace is the whole ownership test (memory/reconciliation.md). */
 const TICKET_BRANCH_PREFIX = "ticket/";
 
 /**
@@ -78,9 +78,9 @@ async function listAgents(): Promise<AgentEntry[]> {
 /**
  * Linked worktrees on a `ticket/` branch that no ticket claims.
  *
- * Two exclusions decide membership, and both are structural rather than heuristic (§5.2):
+ * Two exclusions decide membership, and both are structural rather than heuristic (memory/reconciliation.md):
  * a non-`ticket/` branch is a human's worktree and never enters the candidate set at all,
- * and `is_linked_worktree: false` is the repo's implicit source workspace (§5.4), which is
+ * and `is_linked_worktree: false` is the repo's implicit source workspace (memory/reconciliation.md), which is
  * shared and must never be touched.
  */
 export async function findOrphans(
@@ -101,11 +101,11 @@ export async function findOrphans(
 
 /**
  * Compares every ticket the store believes is `in_progress` against Herdr, and returns the
- * §5.2 divergence rows. Matching is by **branch and agent name**, never by path — a worktree
+ * memory/reconciliation.md divergence rows. Matching is by **branch and agent name**, never by path — a worktree
  * path is derived from the branch by a lowercasing slug rule, so a predicted path never
- * reliably matches the real one (§6.2).
+ * reliably matches the real one (memory/naming.md).
  *
- * Purely observational: no database write, no Herdr mutation. Row 3 of the §5.2 table
+ * Purely observational: no database write, no Herdr mutation. Row 3 of the memory/reconciliation.md table
  * ("nothing exists" -> reset to backlog) is the caller's decision, not ours.
  */
 export async function reconcileTickets(
@@ -148,7 +148,7 @@ export async function reconcileTickets(
 
     if (worktree) {
       // The genuinely ambiguous row: an absent agent cannot distinguish "finished while the
-      // backend was down" from "crashed", so it is surfaced rather than guessed at (§5.2).
+      // backend was down" from "crashed", so it is surfaced rather than guessed at (memory/reconciliation.md).
       return {
         ticketId: ticket.id,
         ticketStatus: ticket.status,

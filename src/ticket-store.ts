@@ -12,7 +12,7 @@
  *  2. Editing a ticket touches `title` and `description` and nothing else. `status`,
  *     `branch`, `agent_name`, `session_dir`, `finished` and `died` belong to the
  *     spawn/teardown lifecycle — status in particular IS the concurrency lock
- *     (memory/herdr-omp-lifecycle.md §9), so a PATCH that quietly reassigned it would
+ *     (memory/herdr-omp-lifecycle.md memory/operations.md), so a PATCH that quietly reassigned it would
  *     walk the board straight past the compare-and-swap that stops a double spawn.
  *     A PATCH naming any of them is a 400; the lifecycle writes through `setRunFields`.
  */
@@ -94,7 +94,7 @@ const SELECT_PROJECT_ID = db.prepare("SELECT id FROM projects WHERE id = ?");
 /**
  * Claim the next ticket number by ADVANCING the project's counter, never by reading
  * MAX(number). Deleting the highest ticket would otherwise recycle its number, and since
- * deleting a ticket deliberately leaves its worktree in place (§5.0), the new ticket's
+ * deleting a ticket deliberately leaves its worktree in place (memory/teardown.md), the new ticket's
  * branch would collide with the orphan still on disk — inheriting another ticket's work.
  * RETURNING gives us the claimed value and the increment in one atomic statement.
  */

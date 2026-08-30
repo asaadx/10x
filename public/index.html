@@ -826,10 +826,22 @@
                 M17.1 6.9l1.6-1.6 M5.3 18.7l1.6-1.6 M6.9 6.9L5.3 5.3 M18.7 18.7l-1.6-1.6"/>
     </svg>`;
 
-  /** Best-effort attach command; agentName is only set once a ticket has actually spawned. */
+  /**
+   * Best-effort attach command; agentName is only set once a ticket has actually spawned.
+   *
+   * The host is derived from where THIS PAGE was loaded from, which is exactly the machine
+   * Herdr runs on — the backend needs Herdr's unix socket, so the board is always served
+   * from the host. So if you opened it on localhost you are already there and `--remote`
+   * would make herdr SSH to itself; if you opened it over the tailnet, that same hostname
+   * is the one to pass. Zero configuration, and correct from either machine.
+   */
+  const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]", "::1", ""]);
+
   function attachCommandFor(ticket) {
     if (!ticket.agentName) return null;
-    return `herdr agent attach ${ticket.agentName}`;
+    const host = location.hostname;
+    const prefix = LOOPBACK.has(host) ? "herdr" : `herdr --remote ${host}`;
+    return `${prefix} agent attach ${ticket.agentName}`;
   }
 
   async function steer(ticket, btn) {
@@ -999,7 +1011,7 @@
 
   /**
    * `null` means no agent has ever run for this ticket. Herdr's `unknown` means an agent
-   * IS present but could not be classified — which per memory §4 never proves anything and
+   * IS present but could not be classified — which per memory/agent-status.md never proves anything and
    * must never be read as success. Rendering both as "UNKNOWN" conflates "not started"
    * with "running but unreadable", so they get different labels.
    */
@@ -1208,7 +1220,7 @@
   /* ---------------------------------------------------------------------
    * Boot + poll loop.
    * TODO: replace with SSE once the backend pushes Herdr events directly
-   * (memory/INDEX.md §02 parking lot) — this 1000ms poll is a placeholder.
+   * (memory/parking-lot.md) — this 1000ms poll is a placeholder.
    * ------------------------------------------------------------------- */
 
   await loadProjects();

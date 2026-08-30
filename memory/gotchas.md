@@ -1,0 +1,132 @@
+# Gotchas and known gaps
+
+**Node:** gotchas · Parent: [INDEX.md](./INDEX.md)
+
+Each failure mode below is a Herdr behaviour verified directly against a live server, paired
+with the symptom it produces when violated. These are the traps to design against.
+
+> **Unverified lead, not knowledge.** A read-only audit of an earlier abandoned attempt reported
+> that its spawn path predicted worktree paths in three places while correctly reading pane IDs
+> from responses, and that it never hand-assembled topology. That report came from an agent with
+> a large context working in a known-broken codebase and was never independently confirmed; the
+> branch is dead. Treat it only as a hint that [the branch-is-the-identity rule](./naming.md)
+> deserves the most design attention. Do not cite it as fact, and do not let it narrow the
+> checks in this node.
+
+## Gotchas
+
+- **`focus: false` on everything.** Spawning must never steal the user's focus. The CLI flag is
+  `--no-focus`.
+- **Do not close workspaces, tabs, or panes you did not create.**
+- **Never run `herdr server stop`** from the app. It kills every pane process on the machine.
+- **`agent.prompt` has an atomic `wait` option** (`{until, timeout_ms}`) that submits the prompt
+  and starts the wait in one request, avoiding a prompt/wait race. Useful for scripted probes;
+  the app should prefer the event subscription so the HTTP request does not block.
+- **`agent_prompt_stalled`** — a prompt sent from a non-working state that produces no observed
+  lifecycle change within 5 s returns this rather than hanging.
+- **`agent_blocked`** — `agent.prompt` refuses a blocked agent and sends nothing
+  ([agent-status](./agent-status.md)). Reliable on 0.8.2; was broken on 0.8.0.
+- **`pane.exited` and `pane.closed`** — subscribe to **both**. Both are global (no `pane_id`), so
+  one connection covers every ticket. Without them, an OMP crash, a typed `exit`, or a hand-closed
+  tab leaves a ticket hanging in In Progress with no status change coming. They are not
+  interchangeable — see [agent-status](./agent-status.md).
+- **`agent_not_ready`** — two causes. From `agent.start`: the agent was blocked during startup, and
+  the name stays usable for `agent.read` / `agent.send_keys`. From `agent.prompt`: the agent is not
+  registered yet, i.e. the fresh-pane race ([spawn](./spawn.md)). Both mean "wait for idle, then
+  prompt" — retry, do not fail the ticket.
+- **`agent.start` startup timeout** defaults to 30 s; accepts `timeout_ms` between 3,000 and
+  300,000.
+- **Reading agent output:** prefer `--source recent-unwrapped` for logs and transcripts. If
+  raising `--lines` reveals nothing more, the agent is on the terminal's alternate screen and
+  those rows are unrecoverable from scrollback — ask the agent to write a file instead.
+- **Bootstrap/recovery:** `session.snapshot` returns a one-time full snapshot (focused ids,
+  workspaces, tabs, panes, layouts, agents). It is not a subscription. Call it on reconnect or
+  whenever the local cache may be stale, then re-subscribe. CLI: `herdr api snapshot`.
+- **The installed binary is the authority.** This document is pinned to **herdr 0.8.2, protocol
+  20**. After upgrading, regenerate the schema with `herdr api schema --output <path>`, diff the
+  method list, and re-run the [verification](./verification.md) probes.
+- **Headless pane geometry is 120×40** when no client is attached (#2828). 10x creates panes with
+  no client attached, so this is the size agents render into.
+
+---
+
+## `worktree.create` is one call, not three
+
+It atomically creates the git worktree, the branch, the Herdr workspace, the tab, **and** the
+root pane. One request returns all of it:
+
+```
+.result.workspace.workspace_id
+.result.tab.tab_id
+.result.root_pane.pane_id
+.result.worktree.path
+.result.worktree.branch
+```
+
+Symptom when violated: *"the pane doesn't get created."* Hand-assembling the topology with
+separate `workspace.create` / `tab.create` / `pane.split` calls — or running `git worktree add`
+yourself and then trying to attach a pane — reintroduces every failure mode this call already
+solved. `agent.start` explicitly never creates, splits, or moves layout; it requires a pane that
+already exists.
+
+Emitted events: `workspace.created`, `tab.created`, `pane.created`, `worktree.created`.
+
+Branch semantics: if the requested branch already exists locally, it is checked out; otherwise
+it is created from `base`, or from `HEAD` if `base` is omitted.
+
+## Subscribe before starting
+
+See [agent-status](./agent-status.md). Subscribing after `agent.start` can miss the first
+transition; the ticket then looks stuck in In Progress.
+
+## Check `.error.code` before using any ID
+
+Every response is either `result` or `error`. Treating a failed create as success and issuing
+the next call with an undefined pane ID produces confusing downstream failures that look like
+"the agent didn't start" rather than "the worktree was never created."
+
+---
+
+## Known gaps and unvalidated claims
+
+Recorded so nobody assumes these are proven.
+
+- **G2 — restart resilience.** If the Herdr server or the 10x backend restarts, every subscription
+  dies and in-flight tickets strand. **Reading Herdr state and surfacing unowned worktrees is in
+  scope now** — it needs no ticket store ([reconciliation](./reconciliation.md)). **Ticket-state
+  repair and re-subscribing land with the database**, since there is nothing durable to reconcile
+  against yet. Until then, an in-flight ticket does not survive a restart, and its worktree becomes
+  visible as unowned rather than being deleted automatically.
+- **G3 — concurrency is unproven.** Two worktrees were created simultaneously, but only one agent
+  ever ran at a time. The cap is set in [operations](./operations.md); this gap is only about it
+  never having been exercised.
+- **G4 — `pnpm` and worktree dependencies.** The claim that a content-addressed store makes
+  per-worktree `node_modules` cheap ([reconciliation](./reconciliation.md)) is reasoned, not
+  measured.
+- **G5 — the attention-aware transition.** The `idle`/`done` split
+  ([agent-status](./agent-status.md)) currently has a stopgap (treat both as finished). The
+  intended fix — an OMP end-of-turn hook plus focus/attach awareness — is unbuilt and untested.
+- **G6 — pinned to herdr 0.8.2, protocol 20.** Schema checked against 0.8.0: 90 → 91 methods, only
+  `pane.input.set` added, nothing removed, and every parameter shape this document depends on is
+  unchanged (`WorktreeCreateParams`, `WorktreeRemoveParams`, `AgentStartParams`,
+  `AgentPromptParams`, `EventsSubscribeParams`, and `pane.agent_status_changed` still requiring
+  `pane_id`). Not yet exercised on 0.8.2:
+
+  - **Headless pane geometry is now 120×40** (was 80×24) when no client is attached (#2828). 10x
+    creates panes with no client attached, so this is the size agents render into. Unmeasured.
+  - **The bundled agent skill now matches the release** (#2847). `herdr --skill` has not been
+    re-read since upgrading; it may describe lifecycle behaviour more precisely than
+    [agent-status](./agent-status.md).
+  - `pane.current` / `pane.get` / `pane.layout --current` now resolve the *calling* pane rather than
+    another client's focused pane (#2297, #2298).
+  - `agent send-keys` preserves Shift for `shift+tab` (#1561) — how agent permission modes are
+    cycled programmatically.
+
+  **On the next upgrade:** regenerate the schema (`herdr api schema --output <path>`), diff the
+  method list, update the version and protocol in this document's header, re-read `herdr --skill`,
+  and re-run the [verification](./verification.md) probes. Also re-`strace` the CLI for any command
+  whose raw-socket behaviour looks wrong: the CLI adds orchestration the socket method does not
+  perform ([spawn](./spawn.md)).
+
+**G1 (`blocked`) is closed.** A prose question reports `done`; the `ask` tool reports `blocked`.
+See [agent-status](./agent-status.md).

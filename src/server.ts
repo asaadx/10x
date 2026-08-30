@@ -5,11 +5,11 @@
  * Two things keep the board honest:
  *
  *  - Ticket status transitions go through `claimTicket`, a conditional UPDATE. The status
- *    IS the lock (§9): claim first, work second, and a concurrent request loses rather
+ *    IS the lock (memory/operations.md): claim first, work second, and a concurrent request loses rather
  *    than queueing, so a double-click cannot start two spawns.
  *
  *  - Anything Herdr owns — agent status, worktree existence, pane ids — is read live per
- *    request and never stored (§5.2, §6.2). The board therefore cannot drift from reality;
+ *    request and never stored (memory/reconciliation.md, memory/naming.md). The board therefore cannot drift from reality;
  *    at worst it is a second stale.
  */
 import { createServer } from "node:http";
@@ -38,7 +38,7 @@ const UI = join(import.meta.dirname, "..", "public", "index.html");
 /**
  * Per-run state: diagnostics and the live event-subscription handle. Not persisted, so a
  * restart forgets them — which is why `spawn` can re-attach to an agent that is still
- * running (§5.0 re-dispatch).
+ * running (memory/teardown.md re-dispatch).
  */
 const runs = new Map<string, RunState>();
 
@@ -84,7 +84,7 @@ type LiveAgent = { name?: string | null; agent_status?: string; pane_id?: string
 /**
  * Everything Herdr owns, fetched in TWO calls total rather than per ticket: one
  * `agent.list` for the whole session, and one `worktree.list` per distinct repo. Joined
- * on branch and agent name — never on a path (§6.2).
+ * on branch and agent name — never on a path (memory/naming.md).
  */
 async function board(projectFilter: string | undefined): Promise<Reply> {
   const tickets = listTickets(projectFilter);
@@ -200,7 +200,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
   if (inFlight.has(id)) return json({ error: "operation_in_flight", id }, 409);
 
   if (!action && method === "DELETE") {
-    // §5.0: deleting a ticket is an explicit user action, so a full destructive teardown
+    // memory/teardown.md: deleting a ticket is an explicit user action, so a full destructive teardown
     // is correct — worktree forced, branch deleted, transcript removed.
     inFlight.add(id);
     try {
@@ -218,7 +218,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
   }
 
   if (action === "/spawn" && method === "POST") {
-    // Claim first, work second. No `await` between the check and the write (§9).
+    // Claim first, work second. No `await` between the check and the write (memory/operations.md).
     if (!claimTicket(id, "backlog", "in_progress")) {
       return json({ error: "not_in_backlog", status: ticket.status }, 409);
     }
@@ -233,7 +233,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
         specFor(ticket, project),
         state,
         (status) => {
-          // §4.1: the FIRST `idle` arrives before the prompt, so it is not completion.
+          // memory/agent-status.md: the FIRST `idle` arrives before the prompt, so it is not completion.
           if (status === "working") {
             sawWorking = true;
             setRunFields(id, { finished: false });
@@ -242,7 +242,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
           }
         },
         () => {
-          // §5.0 rule 3: a dead pane is NOT a finished ticket. The worktree and transcript
+          // memory/teardown.md rule 3: a dead pane is NOT a finished ticket. The worktree and transcript
           // are kept deliberately so the failure can be inspected.
           setRunFields(id, { died: true, finished: false });
           console.warn(`[${id}] pane exited — run is dead, worktree kept for inspection`);
@@ -255,7 +255,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       });
       return json({ ok: true, ...res, diagnostics: state.diagnostics });
     } catch (err) {
-      // Release the claim. Any worktree left behind surfaces via `unowned` (§5.2).
+      // Release the claim. Any worktree left behind surfaces via `unowned` (memory/reconciliation.md).
       claimTicket(id, "in_progress", "backlog");
       const message = err instanceof Error ? err.message : String(err);
       return json({ error: message, diagnostics: state.diagnostics }, 500);
@@ -270,7 +270,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     }
     inFlight.add(id);
     try {
-      // Cancel means "discard this attempt" (§5.0): force the worktree away and delete
+      // Cancel means "discard this attempt" (memory/teardown.md): force the worktree away and delete
       // the branch. Commits survive as unreachable objects for gc.pruneExpire.
       const state = runStateFor(ticket);
       await teardown(specFor(ticket, project), state, true);
@@ -285,7 +285,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
   }
 
   if (action === "/worktree" && method === "DELETE") {
-    // The escape hatch (§5.0): reclaim the disk, KEEP the branch, so commits are not lost.
+    // The escape hatch (memory/teardown.md): reclaim the disk, KEEP the branch, so commits are not lost.
     inFlight.add(id);
     try {
       const state = runStateFor(ticket);
@@ -334,7 +334,7 @@ createServer(async (req, res) => {
   }
   for (const p of projects) console.log(`  ${p.id} → ${p.repoPath}`);
 
-  // Boot reconciliation (§5.2). Herdr keeps panes and agents running across a restart of
+  // Boot reconciliation (memory/reconciliation.md). Herdr keeps panes and agents running across a restart of
   // this process, so the store can believe a ticket is in progress when its agent is gone,
   // or vice versa. This REPORTS the divergence and changes nothing: the only safe automatic
   // repair would be resetting a status with no resources behind it, and even that is better

@@ -1,7 +1,7 @@
 /**
  * Projects: the repo a ticket lives in, and the slug every derived identifier hangs off.
  *
- * Two things here are load-bearing, both from memory/herdr-omp-lifecycle.md §6.7:
+ * Two things here are load-bearing, both from memory/herdr-omp-lifecycle.md memory/naming.md:
  *
  *  1. The slug is validated at CREATION time. It feeds the branch and the Herdr agent
  *     name, whose charsets disagree — `my.app` yields a legal git branch and an illegal
@@ -13,7 +13,7 @@
  *     Only `name`, `repoPath` and `baseBranch` — which nothing is derived from — mutate.
  *
  * The repo path is checked for a `.git` entry for the same reason: the alternative is
- * discovering the mistake as a `worktree_create_failed` at spawn time (§9).
+ * discovering the mistake as a `worktree_create_failed` at spawn time (memory/operations.md).
  */
 import type { SQLOutputValue } from "node:sqlite";
 import { existsSync } from "node:fs";
@@ -76,7 +76,7 @@ function checkRepoPath(value: unknown): Checked {
   const bad = (message: string) => fail(400, "invalid_repo_path", message, "repoPath");
   const path = typeof value === "string" ? value.trim() : "";
   if (path.length === 0) return bad("repoPath is required and must be a non-empty string");
-  // Herdr's socket API takes paths verbatim; only its CLI expands relative ones (§3).
+  // Herdr's socket API takes paths verbatim; only its CLI expands relative ones (memory/socket.md).
   if (!isAbsolute(path)) return bad(`repoPath must be an absolute path, got "${path}"`);
   if (!existsSync(path)) return bad(`repoPath does not exist: ${path}`);
   if (!existsSync(join(path, ".git"))) {
@@ -205,7 +205,7 @@ export function updateProject(id: string, input: unknown): ProjectResult {
 
 /**
  * Tickets go with it via ON DELETE CASCADE. Worktrees deliberately do NOT: removal is
- * always an explicit user action (§5.0), so tearing them down here would destroy work
+ * always an explicit user action (memory/teardown.md), so tearing them down here would destroy work
  * nobody asked to lose. The caller deals with the leftovers.
  */
 export function deleteProject(id: string): { ok: boolean } {

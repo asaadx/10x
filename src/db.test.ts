@@ -1,5 +1,5 @@
 /**
- * Tests for `claimTicket`, the compare-and-swap that is the only lock in the system (§9).
+ * Tests for `claimTicket`, the compare-and-swap that is the only lock in the system (memory/operations.md).
  * A double-click, a double-drag or a retry must not start two spawns for one ticket.
  */
 import { test, describe, after } from "node:test";
