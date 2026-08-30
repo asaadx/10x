@@ -229,6 +229,20 @@ what it got — but a derived port is predictable, which matters when you want t
 Same reasoning applies to any other fixed resource a ticket's agent claims while testing: a
 database file, a lock file, a fixed socket path.
 
+**Allocate a block per ticket, not a single port.** Today 10x is one Node process serving both the
+API and the HTML, so one port per ticket is enough. The moment the frontend becomes its own dev
+server (Vite on `:5173` beside the API on `:4010`), every ticket needs **two**. Retrofitting a
+second port into a `base + number` scheme means renumbering everything, so reserve a small stride
+from the start:
+
+```
+ticket 5 → 4105 (api) / 5105 (web)
+ticket 6 → 4106 (api) / 5106 (web)
+```
+
+Either parallel bands as above, or `base + number * stride`. Pick one before the first ticket runs
+a dev server.
+
 ---
 
 ## Databases, hosting, and multi-machine access
