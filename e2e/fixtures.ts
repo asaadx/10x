@@ -64,7 +64,22 @@ async function tempDir(prefix: string): Promise<string> {
 }
 
 export async function startBoard(): Promise<Board> {
-  const stateDir = await tempDir("10x-e2e-state-");
+  return boardOn(await tempDir("10x-e2e-state-"));
+}
+
+/**
+ * A new backend on the SAME state dir and database — which is what a restart is. Herdr keeps
+ * the panes and agents running while only our store comes back, so a fresh state dir would
+ * prove nothing about reconciliation.
+ */
+export async function restartBoard(board: Board): Promise<Board> {
+  const stateDir = stateDirs.get(board);
+  if (stateDir === undefined) throw new Error("that board did not come from startBoard()");
+  await board.stop();
+  return boardOn(stateDir);
+}
+
+async function boardOn(stateDir: string): Promise<Board> {
   const child = spawn(process.execPath, ["src/server.ts"], {
     cwd: REPO_ROOT,
     env: {
@@ -421,6 +436,10 @@ export type Spawned = {
 export async function spawnTicket(board: Board, repoPath: string, ticketId: string): Promise<Spawned> {
   const res = await postSpawn(board, repoPath, ticketId);
   expect(res.status, JSON.stringify(res.body)).toBe(200);
+  // A spawn is the slowest thing in this suite, and the readiness guard's retry counts are
+  // the first thing worth knowing when one is slow or when several run at once.
+  const diag = JSON.stringify(res.body["diagnostics"]);
+  console.log(`[spawn] ${ticketId} took ${res.elapsedMs}ms; diagnostics=${diag}`);
   return {
     ticketId,
     branch: stringField(res.body, "branch"),
