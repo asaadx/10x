@@ -57,9 +57,12 @@ errors exit 2.
 `pane.agent_status_changed` **requires** a `pane_id`. There is no global agent-status stream —
 verified: omitting it returns `invalid_request: missing field 'pane_id'`.
 
-So each running ticket needs its own subscription connection — one file descriptor each, and the
-cap is 2 concurrent tickets for now ([operations](./operations.md)). The count is not the
-interesting part; two other things are:
+So each running ticket that *wants* status events needs its own subscription connection — one file
+descriptor each, and the cap is 2 concurrent tickets for now ([operations](./operations.md)).
+A subscription is not the only way to read completion, and it is the fragile one: it lives in
+memory and dies with the process, whereas `state_change_seq` answers the same question from a
+single `agent.get` ([agent-status](./agent-status.md)). The count is not the interesting part;
+two other things are:
 
 - **Ordering** — subscribe before `agent.start` (see [spawn](./spawn.md)).
 - **Lifetime** — the subscription connection is a natural handle for the run. Closing it is part
