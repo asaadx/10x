@@ -1,51 +1,79 @@
 # AGENTS.md
 
-## Directive: consult `memory/` before exploring the codebase
+## Memory
 
-Before any broad investigation — repo-wide greps, reading files to build a mental model,
-tracing how a subsystem works, or answering "how does X work here?" — **read
-[`memory/INDEX.md`](./memory/INDEX.md) first** and open any node it links that matches your
-task.
+**Before any broad investigation — repo-wide greps, reading files to build a mental model, tracing
+a subsystem, answering "how does X work here?" — read [`memory/INDEX.md`](./memory/INDEX.md) first**
+and open the nodes it links for your task.
 
-`memory/` is a living document. When you learn something durable that is not recorded — a
-verified mechanism, a non-obvious constraint, a gotcha that cost you time, a root cause, or a
-decision and its reasoning — **update the relevant node and keep `memory/INDEX.md` linked and
-accurate** as part of the same task. Mark each claim **verified** (observed, with evidence) or
-**inferred** (reasoned, unconfirmed), and never blur the two.
+- **Update it in the same task.** A durable finding — verified mechanism, non-obvious constraint,
+  gotcha that cost you time, root cause, decision and its reasoning — goes into the relevant node,
+  linked from `INDEX.md`, before you finish.
+- **Mark every claim `verified` (observed, with evidence) or `inferred` (reasoned, unconfirmed).**
+  Never blur the two. Verify secondhand claims or label them unconfirmed leads.
+- **Present-tense truth: overwrite mistakes in place.** Never append a correction, changelog, or
+  "previously we thought…" note. A reader must never have to pick between two statements.
+- **Not a substitute for reading code you are about to change.** Use it to know *where* to look.
 
-Treat `memory/` as present-tense truth: assume it is current and correct. When you find
-something in it that is wrong, **overwrite it in place** — never append a correction, a
-changelog, or a "previously we thought…" note. Verify secondhand claims before recording them as
-fact, or label them explicitly as unconfirmed leads.
+## Herdr
 
-Memory is not a substitute for reading code you are about to change. Use it to know *where* to
-look and *what is already known*, then read that code directly.
+**Never write a Herdr method, subscription type, or event name from memory or from a doc.** Confirm
+it against the generated schema first — [`memory/verification.md`](./memory/verification.md) has the
+command and the three JSON paths.
 
-## Directive: verify every Herdr name against the schema before writing code
+The schema proves a name **exists**, not its **wire separator**: emitted names are mixed, so
+normalise (`event.replaceAll(".", "_")`) and never match a literal event name — see
+[`memory/socket.md`](./memory/socket.md). A wrong name fails **silently**: no error, just events
+that never arrive.
 
-Never write a Herdr method, subscription type, or event name from memory or from a doc. Confirm it
-exists first:
+## Git
+
+**Never commit to `master` or `dev`.** `master` is the release branch and the remote default; `dev`
+is integration. Both are reached only by merged PR.
 
 ```bash
-herdr api schema --output herdr-api.schema.json   # gitignored; regenerate on demand
+git switch dev && git pull && git switch -c feat/<slug>    # always branch first
 ```
 
-Then **search** it for the specific name — never load the whole file into context, it is ~250 KB:
+**Never push to `master`.** Never `git push --force`; `--force-with-lease` is allowed only on your
+own open PR branch. **Never force a merge** — no `gh pr merge --admin`, no bypassing a failing or
+pending check, no merging your own PR to dodge review. Every one of these needs **explicit user
+approval, per instance.** Approval for one force-push is not standing permission.
+
+### Commits
+
+**Small and surgical: one logical change per commit.** A reviewer should be able to reconstruct the
+reasoning from the log, and a bad commit should be revertable without taking unrelated work with it.
+Refactor, behaviour change, and doc rewrite are three commits, not one. If the subject line needs
+"and", split it.
+
+[Conventional Commits](https://www.conventionalcommits.org/): `type(scope): subject`, imperative
+mood, lowercase, no trailing period, subject ≤72 chars.
+
+`feat` `fix` `docs` `refactor` `test` `perf` `build` `ci` `chore`
+
+Scope is the touched area when it clarifies (`feat(spawn):`, `fix(db):`). Body explains **why**;
+the diff already shows what. Breaking change → `!` after the type (`feat(api)!:`) **and** a
+`BREAKING CHANGE:` footer.
+
+### Before opening a PR
+
+**Run CI locally and get it green first — a failing remote run burns GitHub runner minutes for
+information you could have had in two seconds.**
 
 ```bash
-grep -o '"pane\.agent_status_changed"' herdr-api.schema.json
+npm run typecheck && npm test
 ```
 
-Methods live in `schemas.request.oneOf[].properties.method.const`, subscription types in
-`schemas.request.$defs.Subscription.oneOf[].properties.type.const`, and emitted event names in
-`schemas.event.$defs.EventKind.enum`.
+Then open the PR — never merge in its place:
 
-**The schema proves a name exists. It does NOT prove the separator used on the wire.** Verified:
-subscription types are always dotted, but emitted names are mixed — `pane.agent_status_changed`
-arrives dotted while `pane_closed` arrives underscored, and the schema lists both with underscores.
-So always normalise (`event.replaceAll(".", "_")`) before comparing, and never match a literal
-event name.
+```bash
+gh pr create --base dev --fill
+```
 
-A wrong event name fails **silently**: no error, no exception, just events that never arrive. It
-cost this project a working status pipeline once, where the only symptom was a checkmark that never
-appeared while the agent worked correctly and committed.
+### Versioning
+
+[Semver](https://semver.org) on `package.json` `version`, tagged `v<version>` on `master` at
+release. Pre-`1.0.0`, so the API is unstable by declaration: `fix` → patch, `feat` → minor,
+breaking → minor (not major) until `1.0.0`. Bump only when the user calls a release; a bump is never
+a side effect of a feature PR.
