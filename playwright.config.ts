@@ -8,9 +8,9 @@ export default defineConfig({
   fullyParallel: false,
   timeout: 30_000,
   globalTimeout: 600_000,
-  // "list" keeps the run to stdout; the html reporter would write a playwright-report/ tree
-  // nobody reads locally.
-  reporter: "list",
+  // The html reporter writes its output to playwright-report/, which is gitignored, so it
+  // won't pollute `git status` or get committed.
+  reporter: "html",
   // Deliberately no `webServer`: fixtures start the backend themselves so each spec owns its
   // own throwaway state dir instead of sharing one long-lived server.
 });
