@@ -97,8 +97,10 @@ Recorded so nobody assumes these are proven.
   **What is still missing is re-subscribing:** the new process holds no event subscription for a
   running ticket, and nothing at boot creates one, so a turn that ends *after* the restart is never
   recorded and the ticket keeps reading unfinished. Boot reconciliation only reports it
-  ([reconciliation](./reconciliation.md), divergence row 1). A Herdr server restart is still
-  unaddressed: panes and agents die with it.
+  ([reconciliation](./reconciliation.md), divergence row 1). **The mechanism that closes this
+  needs no subscription at all:** a `state_change_seq` recorded at prompt time turns completion
+  into one point-in-time `agent.get` ([agent-status](./agent-status.md)) — verified, not yet
+  built. A Herdr server restart is still unaddressed: panes and agents die with it.
 - **G3 — concurrency, proven at two agents (verified).** Two tickets spawned with `Promise.all`
   both reached ready in 3.2-3.9 s, ran their turns simultaneously, and each committed its own
   file: distinct branches, worktrees, agent names and panes, with a third unrelated agent live in
