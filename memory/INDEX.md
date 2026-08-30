@@ -20,7 +20,8 @@ a MacBook over Tailscale. No auth, sessions, or multi-tenancy anywhere; single-u
 handled, because double-clicks and retries are real.
 
 Working today: projects, ticket CRUD, spawn with the readiness guard, live agent status, cancel,
-forced teardown, orphan reporting, agent re-attach, boot reconciliation. Persisted in SQLite.
+forced teardown, orphan reporting, agent re-attach, boot reconciliation, a reserved TCP port block
+per running ticket. Persisted in SQLite.
 
 ## How to use this folder
 
@@ -81,7 +82,7 @@ compare-and-swap that makes status the lock, why transient statuses were rejecte
 **[architecture](./architecture.md)** — how 10x itself is built: zero dependencies, the module map,
 **stored vs derived**, the database schema and the monotonic ticket counter, all twelve endpoints,
 the spawn request lifecycle, what is deliberately not persisted, and the two test suites.
-`node:sqlite · node:test · playwright · e2e · schema · next_number · endpoints · RunSpec · stored vs derived`
+`node:sqlite · node:test · playwright · e2e · schema · next_number · endpoints · RunSpec · stored vs derived · port slots · MAX_PORT_SLOTS`
 
 ### Reference
 
@@ -96,9 +97,9 @@ exists but *not* its wire separator.
 
 **[parking-lot](./parking-lot.md)** — deliberately deferred, each with research attached. **Check
 here before designing anything that feels out of scope.** In Review/merge policy, the teardown
-review, SSE, project-slug validation timing, per-ticket dev-server ports, databases/hosting,
-multi-repo projects, and remote access.
-`deferred · In Review · SSE · ports · /collab · --remote · projects`
+review, SSE, project-slug validation timing, databases/hosting, multi-repo projects, and remote
+access.
+`deferred · In Review · SSE · /collab · --remote · projects`
 
 ---
 

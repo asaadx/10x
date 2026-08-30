@@ -40,21 +40,24 @@ Line counts are `wc -l`, current as of this node.
 
 | File | Lines | Responsibility | I/O |
 | --- | --- | --- | --- |
-| `src/server.ts` | 350 | HTTP routing, per-run in-memory state, boot reconciliation | `node:http` |
-| `src/runner.ts` | 391 | `spawn` / `teardown` for one ticket; the readiness guard | Herdr socket, fs, `git` via `execFile` |
+| `src/server.ts` | 398 | HTTP routing, per-run in-memory state, boot reconciliation | `node:http` |
+| `src/runner.ts` | 453 | `spawn` / `teardown` for one ticket; the readiness guard | Herdr socket, fs, `git` via `execFile` |
 | `src/ticket-store.ts` | 281 | Ticket persistence + `/tickets` handler bodies, input narrowing | SQLite |
+| `src/db.ts` | 263 | Schema, connection, row types, `claimTicket` CAS, port-slot reserve/release | SQLite (opens DB at import) |
 | `src/projects.ts` | 214 | Project CRUD, slug / repo / base-branch validation | SQLite, `existsSync` |
 | `src/reconcile.ts` | 167 | Read-only divergence + orphan reporting | Herdr socket (reads only) |
-| `src/db.ts` | 161 | Schema, connection, row types, `claimTicket` CAS | SQLite (opens DB at import) |
 | `src/herdr.ts` | 158 | Newline-JSON unix-socket client: `request`, `subscribe` | `node:net` |
+| `src/ports.ts` | 98 | **Pure.** Port-slot pool: cap, block arithmetic, `.env` body | none |
 | `src/lifecycle.ts` | 71 | **Pure.** Naming, event normalisation, readiness predicates | none |
-| `src/panes.ts` | 71 | `focusAgent`, `paneLocation`, `attachCommand` | Herdr socket (`attachCommand` is pure) |
+| `src/panes.ts` | 39 | `focusAgent`, `paneLocation`, `attachCommand` | Herdr socket (`attachCommand` is pure) |
 | `src/diagnostics.ts` | 40 | **Pure.** Per-run diagnostics record + `freshDiagnostics()` | none |
 | `src/lifecycle.test.ts` | 182 | Tests for the pure helpers | none |
+| `src/port-slots.test.ts` | 115 | Tests for reserve / release / reclaim, against a temp DB | SQLite (temp dir) |
 | `src/db.test.ts` | 101 | Tests for the CAS, against a temp DB | SQLite (temp dir) |
+| `src/ports.test.ts` | 78 | Tests for the pure allocator | none |
 | `public/index.html` | 1232 | The entire frontend | `fetch` |
 
-`lifecycle.ts` and `diagnostics.ts` are the only import-free modules, deliberately: they hold the logic that has actually broken, so it must be testable without a Herdr session. `panes.ts` exports only `focusAgent`. The attach command is built in the frontend instead, because it needs `location.hostname` — which the server cannot know — so a server-side copy would be unreachable duplication.
+`lifecycle.ts`, `ports.ts` and `diagnostics.ts` are the only import-free modules, deliberately: they hold the logic that has actually broken, or that would break silently, so it must be testable without a Herdr session. A port collision surfaces as an `EADDRINUSE` inside somebody's worktree, never as an error on the board, which is exactly why the allocation policy lives apart from the SQL that stores it. `panes.ts` exports only `focusAgent`. The attach command is built in the frontend instead, because it needs `location.hostname` — which the server cannot know — so a server-side copy would be unreachable duplication.
 
 ## 3. Stored vs derived — the load-bearing idea
 
@@ -87,10 +90,32 @@ SQLite at `$DB_PATH`, defaulting to `$STATE_DIR/10x.db`, `STATE_DIR` defaulting 
 | `finished` | INTEGER NOT NULL DEFAULT 0 | a turn settled *after* `working` was seen |
 | `died` | INTEGER NOT NULL DEFAULT 0 | the pane exited — **not** the same as finished |
 | `branch`, `agent_name`, `session_dir` | TEXT (nullable) | null until first spawn |
+| `port_slot` | INTEGER (nullable) | index into the port pool; held only while `in_progress` |
 | `created_at`, `updated_at` | TEXT NOT NULL | equal ⇒ never edited |
 | — | — | **`UNIQUE (project_id, number)`** |
 
-Plus `CREATE INDEX tickets_by_project ON tickets (project_id, status)`.
+Plus `CREATE INDEX tickets_by_project ON tickets (project_id, status)` and
+`CREATE UNIQUE INDEX tickets_port_slot ON tickets (port_slot)`.
+
+### The port pool
+
+Every running ticket gets a reserved **block** of TCP ports, so two agents' dev servers cannot collide and neither can collide with the board. A slot maps to `base + slot * stride` through `base + slot * stride + stride - 1`: with the defaults slot 0 owns **4100-4109** and slot 9 owns **4190-4199**, a pool of **4100-4199** that is clear of the board on 4010 and the e2e harness on 4310.
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `MAX_PORT_SLOTS` | `10` | slots held concurrently; the 11th spawn is refused |
+| `PORT_BLOCK_BASE` | `4100` | first port of slot 0 |
+| `PORT_BLOCK_STRIDE` | `10` | ports per slot |
+
+A malformed value throws at load rather than falling back, so a typo cannot masquerade as the default.
+
+**A bounded pool, not `base + ticket.number`.** Ticket numbers grow without bound and would eventually walk into ports other software owns; a fixed pool cannot, and a freed slot is reused rather than retired. **A block, not one port**, because a project running Vite beside an API needs two and retrofitting a second port means renumbering everything.
+
+**The UNIQUE index is the safety**, exactly as the conditional UPDATE is for `claimTicket`: SQLite makes a double assignment impossible instead of application code promising not to make one. NULLs are distinct in SQLite, so any number of tickets may hold no slot. `reservePortSlot` picks the lowest free slot inside a `BEGIN IMMEDIATE`, so the read of the held set and the write that joins it cannot be split by a second writer; it is idempotent, returning the slot a ticket already holds rather than stranding it.
+
+**Reserved at spawn, before the agent starts**, because the block is written into the worktree the agent boots in and there is no later point at which it could be injected. The accepted consequence is that `MAX_PORT_SLOTS` is *also* a cap on concurrently in-progress tickets. Released by every teardown path — cancel, ticket delete, worktree-only delete, and a failed spawn — from a `finally`, so a Herdr call that fails halfway cannot strand a tenth of the pool.
+
+`db.ts` migrates an existing database in place: `CREATE TABLE IF NOT EXISTS` leaves it alone, so `port_slot` is added with `ALTER TABLE` when `PRAGMA table_info` says it is missing. The uniqueness has to be a separate `CREATE UNIQUE INDEX` because SQLite's `ADD COLUMN` rejects a UNIQUE constraint. *(Verified against a copy of a real `~/.10x/10x.db`.)*
 
 **`next_number` is why ticket numbers are safe.** The next number is claimed by *advancing* the counter, never by `MAX(number)+1`:
 
@@ -167,7 +192,7 @@ return json({ error: "not_found", path, method }, 404);
 
 | Status | Meaning | Examples |
 | --- | --- | --- |
-| 409 | lost CAS, or an operation already in flight | `not_in_backlog`, `not_in_progress`, `operation_in_flight`, `project_exists` |
+| 409 | lost CAS, an operation already in flight, or no resource left to hand out | `not_in_backlog`, `not_in_progress`, `operation_in_flight`, `project_exists`, `port_pool_exhausted` |
 | 404 | unknown ticket, project, or route | `no_such_ticket`, `no_such_project`, `project_not_found`, `not_found` |
 | 400 | validation / immutability | `invalid_input`, `immutable_field`, `invalid_project_slug`, `invalid_name`, `invalid_repo_path`, `invalid_base_branch`, `invalid_body`, `project_id_immutable` |
 | 500 | anything else, including a Herdr failure mid-operation | `{error: <message>}`, plus `diagnostics` on a failed spawn |
@@ -181,12 +206,19 @@ Two quirks, both readable in the excerpt: `GET` is matched by `path.startsWith("
 1. `resolve(id)` loads the ticket **and** its project; either missing is a 404.
 2. `inFlight.has(id)` → 409 `operation_in_flight`.
 3. `claimTicket(id, "backlog", "in_progress")` — a lost claim is 409 `not_in_backlog`. No `await` sits between the check and the write.
-4. `inFlight.add(id)`; a fresh `RunState { diagnostics, sessionDir }` goes into `runs`; `setRunFields(id, { finished: false, died: false })`.
-5. `specFor(ticket, project)` builds `RunSpec { projectId, number, title, description, repoPath, base }` — the ticket's own fields plus the *project's* repo and base branch.
-6. `spawn(spec, state, onStatus, onPaneExit)` in `runner.ts` talks to Herdr: `worktree.open` → `pane.list` (falling back to `worktree.create` only on `worktree_not_found`, because create is not idempotent) → `events.subscribe` **before** `agent.start`, or the first `working` transition is lost → `agent.start` behind the readiness guard, polling `agent.get` every 125 ms → `agent.prompt`, retried up to 40× at 250 ms on `agent_not_ready`. Deadlines: `PANE_WAIT_MS` 15 000, `READY_WAIT_MS` 60 000. Details in [spawn](./spawn.md).
-7. Events feed the two callbacks: `pane_agent_status_changed` sets `finished` only once `working` has been seen; `pane_exited`/`pane_closed` set `died: true, finished: false`, because a dead pane is not a finished ticket ([agent-status](./agent-status.md)).
-8. On success `setRunFields(id, { branch, agentName, sessionDir })` persists the three values we own. On throw, the claim is released with `claimTicket(id, "in_progress", "backlog")` and any worktree left behind resurfaces in the board's `unowned` list.
-9. `finally` clears `inFlight`.
+4. `reservePortSlot(id)` takes the lowest free port block. Exhaustion hands the claim straight back with `claimTicket(id, "in_progress", "backlog")` and answers 409 `port_pool_exhausted` carrying `cap`, because an agent with no port of its own is worse than no agent.
+5. `inFlight.add(id)`; a fresh `RunState { diagnostics, sessionDir }` goes into `runs`; `setRunFields(id, { finished: false, died: false })`.
+6. `specFor(ticket, project)` builds `RunSpec { projectId, number, title, description, repoPath, base }` — the ticket's own fields plus the *project's* repo and base branch.
+7. `spawn(spec, block, state, onStatus, onPaneExit)` in `runner.ts` talks to Herdr: `worktree.open` → `pane.list` (falling back to `worktree.create` only on `worktree_not_found`, because create is not idempotent) → **write `.env` into the worktree and exclude it from git** → `events.subscribe` **before** `agent.start`, or the first `working` transition is lost → `agent.start` behind the readiness guard, polling `agent.get` every 125 ms → `agent.prompt`, retried up to 40× at 250 ms on `agent_not_ready`. Deadlines: `PANE_WAIT_MS` 15 000, `READY_WAIT_MS` 60 000. Details in [spawn](./spawn.md).
+8. Events feed the two callbacks: `pane_agent_status_changed` sets `finished` only once `working` has been seen; `pane_exited`/`pane_closed` set `died: true, finished: false`, because a dead pane is not a finished ticket ([agent-status](./agent-status.md)).
+9. On success `setRunFields(id, { branch, agentName, sessionDir })` persists the three values we own. On throw, the claim *and* the port slot are released and any worktree left behind resurfaces in the board's `unowned` list.
+10. `finally` clears `inFlight`.
+
+### Injecting the port block
+
+`.env` is written into the worktree root with `PORT` (the block's first port) plus `PORT_RANGE_START` and `PORT_RANGE_END`, commented so a human who finds it knows 10x wrote it. `SYSTEM_PROMPT` names the same range and says the agent must read the port from `.env` and bind nothing outside the block — a **convention, not a sandbox**; nothing enforces it.
+
+**The worktree is a real git worktree the agent commits in, so a stray `.env` is one `git add -A` from being committed.** The project's tracked `.gitignore` is not ours to edit, so the entry goes into the exclude file instead. Resolve it with `git rev-parse --path-format=absolute --git-path info/exclude`, never by joining `.git/info/exclude` onto the worktree path: in a linked worktree `.git` is a **file**, and git resolves `info/exclude` against the **common** git directory — the source repo's `.git/info/exclude`, shared by every ticket worktree of that repo, which is why the append is conditional. *(Verified: after the append, `git status` inside the worktree is clean and `git check-ignore -v .env` names that file.)*
 
 `runner.ts` **never imports the store.** It receives an explicit `RunSpec` and a mutable `RunState` and knows nothing about SQLite; the caller decides what to persist. That decoupling is what keeps the spawn path testable and the store swappable.
 
@@ -198,7 +230,7 @@ Losing them on restart is **correct**. Diagnostics describe one attempt at start
 
 The consequence is load-bearing: Herdr keeps panes and agents running across a restart of this backend, so afterwards `agent.start` returns `agent_name_taken`, and `runner.ts` treats that as *reuse* — `agent.get` the existing record, set `reusedExistingAgent`, follow the agent's authoritative `pane_id`, and **skip the prompt** so it does not redo work. A backend restart is therefore exactly what makes agent re-attachment reachable today.
 
-At boot, `server.ts` reconciles every `in_progress` ticket per project and **only warns**: it changes nothing, because the only safe automatic repair is resetting a status with no resources behind it, and even that is better surfaced than silently applied.
+At boot, `server.ts` reconciles every `in_progress` ticket per project and **only warns**: it changes nothing, because the only safe automatic repair is resetting a status with no resources behind it, and even that is better surfaced than silently applied. The single exception is `reclaimStalePortSlots()`, which frees blocks held by tickets that are no longer in progress — our own bookkeeping, not the user's work, so reclaiming one cannot lose anything ([reconciliation](./reconciliation.md)).
 
 ## 9. Frontend
 
@@ -225,7 +257,7 @@ and the real page.
 
 **The unit glob matters and so do the quotes.** `node --test src` does not pick up `.ts` files —
 verified: it reports `✖ src (40ms) 'test failed'`. Quote the glob so the shell hands it to Node
-rather than expanding it. Current state: **46 tests, 7 suites, 0 failures**, `duration_ms` ≈ 197.
+rather than expanding it. Current state: **63 tests, 12 suites, 0 failures**, `duration_ms` ≈ 187.
 
 | Target | Why it is tested |
 | --- | --- |
@@ -235,6 +267,7 @@ rather than expanding it. Current state: **46 tests, 7 suites, 0 failures**, `du
 | agent-name budget | `ticket-` (7) + separator (1) leaves 24 of the 32-char ceiling; a 20-char slug + 4-digit number lands exactly on 32. That is *why* the slug cap is 20. |
 | `validateProjectSlug` | Dots are branch-legal and agent-name-illegal, so a dotted slug fails only at spawn time, after the worktree exists. Also pins that a leading digit is legal — `10x` is this project's own name. |
 | `claimTicket` | The only lock in the system: a second click loses, a mismatched `from` loses, an unknown id loses instead of throwing, bystanders are untouched, `updated_at` is bumped only on a win. Runs against a temp DB via `mkdtempSync` and a **dynamic** import, because `db.ts` opens the database at module load and a static import would hoist above the `DB_PATH` assignment. |
+| the port pool | A wrong slot hands two live agents the same TCP port, and the symptom is an `EADDRINUSE` inside somebody's worktree rather than an error on the board. Pinned: lowest-free selection, reuse after release, exhaustion at the cap, the block arithmetic including the last slot's upper bound (4199, not 4200), and the cap coming from `MAX_PORT_SLOTS`. The persistence half additionally pins that the UNIQUE index — not the allocator — is what refuses a double assignment. |
 
 The tests deliberately cover the three things that have actually broken — event-name normalisation, the idle-or-done readiness predicate, and the CAS — plus the naming invariants that guard them. Nothing tests plumbing. See [verification](./verification.md) and [gotchas](./gotchas.md).
 
@@ -251,14 +284,16 @@ one backend, one port and one state dir. `e2e/fixtures.ts` is the contract every
 | `spawn.spec.ts` | spawn, prompt delivery via the agent's own `probe.txt`, cancel | 3 |
 | `teardown.spec.ts` | ticket delete, worktree-only delete (branch survives) | 2 |
 | `resilience.spec.ts` | backend restart, compare-and-swap, two concurrent tickets | 4 |
+| `ports.spec.ts` | `.env` written and git-excluded, pool exhaustion → 409, slot reused after cancel | 3 |
 
 **A spawn spec runs a real OMP agent, so teardown is the load-bearing part.** Every spawn is
 registered with `cleanupAll` *before* its request goes out, each test tears its own spawn down at
 the end, and `cleanupAll` falls back to `worktree.open`+`worktree.remove` straight at Herdr when
 the backend is gone. Per-test budgets are set with `test.setTimeout`: **120 s** spawn-only,
-**180 s** spawn-plus-completion; the config's 30 s default stays for the non-spawn specs. Measured:
-spawn returns in **3.2–3.9 s** and the probe turn finishes **7–12 s** after that, so the whole
-suite of 19 tests runs in **~1.2 minutes** against the 600 s `globalTimeout`.
+**180 s** spawn-plus-completion, **240 s** for the two serial spawns in `ports.spec.ts`; the
+config's 30 s default stays for the non-spawn specs. Measured: spawn returns in **3.5–3.9 s** and
+the probe turn finishes **7–12 s** after that, so the whole suite of 21 tests runs in
+**~1.4 minutes** against the 600 s `globalTimeout`.
 
 Three things the suite reads outside the HTTP API, each for a reason:
 

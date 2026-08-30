@@ -14,6 +14,13 @@ the source of truth about what is actually running.
 uncommitted work and is unrecoverable, so a background process must never do it on a guess. The bug
 class is eliminated by making divergence *visible*, not by automating destruction.
 
+**The one carve-out is the port slot** ([architecture](./architecture.md)). Boot clears
+`tickets.port_slot` for any ticket that is not `in_progress`, and that is not a breach of the rule
+above: the rule protects the user's *work* — a worktree, a branch, a transcript, none of them
+recreatable. A port slot is our own bookkeeping, a row saying "this number is spoken for", so
+reclaiming one cannot lose anything, while leaving it held silently shrinks a ten-wide pool on
+every crash.
+
 So this is a **read model, not a cron job.** Whenever the board renders, ask Herdr what exists and
 display it next to what the tickets claim. A worktree indicator on the card, derived from Herdr
 rather than from our own store, means "this ticket has a worktree" is always observably true or
