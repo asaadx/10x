@@ -149,6 +149,81 @@ worktree; a worktree is only truly reclaimable at merge (above).
 
 ---
 
+## Push board updates with SSE instead of polling
+
+The harness UI polls `GET /tickets` every second. That is a placeholder, and the freshness
+already exists server-side: the backend holds a long-lived Herdr subscription and learns of
+`pane.agent_status_changed` the instant it fires. Only the browser is behind.
+
+Server-Sent Events forwards it with no library — a response you simply never end:
+
+```ts
+// GET /tickets/stream
+res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+clients.add(res);
+req.on("close", () => clients.delete(res));
+
+// on each Herdr event that changes a ticket:
+for (const res of clients) res.write(`data: ${JSON.stringify(board())}\n\n`);
+```
+
+```js
+new EventSource("/tickets/stream").onmessage = (e) => draw(JSON.parse(e.data));
+```
+
+Roughly 30 lines. Gotchas: send a periodic `:heartbeat\n\n` so idle connections are not
+dropped, and delete closed clients from the set. `EventSource` reconnects by itself.
+
+Gain: instant updates instead of up-to-1s stale, and no traffic while idle. Do it when the
+real UI replaces the harness UI, not before.
+
+---
+
+## Validate the project slug at creation time
+
+Agent names must match `[a-z][a-z0-9_-]{0,31}` — 32 characters total. `agentNameFor` spends
+`ticket-` plus a separator, leaving **24 characters for project + number**: roughly a 20-character
+project slug alongside a 4-digit ticket number.
+
+Two failure modes, both currently undetected until spawn:
+
+- **Too long.** A 27-character project name overflows the ceiling.
+- **Charset mismatch.** Branch names permit dots, agent names do not. A project slugged `my.app`
+  yields a valid branch `ticket/my.app/1` and an **invalid** agent name `ticket-my.app-1`, so
+  `worktree.create` succeeds and `agent.start` then fails.
+
+Either way the error lands at step 3 of the spawn sequence, *after* the worktree exists, leaving
+an orphaned worktree for what is really a naming mistake.
+
+Fix: validate once when a project is created — `^[a-z][a-z0-9-]{0,19}$` — rather than discovering
+it mid-spawn. Three lines, and the error appears where it belongs.
+
+---
+
+## Port allocation when 10x builds 10x
+
+Needed before dogfooding, not before.
+
+Running many tickets against the **10x repo itself** needs only **one Herdr server** — it is a
+multiplexer, and one server hosts every ticket's pane. It also needs only **one orchestrating 10x
+instance**: the one you click in. Each ticket gets its own worktree, pane, and agent, and that is
+all, because an agent editing source does not need to run the app.
+
+The problem is the subset of tickets that must actually *run* 10x to verify behaviour. Every one
+of those defaults to `PORT=4010`, so the second onwards die with `EADDRINUSE`, and the first
+collides with the orchestrating instance.
+
+Options:
+
+- Assign each ticket a port from a reserved band (`4100 + ticket.number`) and pass it into the
+  worktree environment, alongside the system-prompt file already written per ticket.
+- Use `PORT=0` so the OS picks a free port, and have the agent read back what it got.
+- Keep the orchestrating instance's port outside the agent band either way.
+
+Same reasoning applies to any other fixed resource a ticket's agent might claim while testing —
+a database file, a lock file, a fixed socket path.
+---
+
 ## Databases, hosting, and multi-machine access
 
 Raised and explicitly deferred. Context captured so the discussion does not restart from scratch:

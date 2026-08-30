@@ -130,6 +130,27 @@ onward, and during the busy window shows the shell still sourcing rc files (`dir
 behaviour disagree, assume the CLI adds orchestration and `strace` it — do not assume Herdr is
 broken.
 
+#### Confirmed live in the harness
+
+The guard is not theoretical — it fires on ordinary runs. Two real spawns through
+`src/runner.ts`, each a single button press:
+
+| Diagnostic | Ticket 1 | Ticket 2 |
+|---|---|---|
+| `agent_pane_busy` retries | 1 | 2 |
+| `agent.start` returned | `unknown`, ready absent, at 313 ms | same |
+| Readiness polls needed | 21 | 21 |
+| Actually ready after | 3398 ms | 3383 ms |
+| Prompt attempts | 1 | 1 |
+
+Without the guard the prompt would have been sent at ~313 ms against an agent reporting
+`unknown`, and lost. With it, both tickets committed correctly.
+
+The `interactive_ready` field is also the fix for §4.1's first-`idle` trap in practice: the
+harness observed `idle` at t≈1 s (startup), then `working`, then `done` at t≈5 s. Treating that
+first `idle` as completion marks a ticket finished before it has done anything — require an
+observed `working` first.
+
 ### Measured timings (verified)
 
 | Step | Duration |

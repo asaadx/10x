@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>10x harness</title>
+    <style>
+      body { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 24px; background: #111; color: #ddd; }
+      h1 { font-size: 16px; margin: 0 0 4px; }
+      .repo { color: #888; margin-bottom: 20px; font-size: 12px; }
+      .cols { display: flex; gap: 16px; align-items: flex-start; }
+      .col { flex: 1; border: 1px solid #333; padding: 10px; min-height: 220px; }
+      .col h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #888; margin: 0 0 10px; }
+      .card { border: 1px solid #444; padding: 8px; margin-bottom: 8px; background: #191919; }
+      .card .id { color: #6cf; }
+      .card .title { margin: 2px 0 6px; }
+      button { font: inherit; background: #222; color: #ddd; border: 1px solid #555; padding: 3px 8px; cursor: pointer; }
+      button:hover:not(:disabled) { background: #2c2c2c; }
+      button:disabled { opacity: .4; cursor: default; }
+      .status { font-size: 12px; color: #999; margin-top: 6px; }
+      .working { color: #fc6; }
+      .done { color: #6f6; }
+      .blocked { color: #f66; }
+      .err { color: #f66; font-size: 12px; margin-top: 6px; white-space: pre-wrap; }
+      .diag { margin-top: 8px; border-top: 1px dashed #444; padding-top: 6px; font-size: 12px; color: #888; }
+      .diag table { border-collapse: collapse; }
+      .diag td { padding: 0 8px 0 0; vertical-align: top; }
+      .flag { color: #fc6; }
+      .ok { color: #6f6; }
+      .wt { font-size: 11px; color: #888; }
+    </style>
+  </head>
+  <body>
+    <h1>10x harness — Backlog ↔ In Progress</h1>
+    <div class="repo" id="repo"></div>
+    <div class="cols">
+      <div class="col"><h2>Backlog</h2><div id="backlog"></div></div>
+      <div class="col"><h2>In Progress</h2><div id="in_progress"></div></div>
+    </div>
+
+    <script type="module">
+      const post = async (url) => {
+        const res = await fetch(url, { method: "POST" });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) console.warn(url, res.status, body);
+        await render();
+      };
+
+      const diagRows = (d) => {
+        const rows = [
+          ["agent.start attempts", d.startAttempts, d.startAttempts > 1],
+          ["agent_pane_busy retries", d.paneBusyRetries, d.paneBusyRetries > 0],
+          ["start returned status", d.startReturnedStatus ?? "—", d.startReturnedStatus !== "idle"],
+          ["start returned ready", String(d.startReturnedReady), d.startReturnedReady !== true],
+          ["start returned after", d.startReturnedAfterMs == null ? "—" : d.startReturnedAfterMs + "ms", false],
+          ["needed readiness poll", String(d.neededReadinessPoll), d.neededReadinessPoll],
+          ["readiness polls", d.readinessPolls, d.readinessPolls > 0],
+          ["ready after", d.readyAfterMs == null ? "—" : d.readyAfterMs + "ms", false],
+          ["prompt not_ready retries", d.promptNotReadyRetries, d.promptNotReadyRetries > 0],
+        ];
+        return rows
+          .map(([k, v, flag]) => `<tr><td>${k}</td><td class="${flag ? "flag" : "ok"}">${v}</td></tr>`)
+          .join("");
+      };
+
+      const card = (t) => {
+        const cls = t.agentStatus === "working" ? "working"
+          : t.agentStatus === "blocked" ? "blocked"
+          : t.finished ? "done" : "";
+        const action = t.status === "backlog"
+          ? `<button ${t.busy ? "disabled" : ""} onclick="window.__spawn('${t.id}')">→ In Progress</button>`
+          : `<button ${t.busy ? "disabled" : ""} onclick="window.__cancel('${t.id}')">← Backlog (cancel)</button>`;
+        const raced = t.diagnostics.paneBusyRetries > 0 || t.diagnostics.neededReadinessPoll;
+        return `
+          <div class="card">
+            <div class="id">${t.id} ${t.finished ? "✓" : ""}</div>
+            <div class="title">${t.title}</div>
+            ${action}
+            <div class="status ${cls}">
+              agent: ${t.agentStatus ?? "—"}${t.busy ? " · working…" : ""}
+            </div>
+            ${t.branch ? `<div class="wt">branch: ${t.branch}</div>` : ""}
+            ${t.hasWorktree ? `<div class="wt">🌳 worktree exists</div>` : ""}
+            ${t.error ? `<div class="err">${t.error}</div>` : ""}
+            ${t.diagnostics.startAttempts > 0 ? `
+              <div class="diag">
+                <div>${raced ? '<span class="flag">race fired on this run</span>' : '<span class="ok">no race observed</span>'}</div>
+                <table>${diagRows(t.diagnostics)}</table>
+              </div>` : ""}
+          </div>`;
+      };
+
+      async function render() {
+        const res = await fetch("/tickets");
+        const data = await res.json();
+        document.getElementById("repo").textContent = "target repo: " + data.repo;
+        for (const col of ["backlog", "in_progress"]) {
+          document.getElementById(col).innerHTML =
+            data.tickets.filter((t) => t.status === col).map(card).join("") || "<i style='color:#555'>empty</i>";
+        }
+      }
+
+      window.__spawn = (id) => post(`/tickets/${id}/spawn`);
+      window.__cancel = (id) => post(`/tickets/${id}/cancel`);
+
+      await render();
+      setInterval(render, 1000);
+    </script>
+  </body>
+</html>
