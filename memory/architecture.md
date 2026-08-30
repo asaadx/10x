@@ -11,9 +11,9 @@ How the 10x application itself is built. Read this first to orient; the Herdr/OM
 | Runtime | Node **24** (`engines.node: ">=24"`); verified on `v24.19.0` |
 | Language | TypeScript executed directly — `node src/server.ts`, no build step |
 | Runtime dependencies | **zero**; `package.json` has no `dependencies` key at all |
-| devDependencies | `typescript ^5.7.2`, `@types/node ^24.13.3` — types and `tsc --noEmit` only |
+| devDependencies | `typescript ^5.7.2`, `@types/node ^24.13.3` for `tsc --noEmit`, plus `@playwright/test` for the e2e suite. No runtime dependency, ever. |
 | Built-ins used | `node:sqlite`, `node:http`, `node:net`, `node:test`, `node:fs`, `node:child_process`, `node:timers/promises` |
-| tsconfig | `module`/`moduleResolution: nodenext`, `allowImportingTsExtensions`, `noEmit`, `strict`, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`, `target ES2023` |
+| tsconfig | `module`/`moduleResolution: nodenext`, `allowImportingTsExtensions`, `noEmit`, `strict`, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`, `erasableSyntaxOnly`, `target ES2023`; `include` covers `src/`, `e2e/` and `playwright.config.ts` |
 
 Imports carry the `.ts` extension (`./herdr.ts`): Node resolves the real file, and `allowImportingTsExtensions` makes `tsc` agree.
 
@@ -32,7 +32,7 @@ enum E { A }
 
 So: no constructor parameter properties, no `enum`. `HerdrError` in `src/herdr.ts` is written the long way for exactly this reason — `readonly code: string` declared as a field, then assigned in the constructor body. Status is a **union type** (`"backlog" | "in_progress"`), never an enum.
 
-`tsconfig.json` does **not** set `erasableSyntaxOnly`, so `tsc --noEmit` happily accepts a parameter property that Node then refuses at runtime. The guard is convention, not the typechecker. *(Verified: the flag is absent from the file.)*
+`tsconfig.json` sets `erasableSyntaxOnly`, so `npm run typecheck` rejects a parameter property or an `enum` instead of letting Node discover it at load time. The typechecker is the guard, not convention.
 
 ## 2. Module map
 
@@ -219,11 +219,13 @@ The board is always served *from* the Herdr host, so `location.hostname` is alwa
 
 ## 10. Testing
 
-```
-node --test 'src/*.test.ts'
-```
+Two suites, deliberately separate: `npm test` (`node --test 'src/*.test.ts'`) is the pure-unit
+layer and needs nothing running, `npm run e2e` (`playwright test`) drives the real HTTP surface
+and the real page.
 
-**The glob matters and so do the quotes.** `node --test src` does not pick up `.ts` files — verified: it reports `✖ src (40ms) 'test failed'`. Quote the glob so the shell hands it to Node rather than expanding it. There is no `test` script in `package.json`; the only scripts are `dev` (`node src/server.ts`) and `typecheck` (`tsc --noEmit`). Current state: **46 tests, 7 suites, 0 failures**, `duration_ms` ≈ 197.
+**The unit glob matters and so do the quotes.** `node --test src` does not pick up `.ts` files —
+verified: it reports `✖ src (40ms) 'test failed'`. Quote the glob so the shell hands it to Node
+rather than expanding it. Current state: **46 tests, 7 suites, 0 failures**, `duration_ms` ≈ 197.
 
 | Target | Why it is tested |
 | --- | --- |
@@ -235,3 +237,27 @@ node --test 'src/*.test.ts'
 | `claimTicket` | The only lock in the system: a second click loses, a mismatched `from` loses, an unknown id loses instead of throwing, bystanders are untouched, `updated_at` is bumped only on a win. Runs against a temp DB via `mkdtempSync` and a **dynamic** import, because `db.ts` opens the database at module load and a static import would hoist above the `DB_PATH` assignment. |
 
 The tests deliberately cover the three things that have actually broken — event-name normalisation, the idle-or-done readiness predicate, and the CAS — plus the naming invariants that guard them. Nothing tests plumbing. See [verification](./verification.md) and [gotchas](./gotchas.md).
+
+### The e2e suite
+
+`playwright.config.ts` + `e2e/`. **`workers: 1` is correctness, not speed:** the whole suite shares
+one backend, one port and one state dir. `e2e/fixtures.ts` is the contract every spec imports —
+`startBoard` (server on **4310**, avoiding 4010 and the 41xx dev-server band, readiness polled on
+`GET /projects`), `makeRepo`, `cleanupAll`, `requireHerdr`.
+
+**Repos are created on `dev`, and specs pass `baseBranch: "dev"` explicitly.** `baseBranch` defaults
+to `main` and is only handed to git at `worktree.create` time, so registering a project whose base
+branch does not exist succeeds and fails at spawn instead. *(Verified.)*
+
+**Herdr absent is survivable for reads and fatal for teardown.** *(Verified with
+`HERDR_SOCKET_PATH` pointed at a nonexistent socket.)* The server boots, `GET /projects` and
+`GET /tickets` both answer 200, and boot reconciliation only warns — every Herdr read is wrapped
+and degrades. But `teardown` rethrows any `worktree.open` failure that is not `worktree_not_found`,
+so `DELETE /tickets/:id` answers **500 `socket_error`**. That is why `requireHerdr` exists: without
+the preflight the failure reads as a mystery, not as a missing dependency.
+
+**UI assertions use accessible semantics only** — a redesign is planned. Two consequences: the
+`<header>` is the `banner` landmark, and scoping to it is what separates the board's project
+combobox from the composer's identically labelled one; and the column headings carry their live
+count inside their accessible name (`"Backlog 1"`), which is the only semantic way to say a ticket
+is in Backlog rather than In Progress, because the columns themselves are unlabelled `div`s.
