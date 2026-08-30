@@ -225,10 +225,20 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     inFlight.add(id);
     const state: RunState = { diagnostics: freshDiagnostics(), sessionDir: ticket.sessionDir };
     runs.set(id, state);
+
+    /*
+     * Three flags for one run, reset in one place because they must stay in sync: `sawWorking`
+     * gates the completion signal (memory/agent-status.md: the first `idle` arrives BEFORE the
+     * prompt, so settled alone never proves completion), `sawFinished` remembers that a settled
+     * status really was observed, and the persisted `finished`/`died` columns are what the board
+     * renders. A respawn reuses this same row, so a `sawFinished` left over from a previous
+     * attempt would let a pane death report a completion that never happened on this one.
+     */
+    let sawWorking = false;
+    let sawFinished = false;
     setRunFields(id, { finished: false, died: false });
 
     try {
-      let sawWorking = false;
       const res = await spawn(
         specFor(ticket, project),
         state,
@@ -236,16 +246,27 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
           // memory/agent-status.md: the FIRST `idle` arrives before the prompt, so it is not completion.
           if (status === "working") {
             sawWorking = true;
+            sawFinished = false;
             setRunFields(id, { finished: false });
           } else if (sawWorking && isSettled(status)) {
+            sawFinished = true;
             setRunFields(id, { finished: true });
           }
         },
         () => {
-          // memory/teardown.md rule 3: a dead pane is NOT a finished ticket. The worktree and transcript
-          // are kept deliberately so the failure can be inspected.
-          setRunFields(id, { died: true, finished: false });
-          console.warn(`[${id}] pane exited — run is dead, worktree kept for inspection`);
+          /*
+           * Two different situations reach this one callback. A pane dying mid-turn is NOT a
+           * finished ticket (memory/teardown.md rule 3). But a pane going away AFTER a completion
+           * was observed — a closed tab, a Herdr restart, a reboot — must not erase a completion
+           * we correctly saw, so `finished` reports what actually happened instead of being
+           * forced to false. Either way the worktree and transcript are kept for inspection.
+           */
+          setRunFields(id, { died: true, finished: sawFinished });
+          console.warn(
+            sawFinished
+              ? `[${id}] pane closed after the turn finished — completion kept, worktree kept`
+              : `[${id}] pane exited — run is dead, worktree kept for inspection`,
+          );
         },
       );
       setRunFields(id, {
