@@ -13,9 +13,9 @@
  *    at worst it is a second stale.
  */
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { request } from "./herdr.ts";
-import { join } from "node:path";
+import { extname, join, sep } from "node:path";
 import { freshDiagnostics, type Diagnostics } from "./diagnostics.ts";
 import { agentNameFor, branchFor, isSettled } from "./lifecycle.ts";
 import { focusAgent } from "./panes.ts";
@@ -33,7 +33,20 @@ import {
 import { claimTicket, type Project, type Ticket } from "./db.ts";
 
 const PORT = Number(process.env.PORT ?? 4010);
-const UI = join(import.meta.dirname, "..", "public", "index.html");
+const PUBLIC_DIR = join(import.meta.dirname, "..", "public");
+
+/**
+ * Extension → content type, and the whole allow-list of what may be served. An extension
+ * that is not in here is refused rather than guessed: guessing is how an unintended file
+ * becomes readable, and `application/octet-stream` would hide the mistake behind a
+ * download prompt instead of a 404.
+ */
+const CONTENT_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".svg": "image/svg+xml",
+};
 
 /**
  * Per-run state: diagnostics and the live event-subscription handle. Not persisted, so a
@@ -325,20 +338,66 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
   return json({ error: "not_found", path, method }, 404);
 }
 
+/**
+ * Resolve a request path to a readable file inside `public/`, or `null`.
+ *
+ * Containment is checked on the REAL path, after `realpath` has followed every symlink.
+ * A string comparison against the requested path would happily serve a symlink that lives
+ * inside `public/` and points at `/etc/shadow`; resolving first is what makes that a 404.
+ * The URL is never trusted after decoding: a bad escape, a NUL byte, an extension outside
+ * the allow-list and anything that is not a regular file all fail closed.
+ */
+async function resolvePublicAsset(bare: string): Promise<{ file: string; type: string } | null> {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(bare);
+  } catch {
+    return null; // a malformed %-escape is not a path
+  }
+  if (decoded.includes("\0")) return null;
+
+  const wanted = decoded === "/" ? "/index.html" : decoded;
+  const type = CONTENT_TYPES[extname(wanted).toLowerCase()];
+  if (type === undefined) return null;
+
+  let root: string;
+  let file: string;
+  try {
+    root = await realpath(PUBLIC_DIR);
+    // The leading "." keeps `join` from treating an absolute `wanted` as the whole path.
+    file = await realpath(join(root, `.${wanted}`));
+  } catch {
+    return null; // missing file, broken symlink, or an unreadable directory on the way
+  }
+  if (file !== root && !file.startsWith(root + sep)) return null; // escaped public/
+
+  // Directories, fifos and devices are all refused: there are no listings here.
+  if (!(await stat(file)).isFile()) return null;
+  return { file, type };
+}
+
 createServer(async (req, res) => {
   const url = req.url ?? "/";
   const path = url.split("#")[0] ?? "/";
   const bare = path.split("?")[0] ?? "/";
 
-  if (req.method === "GET" && (bare === "/" || bare === "/index.html")) {
-    res.writeHead(200, { "content-type": "text/html" });
-    res.end(await readFile(UI, "utf8"));
-    return;
-  }
+  // Static resolution is deliberately LAST: every API route answers with its own JSON
+  // envelope first, so a wrong path under `/tickets` stays a JSON 404 instead of becoming a
+  // probe of the filesystem. Only a GET that no route claimed may look at `public/`.
 
   try {
     const body = req.method === "GET" || req.method === "DELETE" ? undefined : await readBody(req);
     const out = await handle(req.method ?? "GET", path, body);
+
+    if (out.status === 404 && req.method === "GET") {
+      const asset = await resolvePublicAsset(bare);
+      if (asset) {
+        res.writeHead(200, { "content-type": asset.type });
+        res.end(await readFile(asset.file));
+        return;
+      }
+    }
+
     res.writeHead(out.status, { "content-type": "application/json" });
     res.end(out.body);
   } catch (err) {
