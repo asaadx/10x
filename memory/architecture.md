@@ -243,7 +243,35 @@ The tests deliberately cover the three things that have actually broken — even
 `playwright.config.ts` + `e2e/`. **`workers: 1` is correctness, not speed:** the whole suite shares
 one backend, one port and one state dir. `e2e/fixtures.ts` is the contract every spec imports —
 `startBoard` (server on **4310**, avoiding 4010 and the 41xx dev-server band, readiness polled on
-`GET /projects`), `makeRepo`, `cleanupAll`, `requireHerdr`.
+`GET /projects`), `makeRepo`, `cleanupAll`, `requireHerdr`, plus the spawn helpers below.
+
+| Spec | Covers | Real agents |
+| --- | --- | --- |
+| `projects.spec.ts`, `tickets.spec.ts`, `board.spec.ts` | registration, validation, ticket CRUD, rendering | none |
+| `spawn.spec.ts` | spawn, prompt delivery via the agent's own `probe.txt`, cancel | 3 |
+| `teardown.spec.ts` | ticket delete, worktree-only delete (branch survives) | 2 |
+| `resilience.spec.ts` | backend restart, compare-and-swap, two concurrent tickets | 4 |
+
+**A spawn spec runs a real OMP agent, so teardown is the load-bearing part.** Every spawn is
+registered with `cleanupAll` *before* its request goes out, each test tears its own spawn down at
+the end, and `cleanupAll` falls back to `worktree.open`+`worktree.remove` straight at Herdr when
+the backend is gone. Per-test budgets are set with `test.setTimeout`: **120 s** spawn-only,
+**180 s** spawn-plus-completion; the config's 30 s default stays for the non-spawn specs. Measured:
+spawn returns in **3.2–3.9 s** and the probe turn finishes **7–12 s** after that, so the whole
+suite of 19 tests runs in **~1.2 minutes** against the 600 s `globalTimeout`.
+
+Three things the suite reads outside the HTTP API, each for a reason:
+
+- **`storedTicket`** opens the SQLite file, because `board()` derives `branch` and `agentName` when
+  the columns are null — so the API reports them either way and cannot show teardown clearing them.
+- **`liveAgentNames` / `liveWorktreeBranches`** ask Herdr directly, so "no agent, no worktree" is
+  asserted against the source of truth rather than against our own join.
+- **`restartBoard`** starts a second backend on the *same* state dir. `startBoard` would hand out a
+  fresh empty database and prove nothing about a restart.
+
+`cleanupAll` also closes each throwaway repo's implicit Herdr **source workspace** and `rmdir`s
+`~/.herdr/worktrees/<repo>/`: both outlive the last ticket worktree, and each e2e run would
+otherwise leave one of each behind ([reconciliation](./reconciliation.md)).
 
 **Repos are created on `dev`, and specs pass `baseBranch: "dev"` explicitly.** `baseBranch` defaults
 to `main` and is only handed to git at `worktree.create` time, so registering a project whose base
@@ -261,3 +289,9 @@ the preflight the failure reads as a mystery, not as a missing dependency.
 combobox from the composer's identically labelled one; and the column headings carry their live
 count inside their accessible name (`"Backlog 1"`), which is the only semantic way to say a ticket
 is in Backlog rather than In Progress, because the columns themselves are unlabelled `div`s.
+
+**The one exception is locating a single card**, which the spawn specs need in order to say "*this*
+ticket shows the finished badge". A card is an unlabelled `div` with no accessible handle at all, so
+they scope by `#in-progress-cards [data-id="<ticket id>"]` and then assert inside it with
+`getByTitle` — the badges' `title` is accessible, the container is not. Do not widen this into
+asserting on classes or text layout.

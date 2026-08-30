@@ -91,15 +91,24 @@ the next call with an undefined pane ID produces confusing downstream failures t
 
 Recorded so nobody assumes these are proven.
 
-- **G2 — restart resilience.** If the Herdr server or the 10x backend restarts, every subscription
-  dies and in-flight tickets strand. **Reading Herdr state and surfacing unowned worktrees is in
-  scope now** — it needs no ticket store ([reconciliation](./reconciliation.md)). **Ticket-state
-  repair and re-subscribing land with the database**, since there is nothing durable to reconcile
-  against yet. Until then, an in-flight ticket does not survive a restart, and its worktree becomes
-  visible as unowned rather than being deleted automatically.
-- **G3 — concurrency is unproven.** Two worktrees were created simultaneously, but only one agent
-  ever ran at a time. The cap is set in [operations](./operations.md); this gap is only about it
-  never having been exercised.
+- **G2 — restart resilience, partly closed (verified).** A 10x backend restart on the same
+  database keeps a finished ticket `in_progress` with its `finished` flag, its branch and its
+  worktree, and the board re-reads the live agent as `done` — covered by `e2e/resilience.spec.ts`.
+  **What is still missing is re-subscribing:** the new process holds no event subscription for a
+  running ticket, and nothing at boot creates one, so a turn that ends *after* the restart is never
+  recorded and the ticket keeps reading unfinished. Boot reconciliation only reports it
+  ([reconciliation](./reconciliation.md), divergence row 1). A Herdr server restart is still
+  unaddressed: panes and agents die with it.
+- **G3 — concurrency, proven at two agents (verified).** Two tickets spawned with `Promise.all`
+  both reached ready in 3.2-3.9 s, ran their turns simultaneously, and each committed its own
+  file: distinct branches, worktrees, agent names and panes, with a third unrelated agent live in
+  the same Herdr session. Concurrency costs nothing measurable — a concurrent spawn is as fast as
+  a solo one, and `worktree.create` twice at once in one repo does not race git.
+  **The `agent_pane_busy` retry is the norm, not an edge case:** across 16 measured spawns, 13
+  needed it (12 × 1 retry, 1 × 2) and 3 did not, with no relation to concurrency — the three clean
+  ones were the first spawns of a run. Readiness always needed polling (19-24 polls, ~125 ms
+  apart); the prompt was always accepted first try. Beyond two concurrent agents is still
+  unexercised, and so is the cap in [operations](./operations.md).
 - **G4 — `pnpm` and worktree dependencies.** The claim that a content-addressed store makes
   per-worktree `node_modules` cheap ([reconciliation](./reconciliation.md)) is reasoned, not
   measured.
