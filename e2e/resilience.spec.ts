@@ -9,6 +9,7 @@ import { join } from "node:path";
 import {
   api,
   cleanupAll,
+  closePane,
   createProject,
   createTicket,
   liveAgentNames,
@@ -82,6 +83,39 @@ test("a finished ticket survives a backend restart on the same state dir", async
   const again = await api(board, "POST", `/tickets/${id}/spawn`);
   expect(again.status).toBe(409);
   expect(again.body["error"]).toBe("not_in_backlog");
+
+  expect((await api(board, "POST", `/tickets/${id}/cancel`)).status).toBe(200);
+});
+
+/*
+ * Regression: a pane exit used to write `finished: false` unconditionally, which is right for an
+ * agent killed mid-turn and wrong for a pane that goes away long after the turn ended. Closing a
+ * tab, restarting Herdr or rebooting all erased a completion that had been correctly observed.
+ */
+test("closing the pane after the turn finished keeps the ticket finished", async ({ page }) => {
+  test.setTimeout(COMPLETION_MS);
+  await createProject(board, "pncl", repoPath);
+  const id = await createTicket(board, "pncl", "Finished, then closed", PROBE_DESCRIPTION);
+
+  const run = await spawnTicket(board, repoPath, id);
+  await waitForTicket(board, id, "reported finished", (t) => t["finished"] === true, FINISH_MS);
+
+  await closePane(run.paneId);
+
+  // `died` is honest — the pane really is gone — and it is what proves the event landed rather
+  // than the test having simply not waited long enough. `finished` must survive alongside it.
+  const row = await waitForTicket(board, id, "reported died", (t) => t["died"] === true, 30_000);
+  expect(row["finished"]).toBe(true);
+
+  await page.goto(board.baseUrl);
+  const card = page.locator(`#in-progress-cards [data-id="${id}"]`);
+  // The user's rule: finished-then-closed looks finished. Badge `title`s are the only accessible
+  // handle a card has, and memory/architecture.md forbids widening these assertions to classes or
+  // text layout because a redesign is planned. The cross is a sufficient proxy for the whole death
+  // presentation: it, the "This is NOT a finished ticket" note and the red border are all rendered
+  // off the same `died && !finished`.
+  await expect(card.getByTitle("finished")).toBeVisible();
+  await expect(card.getByTitle("run died")).toHaveCount(0);
 
   expect((await api(board, "POST", `/tickets/${id}/cancel`)).status).toBe(200);
 });
