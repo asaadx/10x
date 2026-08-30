@@ -21,7 +21,6 @@ export type Diagnostics = {
   readyAfterMs: number | null;
   promptAttempts: number;
   promptNotReadyRetries: number;
-  sessionDir: string | null;
 };
 
 export type Ticket = {
@@ -35,6 +34,12 @@ export type Ticket = {
   agentStatus: string | null;
   /** Set when the agent finishes a turn. There is no In Review column yet (§7). */
   finished: boolean;
+  /**
+   * OMP transcript directory for the current run, captured from agent.start.
+   * Lives on the ticket, NOT in Diagnostics, because Diagnostics is reset on every
+   * spawn and teardown still needs this. Refreshed from the live agent at teardown.
+   */
+  sessionDir: string | null;
   error: string | null;
   branch: string | null;
   worktreePath: string | null;
@@ -56,7 +61,6 @@ export function freshDiagnostics(): Diagnostics {
     readyAfterMs: null,
     promptAttempts: 0,
     promptNotReadyRetries: 0,
-    sessionDir: null,
   };
 }
 
@@ -72,6 +76,7 @@ export const tickets: Ticket[] = [
     status: "backlog",
     agentStatus: null,
     finished: false,
+    sessionDir: null,
     error: null,
     branch: null,
     worktreePath: null,
@@ -88,6 +93,7 @@ export const tickets: Ticket[] = [
     status: "backlog",
     agentStatus: null,
     finished: false,
+    sessionDir: null,
     error: null,
     branch: null,
     worktreePath: null,

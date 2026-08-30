@@ -85,6 +85,13 @@ Currently holds:
   is solid. A worktree is only truly reclaimable on merge.
 - **Revisit teardown as a whole** — open question: enumerate every teardown trigger and choose the
   depth for each. Node 01 §5.0 is provisional until this is done in one sitting.
+- **Push board updates with SSE** — the backend already receives Herdr events instantly; only the
+  browser polls. ~30 lines, do it when the real UI replaces the harness UI.
+- **Validate the project slug at creation time** — the 32-char agent-name ceiling and the
+  branch-vs-agent charset mismatch both currently fail mid-spawn. Do it with the change that makes
+  projects addable.
+- **Port allocation when 10x builds 10x** — dogfooding needs one Herdr server and one orchestrating
+  instance, but tickets that *run* the app collide on `PORT`. Decide before dogfooding.
 - **Databases, hosting, multi-machine access** — raised, context captured, not answered.
 - **Projects (multi-repo)** — the board will span several projects; makes "project" a first-class
   concept and removes any implicit default repo.

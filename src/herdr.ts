@@ -132,7 +132,8 @@ export function subscribe(
       let parsed: unknown;
       try {
         parsed = JSON.parse(line);
-      } catch {
+      } catch (err) {
+        console.warn("herdr event stream: unparseable line dropped:", err);
         continue;
       }
       if (typeof parsed !== "object" || parsed === null) continue;
@@ -142,8 +143,10 @@ export function subscribe(
     }
   });
 
-  sock.on("error", () => {
-    /* the stream is best-effort; reconciliation is the safety net */
+  sock.on("error", (err) => {
+    // The stream is best-effort: reconciliation is the real safety net. Still say so,
+    // because a dead stream means ticket statuses silently stop updating.
+    console.warn("herdr event stream error (statuses will stop updating):", err.message);
   });
 
   return {
