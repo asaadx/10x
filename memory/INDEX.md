@@ -90,8 +90,8 @@ Currently holds:
 - **Validate the project slug at creation time** — the 32-char agent-name ceiling and the
   branch-vs-agent charset mismatch both currently fail mid-spawn. Do it with the change that makes
   projects addable.
-- **Port allocation when 10x builds 10x** — dogfooding needs one Herdr server and one orchestrating
-  instance, but tickets that *run* the app collide on `PORT`. Decide before dogfooding.
+- **Port allocation for per-ticket dev servers** — one board per environment, but one dev server per
+  ticket that runs the app. Decision: port = base + ticket number. Needed before dogfooding.
 - **Databases, hosting, multi-machine access** — raised, context captured, not answered.
 - **Projects (multi-repo)** — the board will span several projects; makes "project" a first-class
   concept and removes any implicit default repo.

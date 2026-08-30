@@ -200,28 +200,35 @@ it mid-spawn. Three lines, and the error appears where it belongs.
 
 ---
 
-## Port allocation when 10x builds 10x
+## Port allocation for per-ticket dev servers
 
 Needed before dogfooding, not before.
 
-Running many tickets against the **10x repo itself** needs only **one Herdr server** — it is a
-multiplexer, and one server hosts every ticket's pane. It also needs only **one orchestrating 10x
-instance**: the one you click in. Each ticket gets its own worktree, pane, and agent, and that is
-all, because an agent editing source does not need to run the app.
+**Two different things get called "the frontend/backend". Keep them apart:**
 
-The problem is the subset of tickets that must actually *run* 10x to verify behaviour. Every one
-of those defaults to `PORT=4010`, so the second onwards die with `EADDRINUSE`, and the first
-collides with the orchestrating instance.
+| | How many | Role |
+|---|---|---|
+| The 10x board | **one per environment** | the tool you click in; never per-ticket |
+| The project in a ticket's worktree | **one per ticket** *if the agent runs it* | disposable, the thing under test |
 
-Options:
+Hot-reload belongs to the second: each worktree has its own checkout, its own dev server watching
+its own files. A single board does not constrain that. The board must *not* hot-reload from agent
+edits, and does not, because agents write to worktrees and never to the board's checkout.
 
-- Assign each ticket a port from a reserved band (`4100 + ticket.number`) and pass it into the
-  worktree environment, alongside the system-prompt file already written per ticket.
-- Use `PORT=0` so the OS picks a free port, and have the agent read back what it got.
-- Keep the orchestrating instance's port outside the agent band either way.
+When the project under test **is 10x**, both rows are 10x — same code, unrelated roles. That is why
+it reads as one thing when it is two.
 
-Same reasoning applies to any other fixed resource a ticket's agent might claim while testing —
-a database file, a lock file, a fixed socket path.
+**The collision:** every ticket's dev server inherits the project's default port, so the second
+onwards die with `EADDRINUSE` — and with 10x as the target, the first also collides with the board.
+
+**Decision: derive the port from the ticket number**, `base + ticket.number`, and pass it into the
+worktree environment alongside the system-prompt file already written per ticket. Keep the board's
+own port outside that band. (`PORT=0` was the alternative — the OS picks and the agent reads back
+what it got — but a derived port is predictable, which matters when you want to open the thing.)
+
+Same reasoning applies to any other fixed resource a ticket's agent claims while testing: a
+database file, a lock file, a fixed socket path.
+
 ---
 
 ## Databases, hosting, and multi-machine access
