@@ -15,3 +15,9 @@ herdr-api.schema.json
 
 # local 10x state
 .10x/
+
+# playwright: traces/attachments from a failed run, and the html report
+test-results/
+playwright-report/
+blob-report/
+.playwright/
