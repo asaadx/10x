@@ -242,8 +242,10 @@ export async function spawn(
   // `pane_closed` fires when the pane itself goes away (user closes the tab, or the
   // workspace is closed). Subscribing only to `pane.exited` misses a closed tab entirely.
   //
-  // Event names arrive on the wire in UNDERSCORE form (`pane_agent_status_changed`),
-  // even though subscription types are dotted (`pane.agent_status_changed`). Verified.
+  // Herdr's event names on the wire are INCONSISTENTLY separated — verified in a single
+  // capture: `pane.agent_status_changed` arrives dotted while `pane_closed` arrives
+  // underscored. Normalise before comparing; matching either form literally silently drops
+  // half the events, which is a failure with no error attached to it.
   const watch = (watched: string) => {
     ticket.stream?.close();
     ticket.stream = subscribe(
@@ -254,13 +256,14 @@ export async function spawn(
       ],
       (event, data) => {
         if (typeof data !== "object" || data === null) return;
-        if (event === "pane_agent_status_changed") {
+        const kind = event.replaceAll(".", "_");
+        if (kind === "pane_agent_status_changed") {
           if ("agent_status" in data && typeof data.agent_status === "string") {
             onStatus(data.agent_status);
           }
           return;
         }
-        if (event === "pane_exited" || event === "pane_closed") {
+        if (kind === "pane_exited" || kind === "pane_closed") {
           // Both are global subscriptions, so filter to the pane we care about.
           if ("pane_id" in data && data.pane_id === watched) onPaneExit();
         }

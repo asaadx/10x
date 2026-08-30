@@ -276,10 +276,22 @@ Verified: `pane.close` emits `pane_closed` and then `workspace_closed`, and **ne
 `pane_exited`. A subscription to `pane.exited` alone therefore never notices a hand-closed tab —
 the exact case §5.1 warns about.
 
-**Event names arrive on the wire in UNDERSCORE form** (`pane_agent_status_changed`, `pane_closed`)
-even though subscription types are dotted (`pane.agent_status_changed`). The payload repeats the
-kind in `data.type`. Match exactly against the underscore form; substring matching on `pane.exited`
-matches nothing.
+#### Wire event names are inconsistently separated — normalise before comparing
+
+**Subscription types are always dotted. Emitted event names are not consistent.** Verified in a
+single capture:
+
+```
+subscribe pane.agent_status_changed  → "event":"pane.agent_status_changed"   ← DOTTED
+subscribe pane.closed                → "event":"pane_closed"                 ← UNDERSCORED
+```
+
+So neither form can be matched literally. Normalise — `event.replaceAll(".", "_")` — then compare.
+
+This is a **silent** failure mode: matching the wrong form drops every event of that type with no
+error anywhere. It cost this project a working status pipeline once, where `agentStatus` sat at
+`null` through an entire run while the agent worked correctly and committed, so the only symptom was
+a checkmark that never appeared.
 
 **Agent status values:** `idle`, `working`, `blocked`, `done`, `unknown`.
 
@@ -320,6 +332,15 @@ no work done. Require an observed `working` first, or gate on the agent record's
 **A turn ending is not the ticket succeeding.** `done` fires identically whether the agent
 committed the work, asked a question in prose, errored out, or did nothing. There is no success
 signal in the protocol.
+
+**A multi-step prompt is ONE turn (verified).** Prose, several tool calls, more prose, and a commit
+all sit inside a single `working` → `done` cycle, so tool-call boundaries do **not** produce
+intermediate settled events. Measured on a five-step prompt (read a file, create two files, run
+`ls`, commit, with prose between each): `working` at t=1.6s, `done` at t=15.0s, and **nothing in
+between**. Completion logic is therefore safe from premature firing at tool boundaries.
+
+What that does *not* cover is a turn that ends because the agent is waiting on a human — see the
+prose-question case below.
 
 **Decision: the app does not verify success.** No commit counting, no diffing the branch against
 its base. Human PR review is the gate, and a stalled or empty run surfaces there. The accepted
