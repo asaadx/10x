@@ -14,7 +14,7 @@
  */
 import { createServer } from "node:http";
 import { readFile, realpath, stat } from "node:fs/promises";
-import { request } from "./herdr.ts";
+import { request, HerdrError } from "./herdr.ts";
 import { extname, join, sep } from "node:path";
 import { freshDiagnostics, type Diagnostics } from "./diagnostics.ts";
 import { agentNameFor, branchFor, isSettled } from "./lifecycle.ts";
@@ -206,7 +206,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     return r.ok ? json(r.ticket, 201) : json(r.body, r.status);
   }
 
-  const m = /^\/tickets\/([^/]+)(\/spawn|\/cancel|\/worktree|\/focus|\/accept)?$/.exec(path);
+  const m = /^\/tickets\/([^/]+)(\/spawn|\/cancel|\/worktree|\/focus|\/accept|\/reject)?$/.exec(path);
   if (!m?.[1]) return json({ error: "not_found", path }, 404);
   const id = decodeURIComponent(m[1]);
   const action = m[2];
@@ -433,6 +433,61 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
         console.warn(`[${id}] accepted with PR #${pr.number} but retiring the agent failed:`, err);
       }
 
+      return json(getTicket(id));
+    } finally {
+      inFlight.delete(id);
+    }
+  }
+
+  if (action === "/reject" && method === "POST") {
+    const reasonInput = (body as { reason?: unknown } | undefined)?.reason;
+    if (typeof reasonInput !== "string" || reasonInput.trim() === "") {
+      return json({ error: "reason_required" }, 400);
+    }
+    const reason = reasonInput.trim();
+
+    // A rejection re-prompts the ticket's still-living agent, so it needs both the
+    // branch and the agent name on record — without them there is nothing to re-prompt
+    // and no worktree to have produced the rejected work in the first place.
+    if (!ticket.branch || !ticket.agentName) {
+      return json({ error: "no_agent", id }, 409);
+    }
+
+    // Claim first, work second (memory/operations.md): the status IS the lock.
+    if (!claimTicket(id, "in_review", "in_progress")) {
+      return json({ error: "not_in_review", status: ticket.status }, 409);
+    }
+
+    inFlight.add(id);
+    try {
+      const text = [
+        `TICKET REJECTED: this work was sent back from review. The text below is the reason —`,
+        "address it and continue.",
+        "",
+        reason,
+      ].join("\n");
+      try {
+        await request("agent.prompt", { target: ticket.agentName, text });
+      } catch (err) {
+        // Hand the claim back: a ticket left in In Progress whose agent never heard the
+        // rejection is a silent dead end (memory/operations.md).
+        claimTicket(id, "in_progress", "in_review");
+        // `agent_not_found` is the one Herdr code that unambiguously means the agent is
+        // gone (verified against a live socket, not guessed) rather than some other
+        // prompt failure such as `agent_blocked`.
+        const agentGone = err instanceof HerdrError && err.code === "agent_not_found";
+        return json(
+          {
+            error: agentGone ? "agent_not_alive" : "prompt_failed",
+            message: err instanceof Error ? err.message : String(err),
+          },
+          409,
+        );
+      }
+
+      // The ticket is working again; a stale `finished` would show a completion
+      // checkmark on a card whose agent is mid-turn. `died` is left alone.
+      setRunFields(id, { finished: false });
       return json(getTicket(id));
     } finally {
       inFlight.delete(id);

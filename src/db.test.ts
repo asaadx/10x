@@ -140,6 +140,41 @@ describe("claimTicket across in_review", () => {
   });
 });
 
+describe("claimTicket for reject", () => {
+  test("a reject claims in_review to in_progress", () => {
+    seed("t-reject", "in_review");
+    assert.equal(claimTicket("t-reject", "in_review", "in_progress"), true);
+    assert.equal(readString("t-reject", "status"), "in_progress");
+  });
+
+  test("a reject loses from backlog", () => {
+    seed("t-reject-backlog", "backlog");
+    assert.equal(claimTicket("t-reject-backlog", "in_review", "in_progress"), false);
+    assert.equal(readString("t-reject-backlog", "status"), "backlog");
+  });
+
+  test("a reject loses from in_progress", () => {
+    seed("t-reject-inprogress", "in_progress");
+    assert.equal(claimTicket("t-reject-inprogress", "in_review", "in_progress"), false);
+    assert.equal(readString("t-reject-inprogress", "status"), "in_progress");
+  });
+
+  test("a reject loses from done", () => {
+    seed("t-reject-done", "done");
+    assert.equal(claimTicket("t-reject-done", "in_review", "in_progress"), false);
+    assert.equal(readString("t-reject-done", "status"), "done");
+  });
+
+  // The failure-recovery path (server.ts /reject): a failed re-prompt hands the claim
+  // straight back, so this reverse claim must succeed after the forward one.
+  test("a failed prompt hands the claim back from in_progress to in_review", () => {
+    seed("t-reject-handback", "in_review");
+    assert.equal(claimTicket("t-reject-handback", "in_review", "in_progress"), true);
+    assert.equal(claimTicket("t-reject-handback", "in_progress", "in_review"), true);
+    assert.equal(readString("t-reject-handback", "status"), "in_review");
+  });
+});
+
 describe("toStatus", () => {
   test("decodes \"done\" as \"done\"", () => {
     assert.equal(toStatus("done"), "done");
