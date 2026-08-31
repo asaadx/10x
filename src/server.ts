@@ -272,7 +272,10 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
      * `sawWorking` gates the completion signal (memory/agent-status.md: the first `idle` arrives
      * BEFORE the prompt, so a settled status alone never proves completion). The persisted
      * `finished`/`died` columns are what the board renders, and a respawn reuses this same row,
-     * so stale flags left by a previous attempt are cleared here.
+     * so stale flags left by a previous attempt are cleared here — once, before the run, and
+     * never again from the status callback. A `working` transition arriving AFTER a turn
+     * settled belongs to a human steering the agent, on a ticket that is already in review, so
+     * clearing `finished` there would erase the completion that put it there.
      */
     let sawWorking = false;
     setRunFields(id, { finished: false, died: false });
@@ -286,9 +289,22 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
           // memory/agent-status.md: the FIRST `idle` arrives before the prompt, so it is not completion.
           if (status === "working") {
             sawWorking = true;
-            setRunFields(id, { finished: false });
           } else if (sawWorking && isSettled(status)) {
+            /*
+             * The turn completed. `finished` records that and STAYS set — it is what the
+             * checkmark and, later, the Done card read — and this same moment is the column
+             * transition.
+             *
+             * The claim is a conditional UPDATE, so it is the lock, not a read-then-write. A
+             * turn can settle more than once: a human steering the agent in Herdr afterwards
+             * produces `working` → settled all over again, and that second claim matches no
+             * row because the ticket is already `in_review`. Nothing is re-transitioned and
+             * nothing is reset. A failed claim means the ticket is no longer `in_progress`
+             * (a cancel got there first), and then doing nothing is the correct action:
+             * forcing it would drag a ticket back out of the column its owner just chose.
+             */
             setRunFields(id, { finished: true });
+            claimTicket(id, "in_progress", "in_review");
           }
         },
         () => {
