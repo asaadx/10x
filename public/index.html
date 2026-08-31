@@ -51,13 +51,19 @@
   <div id="unowned-rows"></div>
 </section>
 
+<!--
+  Each column is a named `region`, labelled by its own heading, so its accessible
+  name carries the live count ("Backlog 1") without duplicating it. That name is
+  the stable handle for assistive tech and for the e2e suite; a redesign may move,
+  restyle or re-order these columns and the semantics do not move with it.
+-->
 <main class="board">
-  <div class="column" data-status="backlog">
-    <h2>Backlog <span class="count" id="backlog-count">0</span></h2>
+  <div class="column" role="region" aria-labelledby="backlog-heading" data-status="backlog">
+    <h2 id="backlog-heading">Backlog <span class="count" id="backlog-count">0</span></h2>
     <div class="cards" id="backlog-cards"></div>
   </div>
-  <div class="column" data-status="in_progress">
-    <h2>In Progress <span class="count" id="in-progress-count">0</span></h2>
+  <div class="column" role="region" aria-labelledby="in-progress-heading" data-status="in_progress">
+    <h2 id="in-progress-heading">In Progress <span class="count" id="in-progress-count">0</span></h2>
     <div class="cards" id="in-progress-cards"></div>
   </div>
 </main>

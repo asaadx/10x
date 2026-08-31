@@ -349,6 +349,10 @@ function renderColumn(containerId, countId, status, handlers) {
       cardEls.set(ticket.id, el);
       el.dataset.id = ticket.id;
       el.className = "card";
+      // A card is an `article` named by its ticket id: the only accessible handle it has,
+      // and the reason the e2e suite no longer needs to reach through the DOM structure.
+      el.setAttribute("role", "article");
+      el.setAttribute("aria-label", ticket.id);
     }
 
     // Position it correctly.
