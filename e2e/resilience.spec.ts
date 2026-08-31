@@ -39,15 +39,19 @@ let repoPath: string;
 
 /**
  * A card is an `article` named by its ticket id, and a column is a `region` whose accessible
- * name carries its live count. Both are semantics, so this locator survives a redesign.
+ * name carries its live count. Both are semantics, so this locator survives a redesign. The
+ * column is a parameter because which column a finished ticket is in is now part of the
+ * contract: a settled turn moves it to In Review by itself.
  *
  * It replaces `#in-progress-cards [data-id="<id>"]`, which reached through DOM structure and
  * an element id — the one place this suite violated its own accessible-semantics rule, and
  * only because a card had no accessible name to reach for. Now it has one.
  */
-function inProgressCard(page: Page, id: string): Locator {
-  return page.getByRole("region", { name: /^In Progress/ }).getByRole("article", { name: id });
+function cardIn(page: Page, column: RegExp, id: string): Locator {
+  return page.getByRole("region", { name: column }).getByRole("article", { name: id });
 }
+
+const IN_REVIEW = /^In Review/;
 
 test.beforeAll(async () => {
   requireHerdr();
@@ -65,17 +69,18 @@ test("a finished ticket survives a backend restart on the same state dir", async
   const id = await createTicket(board, "rstr", "Survives a restart", PROBE_DESCRIPTION);
 
   const run = await spawnTicket(board, repoPath, id);
-  await waitForTicket(board, id, "reported finished", (t) => t["finished"] === true, FINISH_MS);
+  await waitForTicket(board, id, "moved to review", (t) => t["status"] === "in_review", FINISH_MS);
 
   // Herdr keeps the pane and the agent; only our process goes away and comes back.
   board = await restartBoard(board);
 
-  // `finished` is a column, not per-run memory, so it has to come back with the row. A
-  // finished agent triggers nothing at all — no teardown, no column change (memory/teardown.md
-  // rule 2) — so the ticket must still be In Progress and still marked finished.
-  expect(storedTicket(board, id)).toMatchObject({ status: "in_progress", branch: run.branch });
+  // `finished` and `status` are columns, not per-run memory, so both have to come back with the
+  // row. The settled turn moved the ticket to In Review by itself and kept `finished` as the
+  // record that the turn completed; the agent is still alive there, because a later Reject has
+  // to be able to re-prompt it with its full context.
+  expect(storedTicket(board, id)).toMatchObject({ status: "in_review", branch: run.branch });
   const row = await ticketRow(board, id);
-  expect(row).toMatchObject({ status: "in_progress", finished: true, died: false });
+  expect(row).toMatchObject({ status: "in_review", finished: true, died: false });
 
   // Read live from Herdr by the NEW process, which is the actual re-attach evidence: a
   // re-attached agent reports `done` rather than `idle`, and both mean the turn ended
@@ -85,7 +90,7 @@ test("a finished ticket survives a backend restart on the same state dir", async
   expect(existsSync(join(run.worktreePath, PROBE_FILE))).toBe(true);
 
   await page.goto(board.baseUrl);
-  const card = inProgressCard(page, id);
+  const card = cardIn(page, IN_REVIEW, id);
   await expect(card).toContainText(run.branch);
   await expect(card.getByTitle("finished")).toBeVisible();
 
@@ -96,7 +101,9 @@ test("a finished ticket survives a backend restart on the same state dir", async
   expect(again.status).toBe(409);
   expect(again.body["error"]).toBe("not_in_backlog");
 
-  expect((await api(board, "POST", `/tickets/${id}/cancel`)).status).toBe(200);
+  // DELETE, not cancel: cancel claims `in_progress → backlog` and answers 409 from review, and
+  // this ticket is only being disposed of, not tested.
+  expect((await api(board, "DELETE", `/tickets/${id}`)).status).toBe(200);
 });
 
 /*
@@ -110,17 +117,20 @@ test("closing the pane after the turn finished keeps the ticket finished", async
   const id = await createTicket(board, "pncl", "Finished, then closed", PROBE_DESCRIPTION);
 
   const run = await spawnTicket(board, repoPath, id);
-  await waitForTicket(board, id, "reported finished", (t) => t["finished"] === true, FINISH_MS);
+  await waitForTicket(board, id, "moved to review", (t) => t["status"] === "in_review", FINISH_MS);
 
   await closePane(run.paneId);
 
   // `died` is honest — the pane really is gone — and it is what proves the event landed rather
-  // than the test having simply not waited long enough. `finished` must survive alongside it.
+  // than the test having simply not waited long enough. `finished` must survive alongside it,
+  // and so must the column: the pane-exit callback writes `died` and nothing else, so a pane
+  // dying after the turn ended cannot drag the ticket back out of review.
   const row = await waitForTicket(board, id, "reported died", (t) => t["died"] === true, 30_000);
   expect(row["finished"]).toBe(true);
+  expect(row["status"]).toBe("in_review");
 
   await page.goto(board.baseUrl);
-  const card = inProgressCard(page, id);
+  const card = cardIn(page, IN_REVIEW, id);
   // The user's rule: finished-then-closed looks finished. The badge `title`s are the accessible
   // handle for the badges themselves, and memory/architecture.md forbids widening these assertions
   // to classes or text layout because a redesign is planned. The cross is a sufficient proxy for
@@ -129,7 +139,8 @@ test("closing the pane after the turn finished keeps the ticket finished", async
   await expect(card.getByTitle("finished")).toBeVisible();
   await expect(card.getByTitle("run died")).toHaveCount(0);
 
-  expect((await api(board, "POST", `/tickets/${id}/cancel`)).status).toBe(200);
+  // DELETE, not cancel: cancel claims `in_progress → backlog` and answers 409 from review.
+  expect((await api(board, "DELETE", `/tickets/${id}`)).status).toBe(200);
 });
 
 test("two concurrent spawns of one ticket: exactly one claim wins", async () => {
@@ -197,7 +208,8 @@ test("two different tickets spawn side by side and both agents do the work", asy
       (t) => t["finished"] === true,
       FINISH_MS,
     );
-    expect(row).toMatchObject({ status: "in_progress", died: false });
+    // Each turn moved its own ticket, so two settling side by side land in review independently.
+    expect(row).toMatchObject({ status: "in_review", died: false });
     const probe = join(run.worktreePath, PROBE_FILE);
     expect(existsSync(probe), `the agent never created ${probe}`).toBe(true);
     expect((await readFile(probe, "utf8")).trim()).toBe(PROBE_CONTENT);
