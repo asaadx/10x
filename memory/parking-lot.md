@@ -239,3 +239,14 @@ filter for one project or all. That makes a **project** a first-class concept, n
 This subsumes the "never point 10x at its own repo" safety rule in [operations](./operations.md): with an explicit
 project per ticket, there is no implicit default repo to fall into. Data-model consequence only —
 not designed yet.
+
+---
+
+## Deriving `pr_url` from `owner/repo` instead of storing it
+
+`pr_url` (`https://github.com/{owner}/{repo}/pull/{number}`) is stored on the ticket rather than
+derived, because `Project` records `repoPath` (a local filesystem path) and never `owner/repo` —
+the same folder-path-versus-GitHub-repo conflation flagged in [Projects](#projects-multi-repo)
+above. Deriving it would need owner/repo resolved and exposed through the projects API first.
+Preferred direction: an owner in `.env` plus the repo name from the project. Design smell with a
+direction, not a bug. Deferred, low priority.
