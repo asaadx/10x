@@ -92,13 +92,14 @@ the next call with an undefined pane ID produces confusing downstream failures t
 Recorded so nobody assumes these are proven.
 
 - **G2 — restart resilience, partly closed (verified).** A 10x backend restart on the same
-  database keeps a finished ticket `in_progress` with its `finished` flag, its branch and its
-  worktree, and the board re-reads the live agent as `done` — covered by `e2e/resilience.spec.ts`.
-  **What is still missing is re-subscribing:** the new process holds no event subscription for a
-  running ticket, and nothing at boot creates one, so a turn that ends *after* the restart is never
-  recorded and the ticket keeps reading unfinished. Boot reconciliation only reports it
-  ([reconciliation](./reconciliation.md), divergence row 1). A Herdr server restart is still
-  unaddressed: panes and agents die with it.
+  database keeps a finished ticket in `in_review` with its `finished` flag, its branch, its
+  worktree and its port block, and the board re-reads the live agent as `done` — covered by
+  `e2e/resilience.spec.ts`. **What is still missing is re-subscribing:** the new process holds no
+  event subscription for a running ticket, and nothing at boot creates one, so a turn that ends
+  *after* the restart is never recorded — the ticket keeps reading unfinished **and never moves to
+  In Review**, because the transition rides on that same subscription. Boot reconciliation only
+  reports it ([reconciliation](./reconciliation.md), divergence row 1). A Herdr server restart is
+  still unaddressed: panes and agents die with it.
 - **G3 — concurrency, proven at two agents (verified).** Two tickets spawned with `Promise.all`
   both reached ready in 3.2-3.9 s, ran their turns simultaneously, and each committed its own
   file: distinct branches, worktrees, agent names and panes, with a third unrelated agent live in
@@ -114,7 +115,9 @@ Recorded so nobody assumes these are proven.
   measured.
 - **G5 — the attention-aware transition.** The `idle`/`done` split
   ([agent-status](./agent-status.md)) currently has a stopgap (treat both as finished). The
-  intended fix — an OMP end-of-turn hook plus focus/attach awareness — is unbuilt and untested.
+  intended fix — an OMP end-of-turn hook plus focus/attach awareness — is unbuilt and untested,
+  and it now has something concrete to gate: the automatic move to In Review fires on a settled
+  status whether or not the user is watching that pane ([operations](./operations.md)).
 - **G6 — pinned to herdr 0.8.2, protocol 20.** Schema checked against 0.8.0: 90 → 91 methods, only
   `pane.input.set` added, nothing removed, and every parameter shape this document depends on is
   unchanged (`WorktreeCreateParams`, `WorktreeRemoveParams`, `AgentStartParams`,

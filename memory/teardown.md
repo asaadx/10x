@@ -31,8 +31,9 @@ Five rules fall out of that table, and they are the whole policy:
 
 1. **Only the first four rows destroy anything, and all four are explicit user actions.** Nothing
    else removes a worktree, ever.
-2. **A finished agent triggers nothing at all.** No teardown, no column change
-   ([operations](./operations.md)) — just a checkmark. The work is only genuinely done once merged,
+2. **A finished agent destroys nothing.** It moves its ticket to In Review and gets a checkmark
+   ([operations](./operations.md)); the agent is left **running** and the port block stays held, so
+   a Reject can re-prompt it with its full context. The work is only genuinely done once merged,
    and a passing review does not imply merge, so nothing reclaims a completed ticket's worktree
    until the user says so.
 3. **A dead pane is not a finished ticket.** Crash, `pane.exited`, Herdr restart and a

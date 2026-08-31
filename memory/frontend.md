@@ -14,12 +14,12 @@ this node.
 | --- | --- | --- | --- |
 | transport | `js/api.js` | 80 | one `api()` wrapper — it never throws and never swallows, so a network failure and a 500 arrive in the same `{ok, status, body}` shape — plus a named function per endpoint the UI uses. **No DOM.** |
 | state | `js/state.js` | 87 | the `state` object, `actionErrors`, `pendingActions`, `copyConfirms`, and the derivations (`isBusy`, `cardIsProtected`, `attachCommandFor`). **No DOM, no `fetch`.** |
-| rendering | `js/render.js` | 415 | **every `document` reference in the frontend.** Reads state, writes markup, decides nothing. |
+| rendering | `js/render.js` | 424 | **every `document` reference in the frontend.** Reads state, writes markup, decides nothing. |
 | wiring | `js/app.js` | 244 | what a click means, and the poll loop. **Touches no DOM.** |
 
 Three files sit outside the layering. `js/icons.js` (34) is a table, not a layer: the five icons JS
-renders — steer, finished, died, worktree, busy — in one map. `index.html` (73) is markup only: the
-landmarks, the composer, the unowned panel and the two columns. `styles.css` (651) is all styling
+renders — steer, finished, died, worktree, busy — in one map. `index.html` (77) is markup only: the
+landmarks, the composer, the unowned panel and the three columns. `styles.css` (651) is all styling
 and is read by nothing.
 
 The split exists so that **a redesign is layout, colours and icons only** — a change to
@@ -43,7 +43,9 @@ Two rules, both load-bearing, both stated at the top of `render.js`.
 
 **Nothing is located by class.** Every lookup is `document.getElementById`, a `[data-*]` selector or
 a role. There is no class-based `querySelector`, no `classList` read, no `className` read and no
-`closest()` anywhere in `public/js/`. *(Verified.)*
+`closest()` anywhere in `public/js/`. *(Verified.)* The one hit for
+`git grep -nE 'classList|className|closest\(' public/js/` is `el.className = "card"` in
+`renderColumn` — a **write** of a constant, which is the rule rather than an exception to it.
 
 **State leaves as an attribute, never as a class:** `data-busy` / `data-blocked` / `data-died` on a
 card, `data-status` on a badge and on each column, `data-icon` on a badge icon,
@@ -61,6 +63,24 @@ placeholder.
 
 The mirror problem was fixed too: `#composer-form` was styled by the id JS needs, so the id stayed
 the behaviour hook and `.composer-form` became the styling hook.
+
+### What adding a column actually cost
+
+In Review was the first real test of these seams, and it landed in **four edits and no stylesheet
+change**: a `<div class="column" role="region" aria-labelledby data-status>` in `index.html`, one
+`renderColumn(...)` line in `renderBoard`, one `else if` in the card's action list, and nothing
+else. *(Verified in the browser: three columns, 460 px each at a 1440 px viewport, no horizontal
+scroll.)*
+
+Two reasons it was that cheap, both worth preserving. `main.board` is a **flex row of `flex: 1;
+min-width: 0` columns**, so an n-th column shares the width without any per-column rule to add or
+a grid template to renumber. And `renderColumn(containerId, countId, status, handlers)` was already
+parameterised by status, so a column is data rather than code.
+
+The one thing the seams did **not** decide is what a card in a new column may offer. That was a
+real bug found by the exercise: the action list branched `backlog` / `else`, so a ticket in review
+inherited In Progress's Cancel — a button whose endpoint answers 409 from there. **One branch per
+status, never an `else`**, so a new status renders no action rather than the wrong one.
 
 ## 4. Design tokens
 
@@ -107,11 +127,14 @@ name carries the live count (`"Backlog 1"`) with no duplicated string to drift, 
 itself is still assertable.
 
 **A card is an `article` named by its ticket id**, which is how a spec says "*this* ticket shows the
-finished badge": `getByRole("region", {name: /^In Progress/}).getByRole("article", {name: id})`,
+finished badge": `getByRole("region", {name: /^In Review/}).getByRole("article", {name: id})`,
 then `getByTitle` inside it — the badges' `title` is their accessible handle. `resilience.spec.ts`
-uses exactly that.
+and the completion test in `spawn.spec.ts` use exactly that, and **which column a card is in is now
+part of the contract**: a settled turn moves the ticket to In Review by itself, so the locator's
+column is the assertion.
 
-**`spawn.spec.ts` has not been migrated and still scopes by `#in-progress-cards [data-id="<id>"]`**
-— DOM structure plus an element id, which is why `id="in-progress-cards"` and the cards' `data-id`
-must both stay until it is. It is the last place the suite breaks its own rule; port it to the
-locator above. Do not widen any of these into asserting on classes or text layout.
+**`spawn.spec.ts`'s first test has not been migrated and still scopes by
+`#in-progress-cards [data-id="<id>"]`** — DOM structure plus an element id, which is why
+`id="in-progress-cards"` and the cards' `data-id` must both stay until it is. It is the last place
+the suite breaks its own rule; port it to the locator above. Do not widen any of these into
+asserting on classes or text layout.

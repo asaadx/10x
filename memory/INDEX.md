@@ -14,14 +14,15 @@ task touches. Every node is small on purpose — prefer reading one node over se
 `10x` is a Kanban board (TypeScript, no framework) where moving a ticket to **In Progress** spawns
 an OMP coding agent in its own git worktree and branch inside a Herdr pane.
 
-**Current scope is deliberately narrow: `Backlog ↔ In Progress` only.** In Review and Done do not
-exist — not as columns, not as code, not as design. Single user, one Linux host, board reached from
-a MacBook over Tailscale. No auth, sessions, or multi-tenancy anywhere; single-user races *are*
-handled, because double-clicks and retries are real.
+**Current scope: `Backlog → In Progress → In Review`.** A finished turn moves its own ticket into
+In Review, where the agent stays alive; **Done does not exist** — not as a column, not as code,
+because Accept is the only route into it and ships with it. Single user, one Linux host, board
+reached from a MacBook over Tailscale. No auth, sessions, or multi-tenancy anywhere; single-user
+races *are* handled, because double-clicks and retries are real.
 
-Working today: projects, ticket CRUD, spawn with the readiness guard, live agent status, cancel,
-forced teardown, orphan reporting, agent re-attach, boot reconciliation, a reserved TCP port block
-per running ticket. Persisted in SQLite.
+Working today: projects, ticket CRUD, spawn with the readiness guard, live agent status, the
+automatic move to In Review, cancel, forced teardown, orphan reporting, agent re-attach, boot
+reconciliation, a reserved TCP port block per running ticket. Persisted in SQLite.
 
 ## How to use this folder
 
@@ -72,10 +73,11 @@ model, the ticket-worktree invariant, the divergence table, what actually consum
 (`node_modules` and OMP transcripts that outlive the worktree), and the implicit source workspace.
 `orphan · unowned · worktree.list · disk · session transcript · source workspace`
 
-**[operations](./operations.md)** — the ticket state machine and current scope, the
+**[operations](./operations.md)** — the ticket state machine and current scope, **the automatic
+`in_progress → in_review` transition** and why a second settle cannot fight the first, the
 compare-and-swap that makes status the lock, why transient statuses were rejected, never pointing
 10x at its own repo, and handling a dead pane.
-`state machine · CAS · claim · 409 · dogfooding · pane exit`
+`state machine · CAS · claim · 409 · in_review · automatic transition · dogfooding · pane exit`
 
 ### The application
 
@@ -93,7 +95,7 @@ allowed to locate by.
 `public/ · frontend layers · render.js · handlers · data-* hooks · design tokens · --space-9 · poll · attach command · aria-labelledby`
 
 **[testing](./testing.md)** — the two suites, and **which command costs money**: `npm run e2e` is an
-allow-list of the three agent-free specs (12 tests, ~6 s), while `npm run e2e:full` spawns **13 real
+allow-list of the three agent-free specs (13 tests, ~6 s), while `npm run e2e:full` spawns **13 real
 agents**. Every unit target and why it is pinned, the `e2e/fixtures.ts` contract, the per-test
 budgets, and what the suite reads outside the HTTP API.
 `node:test · playwright · fast vs full · e2e:full · requireHerdr · startBoard · 4310 · cleanupAll · real agents`
@@ -110,10 +112,10 @@ exists but *not* its wire separator.
 `probe · repro · herdr api schema · EventKind · falsifiable`
 
 **[parking-lot](./parking-lot.md)** — deliberately deferred, each with research attached. **Check
-here before designing anything that feels out of scope.** In Review/merge policy, the teardown
-review, SSE, project-slug validation timing, databases/hosting, multi-repo projects, and remote
-access.
-`deferred · In Review · SSE · /collab · --remote · projects`
+here before designing anything that feels out of scope.** Accept/Reject/Preview and Done, merge
+policy, the teardown review, SSE, project-slug validation timing, databases/hosting, multi-repo
+projects, and remote access.
+`deferred · Done · Accept · Reject · merge policy · SSE · /collab · --remote · projects`
 
 ---
 
