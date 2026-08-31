@@ -14,15 +14,16 @@ task touches. Every node is small on purpose — prefer reading one node over se
 `10x` is a Kanban board (TypeScript, no framework) where moving a ticket to **In Progress** spawns
 an OMP coding agent in its own git worktree and branch inside a Herdr pane.
 
-**Current scope: `Backlog → In Progress → In Review`.** A finished turn moves its own ticket into
-In Review, where the agent stays alive; **Done does not exist** — not as a column, not as code,
-because Accept is the only route into it and ships with it. Single user, one Linux host, board
-reached from a MacBook over Tailscale. No auth, sessions, or multi-tenancy anywhere; single-user
-races *are* handled, because double-clicks and retries are real.
+**Current scope: `Backlog → In Progress → In Review → Done`.** A finished turn moves its own ticket
+into In Review, where the agent stays alive so Reject can re-prompt it. Accept pushes the branch,
+opens a PR and retires the agent; Done is terminal — delete only. Single user, one Linux host,
+board reached from a MacBook over Tailscale. No auth, sessions, or multi-tenancy anywhere;
+single-user races *are* handled, because double-clicks and retries are real.
 
 Working today: projects, ticket CRUD, spawn with the readiness guard, live agent status, the
-automatic move to In Review, cancel, forced teardown, orphan reporting, agent re-attach, boot
-reconciliation, a reserved TCP port block per running ticket. Persisted in SQLite.
+automatic move to In Review, Accept (publish a PR) and Reject (re-prompt with a mandatory reason),
+cancel, forced teardown, orphan reporting, agent re-attach, boot reconciliation, a reserved TCP
+port block per running ticket. Persisted in SQLite.
 
 ## How to use this folder
 
@@ -83,9 +84,15 @@ compare-and-swap that makes status the lock, why transient statuses were rejecte
 
 **[architecture](./architecture.md)** — how the 10x **server** is built: zero dependencies, the
 module map, **stored vs derived**, the database schema with its monotonic ticket counter and
-port-slot pool, all twelve endpoints plus the static asset route, the spawn request lifecycle, and
-what is deliberately not persisted.
+port-slot pool, all fourteen endpoints plus the static asset route, the spawn request lifecycle,
+and what is deliberately not persisted.
 `node:sqlite · schema · next_number · endpoints · RunSpec · stored vs derived · port slots · MAX_PORT_SLOTS · port_pool_exhausted · static route · realpath containment`
+
+**[github](./github.md)** — publishing a branch as a PR (token redaction on every error path,
+`owner/repo` read from `origin`, an existing PR is adopted not failed), and the facts the unbuilt
+webhook receiver must be written against: **±LOC is in the payload**, **`mergeable` is not**,
+**a conflict is never pushed**, and **`null` means retry**.
+`github.ts · pushTicketBranch · openPullRequest · redact · pull_request webhook · merged · mergeable · gh webhook forward · GITHUB_TOKEN · 10x-test`
 
 **[frontend](./frontend.md)** — the board's browser half: **four layers across five ES modules**, no
 framework, no build step, and the rule that makes a redesign safe — nothing is located by a CSS
@@ -95,7 +102,7 @@ allowed to locate by.
 `public/ · frontend layers · render.js · handlers · data-* hooks · design tokens · --space-9 · poll · attach command · aria-labelledby`
 
 **[testing](./testing.md)** — the two suites, and **which command costs money**: `npm run e2e` is an
-allow-list of the three agent-free specs (13 tests, ~6 s), while `npm run e2e:full` spawns **13 real
+allow-list of the three agent-free specs (18 tests, ~7 s), while `npm run e2e:full` spawns **16 real
 agents**. Every unit target and why it is pinned, the `e2e/fixtures.ts` contract, the per-test
 budgets, and what the suite reads outside the HTTP API.
 `node:test · playwright · fast vs full · e2e:full · requireHerdr · startBoard · 4310 · cleanupAll · real agents`

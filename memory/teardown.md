@@ -19,6 +19,7 @@ The dials: **agent process**, **Herdr pane/workspace**, **worktree directory**, 
 | **Ticket deleted** | stop | close | **force-remove** | **delete** | **delete** |
 | **Project deleted** | stop all | close all, incl. source workspace | **force-remove all** | **delete all** | **delete all** |
 | **Manual "remove worktree"** | stop | close | **force-remove** | keep | **delete** |
+| **Accept** (In Review → Done) | stop | close | **keep** | **keep** | **delete** |
 | Agent finished its turn | leave running | leave open | keep | keep | keep |
 | Agent crashed / `pane.exited` | gone | gone | keep | keep | **keep — evidence** |
 | Herdr server restarted | gone | gone | keep | keep | keep |
@@ -29,8 +30,9 @@ The dials: **agent process**, **Herdr pane/workspace**, **worktree directory**, 
 
 Five rules fall out of that table, and they are the whole policy:
 
-1. **Only the first four rows destroy anything, and all four are explicit user actions.** Nothing
-   else removes a worktree, ever.
+1. **Only the first four rows destroy a worktree, and all four are explicit user actions.** Nothing
+   else removes one, ever. Accept is the fifth explicit action and deliberately spares both the
+   worktree and the branch.
 2. **A finished agent destroys nothing.** It moves its ticket to In Review and gets a checkmark
    ([operations](./operations.md)); the agent is left **running** and the port block stays held, so
    a Reject can re-prompt it with its full context. The work is only genuinely done once merged,
@@ -59,6 +61,21 @@ matter: it reclaims the disk but keeps the branch, so nothing is lost.
 worktrees for completed-but-unmerged tickets accumulate until you act. Reconciliation makes them
 visible ([reconciliation](./reconciliation.md)); `pnpm` keeps each one cheap
 ([reconciliation](./reconciliation.md)).
+
+**Accept is `retireAgent`, deliberately not `teardown`.** Accept never merges — the user merges on
+GitHub — so the worktree holds the only copy of the reviewed commits until then, and reclaiming it
+would destroy work the open PR still points at. `retireAgent` resolves the session dir and pane id
+**before** closing the pane (teardown's ordering, for teardown's reason: once the pane is gone,
+`agent.get` can find neither, and the transcript path must never be derived by hand), then closes
+the pane and `rm -rf`s the transcript. No `worktree.remove`, no branch delete. An agent that is
+already gone is not an error — there is simply nothing left to close.
+
+**Delete has no guard, and that is a known gap.** `DELETE /tickets/:id` runs the full destructive
+teardown from **any** column, including Done — force-removed worktree, `git branch -D`, transcript
+`rm -rf`, row dropped, **no audit trail** — with the only residue being unreachable git objects for
+`gc.pruneExpire`. The intended guard is to refuse deleting a ticket whose PR is neither merged nor
+closed and to tell the user to resolve it on GitHub first, which needs PR state from the webhook
+receiver ([github](./github.md)). Until it lands, treat Delete on a Done ticket as unsafe.
 
 **Re-dispatch means spawning a ticket whose worktree — and possibly whose live agent — already
 exists.** Herdr owns the panes and agents, so both survive a 10x backend restart untouched.

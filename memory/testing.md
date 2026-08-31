@@ -54,17 +54,26 @@ they never start an agent.
 | --- | --- | --- | --- | --- |
 | `projects.spec.ts` | fast | 5 | registration, slug / repo / duplicate validation | none |
 | `tickets.spec.ts` | fast | 4 | ticket CRUD and monotonic numbering across a delete | none |
-| `board.spec.ts` | fast | 4 | rendering, the empty In Review column, picking up a ticket via the poll, the static asset route | none |
+| `board.spec.ts` | fast | 9 | the four columns and their order, empty In Review and Done, Accept/Reject button presence per column, picking up a ticket via the poll, the static asset route | none |
 | `spawn.spec.ts` | full | 3 | spawn, **the automatic move to In Review** observed on a real turn, cancel | 3 |
 | `teardown.spec.ts` | full | 2 | ticket delete, worktree-only delete (branch survives) | 2 |
 | `resilience.spec.ts` | full | 4 | backend restart, `finished` and the review column surviving a pane close, compare-and-swap, two concurrent tickets | 5 |
 | `ports.spec.ts` | full | 2 | `.env` written and git-excluded, pool exhaustion → 409, slot reused after cancel | 3 |
+| `accept.spec.ts` | full | 1 | publish the branch as a PR, ticket to Done, agent retired | 1 |
+| `reject.spec.ts` | full | 2 | re-prompt back to In Progress destroying nothing, empty reason → 400 | 2 |
 
-**24 tests in all.** The three `fast` specs are **13 of them and run in ~6 s with no agent and no
-model cost, so run them freely** *(verified)*. The other four specs are 11 tests and **13 real agent
+**32 tests in all.** The three `fast` specs are **18 of them and run in ~7 s with no agent and no
+model cost, so run them freely** *(verified)*. The other six specs are 14 tests and **16 real agent
 spawns**, so `npm run e2e:full` costs real model turns and is not a routine check. The automatic
 In Review transition is asserted inside the existing completion test rather than in a new one,
 precisely so covering it cost **zero extra spawns**.
+
+*(Test counts verified with `playwright test --list`. The 13 spawns in the first four full specs
+were measured; the 3 added by `accept`/`reject` are counted from their `spawnTicket` calls, not
+yet observed on a run.)*
+
+`accept.spec.ts` **skips itself without `GITHUB_TOKEN`**, because it pushes to `asaadx/10x-test`
+and opens a real PR, then closes it in a failure-proof `finally`.
 
 **A completion spec's teardown must be `DELETE /tickets/:id`, not `/cancel`.** Cancel claims
 `in_progress → backlog`, and any test that waits for a turn to finish has a ticket that already

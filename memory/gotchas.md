@@ -96,10 +96,27 @@ Recorded so nobody assumes these are proven.
   worktree and its port block, and the board re-reads the live agent as `done` — covered by
   `e2e/resilience.spec.ts`. **What is still missing is re-subscribing:** the new process holds no
   event subscription for a running ticket, and nothing at boot creates one, so a turn that ends
-  *after* the restart is never recorded — the ticket keeps reading unfinished **and never moves to
-  In Review**, because the transition rides on that same subscription. Boot reconciliation only
-  reports it ([reconciliation](./reconciliation.md), divergence row 1). A Herdr server restart is
-  still unaddressed: panes and agents die with it.
+  *after* the restart is never recorded — the ticket keeps reading unfinished and **sticks in In
+  Progress permanently**, because the transition rides on that same subscription. Boot
+  reconciliation only reports it ([reconciliation](./reconciliation.md), divergence row 1).
+
+  **A dropped socket is equally silent (verified).** `subscribe()` in `src/herdr.ts` registers
+  `'connect'`, `'data'` and `'error'` handlers and **no `'close'` handler at all**, so a clean
+  close — a Herdr restart, or the server hanging up — produces no warning and no reconnect. The
+  comment on the `'error'` handler claiming *"reconciliation is the real safety net"* is **false**:
+  reconciliation never writes.
+
+  Four options were considered and **none chosen**: **A** subscribe at boot for every
+  `in_progress` ticket; **B** = A plus persisting `sawWorking`, so a restart mid-turn cannot
+  mistake the first settle for completion; **C** drop subscriptions entirely and poll `agent.get`;
+  **D** derive the transition from status alone — **unsound**, because the first `idle` arrives
+  before the prompt ([agent-status](./agent-status.md)). A plain boot catch-up
+  (`in_progress AND finished → in_review`) was designed and **deliberately dropped**: it makes
+  steering worse, since restarting while you are talking to an agent jumps the ticket immediately.
+
+  **Operational consequence: do not restart the board while an agent is working.** If Herdr
+  restarts, restart the board *after* it. A Herdr server restart is still unaddressed: panes and
+  agents die with it.
 - **G3 — concurrency, proven at two agents (verified).** Two tickets spawned with `Promise.all`
   both reached ready in 3.2-3.9 s, ran their turns simultaneously, and each committed its own
   file: distinct branches, worktrees, agent names and panes, with a third unrelated agent live in

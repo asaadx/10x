@@ -4,16 +4,17 @@
 
 ## Ticket state machine
 
-### Scope: Backlog → In Progress → In Review. Done does not exist yet.
+### Scope: Backlog → In Progress → In Review → Done.
 
-**Three columns.** Done is terminal (delete only) and is reached **only** by clicking Accept, so
-it ships with Accept — a Done column before that would be unreachable and permanently empty.
+**Four columns.** Done is terminal — delete only — and is reached **only** by Accept.
 
 | From | To | Trigger | Side effect |
 |---|---|---|---|
 | Backlog | In Progress | **spawn**, a click | the four spawn calls ([spawn](./spawn.md)), claimed by CAS ([below](#claiming-a-ticket-reject-concurrent-requests)) |
 | In Progress | Backlog | **cancel**, a click | force-remove worktree, delete branch ([teardown](./teardown.md)) |
 | In Progress | In Review | **automatic**: the agent's turn completed | none — the agent stays alive and the port block stays held |
+| In Review | Done | **accept**, a click | push the branch, open a PR, retire the agent and its transcript, release the port slot. The worktree and branch **survive**; 10x never merges |
+| In Review | In Progress | **reject**, a click with a mandatory reason | re-prompts the same live agent with the reason and clears `finished`. Destroys nothing |
 
 ### The automatic transition
 
@@ -36,10 +37,15 @@ deliberate: a Reject has to re-prompt the same agent with its full context, and 
 from review binds the same port range. Killing the dev server that agent may have started is
 separate mechanics and is not built.
 
-**A ticket in review has no route back through the UI.** Cancel claims `in_progress → backlog` and
-answers 409 from review, so an In Review card deliberately renders **no run action at all** until
-Accept and Reject exist ([frontend](./frontend.md)). Delete still works from any column, and it is
-the only escape today.
+**A ticket in review has two routes out, both by hand: Accept and Reject.** Cancel claims
+`in_progress → backlog` and answers 409 from review, so an In Review card renders Accept and
+Reject but **no run action** ([frontend](./frontend.md)). Delete still works from any column.
+
+Both are claim-first, work-second. Accept hands the claim back to `in_review` if the push or the
+PR call fails — a ticket in Done with no PR is worse than a visible error — but once the PR exists
+the retire step can only log, because the PR is irreversible and the status now depends on it.
+Reject hands the claim back to `in_review` if `agent.prompt` fails, and distinguishes
+`agent_not_found` (`agent_not_alive`, the agent is genuinely gone) from any other prompt failure.
 
 ### What the app does on each agent status
 
@@ -69,7 +75,7 @@ The HTTP surface is documented in [architecture](./architecture.md).
 - **Concurrency cap: 2 tickets.** Two proves concurrency; ten is a hardware question.
 - **Base branch** is `main` by default, with an optional parameter to branch from something else.
 
-Done, Accept, Reject, Preview and merge policy live in [parking-lot.md](./parking-lot.md).
+Preview, merge policy and a fresh reviewing agent live in [parking-lot.md](./parking-lot.md).
 
 ---
 
