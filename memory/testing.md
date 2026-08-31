@@ -1,0 +1,100 @@
+# Testing
+
+**Node:** testing · Parent: [INDEX.md](./INDEX.md)
+
+The two suites 10x has, what each one is for, and — the part that costs money if you get it wrong —
+**which of them spawns real coding agents.** What is being tested is described in
+[architecture](./architecture.md); how to reproduce a Herdr claim from scratch is in
+[verification](./verification.md).
+
+## 1. Two suites, three commands
+
+Deliberately separate. `npm test` (`node --test 'src/*.test.ts'`) is the pure-unit layer and needs
+nothing running. Playwright drives the real HTTP surface and the real page, and it is split into
+**two projects, not one filtered run**: `npm run e2e` (`playwright test --project=fast`) runs only
+the specs known not to spawn a coding agent, and `npm run e2e:full`
+(`playwright test --project=full`) runs every spec.
+
+**`fast` is an allow-list, and that is the whole point.** Its `testMatch` names
+`projects.spec.ts`, `tickets.spec.ts` and `board.spec.ts` explicitly. A deny-list of the spawning
+specs would default a newly added spec to *included*, so a spec that spawns real agents would
+silently start spawning under the default `npm run e2e`. An allow-list fails safe instead: a
+forgotten new spec merely runs slower under `e2e:full` and never spawns unexpectedly.
+
+## 2. The unit suite
+
+**The glob matters and so do the quotes.** `node --test src` does not pick up `.ts` files —
+verified: it reports `✖ src (40ms) 'test failed'`. Quote the glob so the shell hands it to Node
+rather than expanding it. Current state: **63 tests, 12 suites, 0 failures**, `duration_ms` ≈ 195.
+
+| Target | Why it is tested |
+| --- | --- |
+| `normalizeEvent` | Herdr emits `pane.agent_status_changed` dotted and `pane_closed` underscored. Matching either literally drops half the stream with **no error attached** — it cost this project its status pipeline once. |
+| `isAgentReady` / `isSettled` | `done` and `idle` are the same underlying ready state. Accepting only `idle` broke agent reuse 100% of the time and hung for the full 60 s timeout. `interactive_ready` is the tell for a premature `agent.start` return. |
+| `branchFor` / `agentNameFor` | The alignment invariant: branch lowercased with `/`→`-` must equal the agent name. If they drift, reuse, teardown and dispatch break at once. |
+| agent-name budget | `ticket-` (7) + separator (1) leaves 24 of the 32-char ceiling; a 20-char slug + 4-digit number lands exactly on 32. That is *why* the slug cap is 20. |
+| `validateProjectSlug` | Dots are branch-legal and agent-name-illegal, so a dotted slug fails only at spawn time, after the worktree exists. Also pins that a leading digit is legal — `10x` is this project's own name. |
+| `claimTicket` | The only lock in the system: a second click loses, a mismatched `from` loses, an unknown id loses instead of throwing, bystanders are untouched, `updated_at` is bumped only on a win. Runs against a temp DB via `mkdtempSync` and a **dynamic** import, because `db.ts` opens the database at module load and a static import would hoist above the `DB_PATH` assignment. |
+| the port pool | A wrong slot hands two live agents the same TCP port, and the symptom is an `EADDRINUSE` inside somebody's worktree rather than an error on the board. Pinned: lowest-free selection, reuse after release, exhaustion at the cap, the block arithmetic including the last slot's upper bound (4199, not 4200), and the cap coming from `MAX_PORT_SLOTS`. The persistence half additionally pins that the UNIQUE index — not the allocator — is what refuses a double assignment. |
+
+The tests deliberately cover the three things that have actually broken — event-name normalisation,
+the idle-or-done readiness predicate, and the CAS — plus the naming invariants that guard them.
+Nothing tests plumbing. See [verification](./verification.md) and [gotchas](./gotchas.md).
+
+## 3. The e2e suite
+
+`playwright.config.ts` + `e2e/`. **`workers: 1` is correctness, not speed:** the whole suite shares
+one backend, one port and one state dir. `e2e/fixtures.ts` is the contract every spec imports —
+`startBoard` (server on **4310**, avoiding 4010 and the 4100-4199 dev-server pool, readiness polled
+on `GET /projects`), `makeRepo`, `cleanupAll`, `requireHerdr`, plus the spawn helpers below. Every
+spec calls `requireHerdr()`, the agent-free ones included: they need a live Herdr socket even though
+they never start an agent.
+
+| Spec | Project | Tests | Covers | Real agents |
+| --- | --- | --- | --- | --- |
+| `projects.spec.ts` | fast | 5 | registration, slug / repo / duplicate validation | none |
+| `tickets.spec.ts` | fast | 4 | ticket CRUD and monotonic numbering across a delete | none |
+| `board.spec.ts` | fast | 3 | rendering, picking up a ticket via the poll, the static asset route | none |
+| `spawn.spec.ts` | full | 3 | spawn, prompt delivery via the agent's own `probe.txt`, cancel | 3 |
+| `teardown.spec.ts` | full | 2 | ticket delete, worktree-only delete (branch survives) | 2 |
+| `resilience.spec.ts` | full | 4 | backend restart, `finished` surviving a pane close, compare-and-swap, two concurrent tickets | 5 |
+| `ports.spec.ts` | full | 2 | `.env` written and git-excluded, pool exhaustion → 409, slot reused after cancel | 3 |
+
+**23 tests in all.** The three `fast` specs are **12 of them and run in ~6 s with no agent and no
+model cost, so run them freely** *(verified)*. The other four specs are 11 tests and **13 real agent
+spawns**, so `npm run e2e:full` costs real model turns and is not a routine check.
+
+**A spawn spec runs a real OMP agent, so teardown is the load-bearing part.** Every spawn is
+registered with `cleanupAll` *before* its request goes out, each test tears its own spawn down at
+the end, and `cleanupAll` falls back to `worktree.open`+`worktree.remove` straight at Herdr when
+the backend is gone. Per-test budgets are set with `test.setTimeout`: **120 s** spawn-only,
+**180 s** spawn-plus-completion, **240 s** for the two serial spawns in `ports.spec.ts`; the
+config's 30 s default stays for the non-spawn specs. Measured: spawn returns in **3.5–3.9 s** and
+the probe turn finishes **7–12 s** after that, against the 600 s `globalTimeout`.
+
+Three things the suite reads outside the HTTP API, each for a reason:
+
+- **`storedTicket`** opens the SQLite file, because `board()` derives `branch` and `agentName` when
+  the columns are null — so the API reports them either way and cannot show teardown clearing them.
+- **`liveAgentNames` / `liveWorktreeBranches`** ask Herdr directly, so "no agent, no worktree" is
+  asserted against the source of truth rather than against our own join.
+- **`restartBoard`** starts a second backend on the *same* state dir. `startBoard` would hand out a
+  fresh empty database and prove nothing about a restart.
+
+`cleanupAll` also closes each throwaway repo's implicit Herdr **source workspace** and `rmdir`s
+`~/.herdr/worktrees/<repo>/`: both outlive the last ticket worktree, and each e2e run would
+otherwise leave one of each behind ([reconciliation](./reconciliation.md)).
+
+**Repos are created on `dev`, and specs pass `baseBranch: "dev"` explicitly.** `baseBranch` defaults
+to `main` and is only handed to git at `worktree.create` time, so registering a project whose base
+branch does not exist succeeds and fails at spawn instead. *(Verified.)*
+
+**Herdr absent is survivable for reads and fatal for teardown.** *(Verified with
+`HERDR_SOCKET_PATH` pointed at a nonexistent socket.)* The server boots, `GET /projects` and
+`GET /tickets` both answer 200, and boot reconciliation only warns — every Herdr read is wrapped
+and degrades. But `teardown` rethrows any `worktree.open` failure that is not `worktree_not_found`,
+so `DELETE /tickets/:id` answers **500 `socket_error`**. That is why `requireHerdr` exists: without
+the preflight the failure reads as a mystery, not as a missing dependency.
+
+**What a UI spec may assert** — accessible semantics only, and the one spec that has not been
+migrated to them yet — is part of the frontend's contract, in [frontend](./frontend.md).

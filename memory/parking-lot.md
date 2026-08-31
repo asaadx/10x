@@ -200,51 +200,6 @@ it mid-spawn. Three lines, and the error appears where it belongs.
 
 ---
 
-## Port allocation for per-ticket dev servers
-
-Needed before dogfooding, not before.
-
-**Two different things get called "the frontend/backend". Keep them apart:**
-
-| | How many | Role |
-|---|---|---|
-| The 10x board | **one per environment** | the tool you click in; never per-ticket |
-| The project in a ticket's worktree | **one per ticket** *if the agent runs it* | disposable, the thing under test |
-
-Hot-reload belongs to the second: each worktree has its own checkout, its own dev server watching
-its own files. A single board does not constrain that. The board must *not* hot-reload from agent
-edits, and does not, because agents write to worktrees and never to the board's checkout.
-
-When the project under test **is 10x**, both rows are 10x — same code, unrelated roles. That is why
-it reads as one thing when it is two.
-
-**The collision:** every ticket's dev server inherits the project's default port, so the second
-onwards die with `EADDRINUSE` — and with 10x as the target, the first also collides with the board.
-
-**Decision: derive the port from the ticket number**, `base + ticket.number`, and pass it into the
-worktree environment alongside the system-prompt file already written per ticket. Keep the board's
-own port outside that band. (`PORT=0` was the alternative — the OS picks and the agent reads back
-what it got — but a derived port is predictable, which matters when you want to open the thing.)
-
-Same reasoning applies to any other fixed resource a ticket's agent claims while testing: a
-database file, a lock file, a fixed socket path.
-
-**Allocate a block per ticket, not a single port.** Today 10x is one Node process serving both the
-API and the HTML, so one port per ticket is enough. The moment the frontend becomes its own dev
-server (Vite on `:5173` beside the API on `:4010`), every ticket needs **two**. Retrofitting a
-second port into a `base + number` scheme means renumbering everything, so reserve a small stride
-from the start:
-
-```
-ticket 5 → 4105 (api) / 5105 (web)
-ticket 6 → 4106 (api) / 5106 (web)
-```
-
-Either parallel bands as above, or `base + number * stride`. Pick one before the first ticket runs
-a dev server.
-
----
-
 ## Databases, hosting, and multi-machine access
 
 Raised and explicitly deferred. Context captured so the discussion does not restart from scratch:

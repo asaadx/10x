@@ -20,7 +20,8 @@ a MacBook over Tailscale. No auth, sessions, or multi-tenancy anywhere; single-u
 handled, because double-clicks and retries are real.
 
 Working today: projects, ticket CRUD, spawn with the readiness guard, live agent status, cancel,
-forced teardown, orphan reporting, agent re-attach, boot reconciliation. Persisted in SQLite.
+forced teardown, orphan reporting, agent re-attach, boot reconciliation, a reserved TCP port block
+per running ticket. Persisted in SQLite.
 
 ## How to use this folder
 
@@ -78,12 +79,24 @@ compare-and-swap that makes status the lock, why transient statuses were rejecte
 
 ### The application
 
-**[architecture](./architecture.md)** — how 10x itself is built: zero dependencies, the module map,
-**stored vs derived**, the database schema and the monotonic ticket counter, all twelve endpoints,
-the spawn request lifecycle, what is deliberately not persisted, the two test suites, and the
-**four frontend layers** — including the rule that makes a redesign safe: no JS reads or computes
-a CSS class, so renaming one cannot change behaviour.
-`node:sqlite · node:test · playwright · e2e · schema · next_number · endpoints · RunSpec · stored vs derived · frontend layers · data-* hooks · design tokens · static route`
+**[architecture](./architecture.md)** — how the 10x **server** is built: zero dependencies, the
+module map, **stored vs derived**, the database schema with its monotonic ticket counter and
+port-slot pool, all twelve endpoints plus the static asset route, the spawn request lifecycle, and
+what is deliberately not persisted.
+`node:sqlite · schema · next_number · endpoints · RunSpec · stored vs derived · port slots · MAX_PORT_SLOTS · port_pool_exhausted · static route · realpath containment`
+
+**[frontend](./frontend.md)** — the board's browser half: **four layers across five ES modules**, no
+framework, no build step, and the rule that makes a redesign safe — nothing is located by a CSS
+class and no class ever carries state, so renaming one cannot change behaviour. Also the design
+tokens, the 1 s poll, the client-built attach command, and the accessible semantics a UI spec is
+allowed to locate by.
+`public/ · frontend layers · render.js · handlers · data-* hooks · design tokens · --space-9 · poll · attach command · aria-labelledby`
+
+**[testing](./testing.md)** — the two suites, and **which command costs money**: `npm run e2e` is an
+allow-list of the three agent-free specs (12 tests, ~6 s), while `npm run e2e:full` spawns **13 real
+agents**. Every unit target and why it is pinned, the `e2e/fixtures.ts` contract, the per-test
+budgets, and what the suite reads outside the HTTP API.
+`node:test · playwright · fast vs full · e2e:full · requireHerdr · startBoard · 4310 · cleanupAll · real agents`
 
 ### Reference
 
@@ -98,9 +111,9 @@ exists but *not* its wire separator.
 
 **[parking-lot](./parking-lot.md)** — deliberately deferred, each with research attached. **Check
 here before designing anything that feels out of scope.** In Review/merge policy, the teardown
-review, SSE, project-slug validation timing, per-ticket dev-server ports, databases/hosting,
-multi-repo projects, and remote access.
-`deferred · In Review · SSE · ports · /collab · --remote · projects`
+review, SSE, project-slug validation timing, databases/hosting, multi-repo projects, and remote
+access.
+`deferred · In Review · SSE · /collab · --remote · projects`
 
 ---
 

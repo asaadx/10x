@@ -30,7 +30,15 @@ import {
   setRunFields,
   updateTicket,
 } from "./ticket-store.ts";
-import { claimTicket, type Project, type Ticket } from "./db.ts";
+import {
+  claimTicket,
+  reclaimStalePortSlots,
+  releasePortSlot,
+  reservePortSlot,
+  type Project,
+  type Ticket,
+} from "./db.ts";
+import { blockFor } from "./ports.ts";
 
 const PORT = Number(process.env.PORT ?? 4010);
 const PUBLIC_DIR = join(import.meta.dirname, "..", "public");
@@ -222,6 +230,9 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       runs.delete(id);
       return json(deleteTicket(id));
     } finally {
+      // Deleting the row frees the slot with it, but only if teardown got that far. A
+      // failed Herdr call must not strand a tenth of the pool until the next boot.
+      releasePortSlot(id);
       inFlight.delete(id);
     }
   }
@@ -235,51 +246,61 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     if (!claimTicket(id, "backlog", "in_progress")) {
       return json({ error: "not_in_backlog", status: ticket.status }, 409);
     }
+
+    // Reserved BEFORE the agent starts, because the block is written into the worktree the
+    // agent boots in — there is no later point at which it could be injected. The accepted
+    // consequence is that the cap is also a cap on concurrent in-progress tickets.
+    const reserved = reservePortSlot(id);
+    if (!reserved.ok) {
+      claimTicket(id, "in_progress", "backlog");
+      return json(
+        {
+          error: "port_pool_exhausted",
+          cap: reserved.cap,
+          message:
+            `all ${reserved.cap} port slots are in use; cancel a ticket or raise ` +
+            "MAX_PORT_SLOTS",
+        },
+        409,
+      );
+    }
     inFlight.add(id);
     const state: RunState = { diagnostics: freshDiagnostics(), sessionDir: ticket.sessionDir };
     runs.set(id, state);
 
     /*
-     * Three flags for one run, reset in one place because they must stay in sync: `sawWorking`
-     * gates the completion signal (memory/agent-status.md: the first `idle` arrives BEFORE the
-     * prompt, so settled alone never proves completion), `sawFinished` remembers that a settled
-     * status really was observed, and the persisted `finished`/`died` columns are what the board
-     * renders. A respawn reuses this same row, so a `sawFinished` left over from a previous
-     * attempt would let a pane death report a completion that never happened on this one.
+     * `sawWorking` gates the completion signal (memory/agent-status.md: the first `idle` arrives
+     * BEFORE the prompt, so a settled status alone never proves completion). The persisted
+     * `finished`/`died` columns are what the board renders, and a respawn reuses this same row,
+     * so stale flags left by a previous attempt are cleared here.
      */
     let sawWorking = false;
-    let sawFinished = false;
     setRunFields(id, { finished: false, died: false });
 
     try {
       const res = await spawn(
         specFor(ticket, project),
+        blockFor(reserved.slot),
         state,
         (status) => {
           // memory/agent-status.md: the FIRST `idle` arrives before the prompt, so it is not completion.
           if (status === "working") {
             sawWorking = true;
-            sawFinished = false;
             setRunFields(id, { finished: false });
           } else if (sawWorking && isSettled(status)) {
-            sawFinished = true;
             setRunFields(id, { finished: true });
           }
         },
         () => {
           /*
-           * Two different situations reach this one callback. A pane dying mid-turn is NOT a
-           * finished ticket (memory/teardown.md rule 3). But a pane going away AFTER a completion
-           * was observed — a closed tab, a Herdr restart, a reboot — must not erase a completion
-           * we correctly saw, so `finished` reports what actually happened instead of being
-           * forced to false. Either way the worktree and transcript are kept for inspection.
+           * A dead pane is not a finished ticket (memory/teardown.md rule 3), so record `died`
+           * and nothing else. `finished` is deliberately left alone: the status callback above is
+           * its only writer and already knows whether the turn completed, so touching it here
+           * could only erase a completion that really happened. The worktree and transcript are
+           * kept for inspection either way.
            */
-          setRunFields(id, { died: true, finished: sawFinished });
-          console.warn(
-            sawFinished
-              ? `[${id}] pane closed after the turn finished — completion kept, worktree kept`
-              : `[${id}] pane exited — run is dead, worktree kept for inspection`,
-          );
+          setRunFields(id, { died: true });
+          console.warn(`[${id}] pane exited — run is dead, worktree kept for inspection`);
         },
       );
       setRunFields(id, {
@@ -289,8 +310,10 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       });
       return json({ ok: true, ...res, diagnostics: state.diagnostics });
     } catch (err) {
-      // Release the claim. Any worktree left behind surfaces via `unowned` (memory/reconciliation.md).
+      // Release the claim AND the block. Any worktree left behind surfaces via `unowned`
+      // (memory/reconciliation.md); a slot left behind would just silently shrink the pool.
       claimTicket(id, "in_progress", "backlog");
+      releasePortSlot(id);
       const message = err instanceof Error ? err.message : String(err);
       return json({ error: message, diagnostics: state.diagnostics }, 500);
     } finally {
@@ -314,6 +337,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     } catch (err) {
       return json({ error: err instanceof Error ? err.message : String(err) }, 500);
     } finally {
+      releasePortSlot(id);
       inFlight.delete(id);
     }
   }
@@ -331,6 +355,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     } catch (err) {
       return json({ error: err instanceof Error ? err.message : String(err) }, 500);
     } finally {
+      releasePortSlot(id);
       inFlight.delete(id);
     }
   }
@@ -407,6 +432,20 @@ createServer(async (req, res) => {
   }
 }).listen(PORT, async () => {
   console.log(`10x → http://localhost:${PORT}`);
+
+  /*
+   * Reclaim port blocks held by tickets that are no longer in progress — the residue of a
+   * process killed between reserving one and releasing it. Before the projects check,
+   * because a stale slot outlives the project that produced it only in the sense that it
+   * would still be counted against the cap.
+   *
+   * This one reconciliation DOES change state, and that is not a breach of "reconciliation
+   * reports, it never destroys" (memory/reconciliation.md): that rule protects the user's
+   * work — worktrees, branches, transcripts, none of them recreatable. A port slot is our
+   * own bookkeeping, so reclaiming one cannot lose anything.
+   */
+  const reclaimed = reclaimStalePortSlots();
+  if (reclaimed > 0) console.log(`  reclaimed ${reclaimed} stale port slot(s)`);
   const projects = listProjects();
   if (projects.length === 0) {
     console.log("no projects yet — POST /projects { id, name, repoPath } to add one");
