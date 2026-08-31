@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TicketRow } from "./db.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "10x-db-test-"));
 process.env.STATE_DIR = dir;
@@ -15,7 +16,7 @@ process.env.DB_PATH = join(dir, "10x.db");
 // db.ts opens the database at module load, so DB_PATH must already be set: the one place
 // a dynamic import is required rather than preferred. Static imports hoist above the
 // assignments above and would open the real ~/.10x/10x.db.
-const { claimTicket, db, nowIso } = await import("./db.ts");
+const { claimTicket, db, nowIso, setPullRequest, toStatus, toTicket } = await import("./db.ts");
 
 // WAL leaves -wal and -shm siblings, so the whole temp directory goes, not just the file.
 after(() => {
@@ -136,5 +137,56 @@ describe("claimTicket across in_review", () => {
     assert.equal(claimTicket("t-review-wrong", "in_progress", "in_review"), false);
     assert.equal(readString("t-review-wrong", "status"), "backlog");
     assert.equal(readString("t-review-wrong", "updated_at"), ANCIENT);
+  });
+});
+
+describe("toStatus", () => {
+  test("decodes \"done\" as \"done\"", () => {
+    assert.equal(toStatus("done"), "done");
+  });
+
+  test("an unknown string still decodes as backlog", () => {
+    assert.equal(toStatus("archived"), "backlog");
+  });
+});
+
+describe("claimTicket into done", () => {
+  test("a claim from in_review to done succeeds", () => {
+    seed("t-done", "in_review");
+    assert.equal(claimTicket("t-done", "in_review", "done"), true);
+    assert.equal(readString("t-done", "status"), "done");
+  });
+
+  test("a claim into done fails from backlog", () => {
+    seed("t-done-backlog", "backlog");
+    assert.equal(claimTicket("t-done-backlog", "in_review", "done"), false);
+    assert.equal(readString("t-done-backlog", "status"), "backlog");
+  });
+
+  test("a claim into done fails from in_progress", () => {
+    seed("t-done-progress", "in_progress");
+    assert.equal(claimTicket("t-done-progress", "in_review", "done"), false);
+    assert.equal(readString("t-done-progress", "status"), "in_progress");
+  });
+});
+
+describe("setPullRequest", () => {
+  test("stores both values and they survive a read back through toTicket", () => {
+    seed("t-pr", "in_review");
+    setPullRequest("t-pr", 42, "https://example.com/pr/42");
+    // Raw SELECT * is the same shape node:sqlite hands `toTicket` in production; this is
+    // the test's own parse boundary, mirroring ticket-store.ts's `decode`.
+    const row = db.prepare("SELECT * FROM tickets WHERE id = ?").get("t-pr") as TicketRow;
+    const ticket = toTicket(row);
+    assert.equal(ticket.prNumber, 42);
+    assert.equal(ticket.prUrl, "https://example.com/pr/42");
+  });
+
+  test("a ticket that has never been accepted reads null for both", () => {
+    seed("t-no-pr", "backlog");
+    const row = db.prepare("SELECT * FROM tickets WHERE id = ?").get("t-no-pr") as TicketRow;
+    const ticket = toTicket(row);
+    assert.equal(ticket.prNumber, null);
+    assert.equal(ticket.prUrl, null);
   });
 });

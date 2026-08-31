@@ -64,6 +64,14 @@ const int = (row: Row, column: string): number => {
   return bad(column, v);
 };
 
+const intOrNull = (row: Row, column: string): number | null => {
+  const v = row[column];
+  if (v === null || v === undefined) return null;
+  if (typeof v === "number") return v;
+  if (typeof v === "bigint") return Number(v);
+  return bad(column, v);
+};
+
 const decode = (row: Row): Ticket =>
   toTicket({
     id: text(row, "id"),
@@ -77,6 +85,8 @@ const decode = (row: Row): Ticket =>
     branch: maybeText(row, "branch"),
     agent_name: maybeText(row, "agent_name"),
     session_dir: maybeText(row, "session_dir"),
+    pr_number: intOrNull(row, "pr_number"),
+    pr_url: maybeText(row, "pr_url"),
     created_at: text(row, "created_at"),
     updated_at: text(row, "updated_at"),
   });

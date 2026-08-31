@@ -26,7 +26,7 @@ const DB_PATH = process.env.DB_PATH ?? join(STATE_DIR, "10x.db");
  * both its live agent and its port block while it sits there — a Reject has to be able to
  * re-prompt the same agent with its full context, and a Preview binds the same range.
  */
-export type Status = "backlog" | "in_progress" | "in_review";
+export type Status = "backlog" | "in_progress" | "in_review" | "done";
 
 export type Project = {
   /** Immutable slug used in branch and agent names. Renaming would orphan worktrees. */
@@ -55,6 +55,9 @@ export type Ticket = {
   agentName: string | null;
   /** OMP transcript directory, needed by teardown and outliving the worktree (memory/reconciliation.md). */
   sessionDir: string | null;
+  /** Set together by `setPullRequest` once Accept opens the PR. Null until then. */
+  prNumber: number | null;
+  prUrl: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -95,6 +98,10 @@ CREATE TABLE IF NOT EXISTS tickets (
   -- makes a double spawn impossible. NULLs are distinct in SQLite, so any number of
   -- tickets may hold no slot at all.
   port_slot   INTEGER,
+  -- Set together once Accept opens the pull request. Nullable: most tickets never reach
+  -- "done", and the pair is written by exactly one function, setPullRequest.
+  pr_number   INTEGER,
+  pr_url      TEXT,
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL,
   UNIQUE (project_id, number)
@@ -125,6 +132,9 @@ function addColumnIfMissing(table: string, column: string, definition: string): 
 addColumnIfMissing("tickets", "port_slot", "INTEGER");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS tickets_port_slot ON tickets (port_slot)");
 
+addColumnIfMissing("tickets", "pr_number", "INTEGER");
+addColumnIfMissing("tickets", "pr_url", "TEXT");
+
 export const nowIso = () => new Date().toISOString();
 
 type ProjectRow = {
@@ -136,7 +146,7 @@ type ProjectRow = {
   updated_at: string;
 };
 
-type TicketRow = {
+export type TicketRow = {
   id: string;
   project_id: string;
   number: number;
@@ -148,6 +158,8 @@ type TicketRow = {
   branch: string | null;
   agent_name: string | null;
   session_dir: string | null;
+  pr_number: number | null;
+  pr_url: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -167,8 +179,8 @@ export const toProject = (r: ProjectRow): Project => ({
  * missing from it decodes as `backlog`, which would silently teleport a live ticket into the
  * wrong column rather than failing.
  */
-const toStatus = (raw: string): Status =>
-  raw === "in_progress" || raw === "in_review" ? raw : "backlog";
+export const toStatus = (raw: string): Status =>
+  raw === "in_progress" || raw === "in_review" || raw === "done" ? raw : "backlog";
 
 export const toTicket = (r: TicketRow): Ticket => ({
   id: r.id,
@@ -182,6 +194,8 @@ export const toTicket = (r: TicketRow): Ticket => ({
   branch: r.branch,
   agentName: r.agent_name,
   sessionDir: r.session_dir,
+  prNumber: r.pr_number,
+  prUrl: r.pr_url,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });
@@ -264,6 +278,19 @@ export function reservePortSlot(id: string): SlotAllocation {
  */
 export function releasePortSlot(id: string): void {
   RELEASE_SLOT.run(nowIso(), id);
+}
+
+const SET_PULL_REQUEST = db.prepare(
+  "UPDATE tickets SET pr_number = ?, pr_url = ?, updated_at = ? WHERE id = ?",
+);
+
+/**
+ * Record the pull request opened for a ticket. Both columns are written together — a
+ * ticket never has one without the other — so there is exactly one writer for this pair,
+ * the same shape as `releasePortSlot` owning `port_slot`.
+ */
+export function setPullRequest(id: string, number: number, url: string): void {
+  SET_PULL_REQUEST.run(number, url, nowIso(), id);
 }
 
 /**
