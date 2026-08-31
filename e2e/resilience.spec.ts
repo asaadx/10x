@@ -2,7 +2,7 @@
  * Resilience and concurrency: a backend restart, the compare-and-swap that makes status the
  * lock, and two agents running at the same time (gap G3 in memory/gotchas.md).
  */
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -36,6 +36,18 @@ const FINISH_MS = 120_000;
 
 let board: Board;
 let repoPath: string;
+
+/**
+ * A card is an `article` named by its ticket id, and a column is a `region` whose accessible
+ * name carries its live count. Both are semantics, so this locator survives a redesign.
+ *
+ * It replaces `#in-progress-cards [data-id="<id>"]`, which reached through DOM structure and
+ * an element id — the one place this suite violated its own accessible-semantics rule, and
+ * only because a card had no accessible name to reach for. Now it has one.
+ */
+function inProgressCard(page: Page, id: string): Locator {
+  return page.getByRole("region", { name: /^In Progress/ }).getByRole("article", { name: id });
+}
 
 test.beforeAll(async () => {
   requireHerdr();
@@ -73,7 +85,7 @@ test("a finished ticket survives a backend restart on the same state dir", async
   expect(existsSync(join(run.worktreePath, PROBE_FILE))).toBe(true);
 
   await page.goto(board.baseUrl);
-  const card = page.locator(`#in-progress-cards [data-id="${id}"]`);
+  const card = inProgressCard(page, id);
   await expect(card).toContainText(run.branch);
   await expect(card.getByTitle("finished")).toBeVisible();
 
@@ -108,12 +120,12 @@ test("closing the pane after the turn finished keeps the ticket finished", async
   expect(row["finished"]).toBe(true);
 
   await page.goto(board.baseUrl);
-  const card = page.locator(`#in-progress-cards [data-id="${id}"]`);
-  // The user's rule: finished-then-closed looks finished. Badge `title`s are the only accessible
-  // handle a card has, and memory/architecture.md forbids widening these assertions to classes or
-  // text layout because a redesign is planned. The cross is a sufficient proxy for the whole death
-  // presentation: it, the "This is NOT a finished ticket" note and the red border are all rendered
-  // off the same `died && !finished`.
+  const card = inProgressCard(page, id);
+  // The user's rule: finished-then-closed looks finished. The badge `title`s are the accessible
+  // handle for the badges themselves, and memory/architecture.md forbids widening these assertions
+  // to classes or text layout because a redesign is planned. The cross is a sufficient proxy for
+  // the whole death presentation: it, the "This is NOT a finished ticket" note and the red border
+  // are all rendered off the same `died && !finished`.
   await expect(card.getByTitle("finished")).toBeVisible();
   await expect(card.getByTitle("run died")).toHaveCount(0);
 

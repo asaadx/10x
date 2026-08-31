@@ -2,7 +2,12 @@
 
 **Node:** architecture · Parent: [INDEX.md](./INDEX.md)
 
-How the 10x application itself is built. Read this first to orient; the Herdr/OMP behaviour this code is written against lives in [spawn](./spawn.md), [socket](./socket.md), [agent-status](./agent-status.md), [teardown](./teardown.md) and [reconciliation](./reconciliation.md).
+How the 10x **server** itself is built: the module map, the storage model, the schema, the HTTP
+surface and the spawn lifecycle. Read this first to orient. Its two siblings are
+[frontend](./frontend.md) (everything under `public/`) and [testing](./testing.md) (both suites, and
+which one spawns real agents). The Herdr/OMP behaviour this code is written against lives in
+[spawn](./spawn.md), [socket](./socket.md), [agent-status](./agent-status.md),
+[teardown](./teardown.md) and [reconciliation](./reconciliation.md).
 
 ## 1. Runtime and dependencies
 
@@ -40,7 +45,7 @@ Line counts are `wc -l`, current as of this node.
 
 | File | Lines | Responsibility | I/O |
 | --- | --- | --- | --- |
-| `src/server.ts` | 398 | HTTP routing, per-run in-memory state, boot reconciliation | `node:http` |
+| `src/server.ts` | 469 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
 | `src/runner.ts` | 453 | `spawn` / `teardown` for one ticket; the readiness guard | Herdr socket, fs, `git` via `execFile` |
 | `src/ticket-store.ts` | 281 | Ticket persistence + `/tickets` handler bodies, input narrowing | SQLite |
 | `src/db.ts` | 263 | Schema, connection, row types, `claimTicket` CAS, port-slot reserve/release | SQLite (opens DB at import) |
@@ -55,9 +60,9 @@ Line counts are `wc -l`, current as of this node.
 | `src/port-slots.test.ts` | 115 | Tests for reserve / release / reclaim, against a temp DB | SQLite (temp dir) |
 | `src/db.test.ts` | 101 | Tests for the CAS, against a temp DB | SQLite (temp dir) |
 | `src/ports.test.ts` | 78 | Tests for the pure allocator | none |
-| `public/index.html` | 1232 | The entire frontend | `fetch` |
+| `public/` | 1584 | The board's browser half: markup, stylesheet, five ES modules — see [frontend](./frontend.md) | `fetch` |
 
-`lifecycle.ts`, `ports.ts` and `diagnostics.ts` are the only import-free modules, deliberately: they hold the logic that has actually broken, or that would break silently, so it must be testable without a Herdr session. A port collision surfaces as an `EADDRINUSE` inside somebody's worktree, never as an error on the board, which is exactly why the allocation policy lives apart from the SQL that stores it. `panes.ts` exports only `focusAgent`. The attach command is built in the frontend instead, because it needs `location.hostname` — which the server cannot know — so a server-side copy would be unreachable duplication.
+`lifecycle.ts`, `ports.ts` and `diagnostics.ts` are the only import-free modules, deliberately: they hold the logic that has actually broken, or that would break silently, so it must be testable without a Herdr session. A port collision surfaces as an `EADDRINUSE` inside somebody's worktree, never as an error on the board, which is exactly why the allocation policy lives apart from the SQL that stores it. `panes.ts` exports only `focusAgent`: the attach command is built in the frontend instead, because it needs `location.hostname` — which the server cannot know — so a server-side copy would be unreachable duplication ([frontend](./frontend.md)).
 
 ## 3. Stored vs derived — the load-bearing idea
 
@@ -142,7 +147,7 @@ The conditional `WHERE` *is* the lock, and the row count reports whether the cal
 
 ## 6. HTTP surface
 
-`PORT` defaults to `4010`. `GET /` and `GET /index.html` serve `public/index.html` as `text/html`; everything else is `application/json`. Router excerpt this table is based on (`src/server.ts` `handle()`, lines 160–305):
+`PORT` defaults to `4010`. Every JSON route answers `application/json`; a GET that no route claimed then falls through to the `public/` static handler described below, which is how `/`, `/index.html`, `/styles.css` and `/js/*.js` are served. Router excerpt this table is based on (`src/server.ts` `handle()`, lines 181–364):
 
 ```ts
 if (method === "GET"  && path === "/projects") return json(listProjects());
@@ -168,7 +173,7 @@ if (action === "/worktree" && method === "DELETE") { … }
 return json({ error: "not_found", path, method }, 404);
 ```
 
-**Twelve** JSON endpoints, plus the two static routes.
+**Twelve** JSON endpoints, plus one static handler covering everything under `public/`.
 
 | # | Method | Path | Returns |
 | --- | --- | --- | --- |
@@ -184,7 +189,7 @@ return json({ error: "not_found", path, method }, 404);
 | 10 | POST | `/tickets/:id/cancel` | `{ok:true}` after teardown + branch delete |
 | 11 | DELETE | `/tickets/:id/worktree` | `{ok:true, branchKept}` — disk reclaimed, branch kept |
 | 12 | POST | `/tickets/:id/focus` | `{ok}` or `{ok:false, error:<herdr code>}` — always 200 |
-| — | GET | `/`, `/index.html` | the HTML board |
+| — | GET | `/`, `/index.html`, `/styles.css`, `/js/*.js` | the board's static assets |
 
 **Naming and shape decisions.** The spawn endpoint is canonically **`/spawn`**; earlier drafts called it `/start`, `spawn` is the name, it is the only spelling in the code, and `/start` must not be reintroduced. `spawn` and `cancel` are **separate endpoints** because they are opposite operations with different side effects, and `GET /tickets` is a read — that is why there is no single "transition" endpoint taking a target state: one verb per irreversible act, so the destructive ones cannot be reached by passing a different string.
 
@@ -198,6 +203,21 @@ return json({ error: "not_found", path, method }, 404);
 | 500 | anything else, including a Herdr failure mid-operation | `{error: <message>}`, plus `diagnostics` on a failed spawn |
 
 Two quirks, both readable in the excerpt: `GET` is matched by `path.startsWith("/tickets")` *before* the `/tickets/:id` regex, so `GET /tickets/anything` returns the whole board — there is no single-ticket GET. And `/focus` never fails the request: a dead agent is an ordinary UI outcome, so the Herdr error code is reported inside a 200 body.
+
+### The static asset route
+
+**The server serves `public/` as static files**, and the frontend's split into a stylesheet plus
+five ES modules made that a prerequisite ([frontend](./frontend.md)). Resolution runs *after* the
+API router has declined and only for a GET, so a wrong path under `/tickets` stays a JSON 404
+instead of becoming a probe of the filesystem. Every step fails closed: an extension outside the
+allow-list (`.html .css .js .svg`) is refused rather than guessed, a malformed `%`-escape or an
+embedded NUL is not treated as a path, containment is checked on the **realpath** so a symlink
+living inside `public/` but pointing outside it is refused, and anything that is not a regular file
+— a directory included, because there are no listings — is refused too. Before this the router
+special-cased `/` and `/index.html` against one hardcoded path. *(Verified: traversal,
+percent-encoded traversal, a symlink to `/etc/passwd`, a symlink to `../package.json`, a directory,
+a NUL byte and a malformed escape all answer the JSON 404; POST to an existing file answers the
+JSON 404; and a 404 under an API prefix keeps the API's own envelope.)*
 
 ## 7. Request lifecycle for a spawn
 
@@ -216,7 +236,7 @@ Two quirks, both readable in the excerpt: `GET` is matched by `path.startsWith("
 
 ### Injecting the port block
 
-`.env` is written into the worktree root with `PORT` (the block's first port) plus `PORT_RANGE_START` and `PORT_RANGE_END`, commented so a human who finds it knows 10x wrote it. `SYSTEM_PROMPT` names the same range and says the agent must read the port from `.env` and bind nothing outside the block — a **convention, not a sandbox**; nothing enforces it.
+`.env` is written into the worktree root with `PORT` (the block's first port) plus `PORT_RANGE_START` and `PORT_RANGE_END`, commented so a human who finds it knows 10x wrote it. The agent's system prompt — `systemPrompt(block)` in `runner.ts`, written to the prompt file before `agent.start` — names the same range, tells the agent to read the port from `.env` rather than hardcode one, and forbids binding outside the block. That is a **convention, not a sandbox**; nothing enforces it.
 
 **The worktree is a real git worktree the agent commits in, so a stray `.env` is one `git add -A` from being committed.** The project's tracked `.gitignore` is not ours to edit, so the entry goes into the exclude file instead. Resolve it with `git rev-parse --path-format=absolute --git-path info/exclude`, never by joining `.git/info/exclude` onto the worktree path: in a linked worktree `.git` is a **file**, and git resolves `info/exclude` against the **common** git directory — the source repo's `.git/info/exclude`, shared by every ticket worktree of that repo, which is why the append is conditional. *(Verified: after the append, `git status` inside the worktree is clean and `git check-ignore -v .env` names that file.)*
 
@@ -231,102 +251,3 @@ Losing them on restart is **correct**. Diagnostics describe one attempt at start
 The consequence is load-bearing: Herdr keeps panes and agents running across a restart of this backend, so afterwards `agent.start` returns `agent_name_taken`, and `runner.ts` treats that as *reuse* — `agent.get` the existing record, set `reusedExistingAgent`, follow the agent's authoritative `pane_id`, and **skip the prompt** so it does not redo work. A backend restart is therefore exactly what makes agent re-attachment reachable today.
 
 At boot, `server.ts` reconciles every `in_progress` ticket per project and **only warns**: it changes nothing, because the only safe automatic repair is resetting a status with no resources behind it, and even that is better surfaced than silently applied. The single exception is `reclaimStalePortSlots()`, which frees blocks held by tickets that are no longer in progress — our own bookkeeping, not the user's work, so reclaiming one cannot lose anything ([reconciliation](./reconciliation.md)).
-
-## 9. Frontend
-
-One self-contained `public/index.html` (1232 lines): inline `<style>`, one `<script type="module">`, no framework, no build step, no bundler. It keeps module-level state (`projects`, `currentProjectId`, `ticketsData`, `editingId`, `editBuffer`, `actionErrors`, `pendingActions`) and reconciles cards in place through a `cardEls` map. A single `api()` helper wraps `fetch` and surfaces every non-2xx through `messageFor(body, status)`, reading exactly the `{error, message}` envelope described under the HTTP surface below.
-
-**It polls.** `setInterval(loadTickets, 1000)` and `setInterval(loadProjects, 5000)`. A failed poll keeps the last-known board on screen and flips a status pill to "poll failing" rather than blanking it. The 1 s poll is a **placeholder**: the backend already learns of `pane.agent_status_changed` the instant it fires, so only the browser is behind. SSE is parked, with a sketch, in [parking-lot](./parking-lot.md). The frontend only *reads* projects (`GET /projects`); project creation and editing are not wired into the UI, though endpoints 2–4 exist.
-
-The attach command is built client-side:
-
-```js
-const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]", "::1", ""]);
-const host = location.hostname;
-const prefix = LOOPBACK.has(host) ? "herdr" : `herdr --remote ${host}`;
-return `${prefix} agent attach ${ticket.agentName}`;
-```
-
-The board is always served *from* the Herdr host, so `location.hostname` is always the right host: open it on the host and you are already there, so a bare `herdr agent attach` is correct and `--remote` would make herdr SSH to itself; open it over the network and that same hostname is the one to pass. Zero configuration, correct from either machine. (`--remote` is a global flag, so it precedes the subcommand.)
-
-## 10. Testing
-
-Two suites, deliberately separate: `npm test` (`node --test 'src/*.test.ts'`) is the pure-unit
-layer and needs nothing running, `npm run e2e` (`playwright test`) drives the real HTTP surface
-and the real page.
-
-**The unit glob matters and so do the quotes.** `node --test src` does not pick up `.ts` files —
-verified: it reports `✖ src (40ms) 'test failed'`. Quote the glob so the shell hands it to Node
-rather than expanding it. Current state: **63 tests, 12 suites, 0 failures**, `duration_ms` ≈ 187.
-
-| Target | Why it is tested |
-| --- | --- |
-| `normalizeEvent` | Herdr emits `pane.agent_status_changed` dotted and `pane_closed` underscored. Matching either literally drops half the stream with **no error attached** — it cost this project its status pipeline once. |
-| `isAgentReady` / `isSettled` | `done` and `idle` are the same underlying ready state. Accepting only `idle` broke agent reuse 100% of the time and hung for the full 60 s timeout. `interactive_ready` is the tell for a premature `agent.start` return. |
-| `branchFor` / `agentNameFor` | The alignment invariant: branch lowercased with `/`→`-` must equal the agent name. If they drift, reuse, teardown and dispatch break at once. |
-| agent-name budget | `ticket-` (7) + separator (1) leaves 24 of the 32-char ceiling; a 20-char slug + 4-digit number lands exactly on 32. That is *why* the slug cap is 20. |
-| `validateProjectSlug` | Dots are branch-legal and agent-name-illegal, so a dotted slug fails only at spawn time, after the worktree exists. Also pins that a leading digit is legal — `10x` is this project's own name. |
-| `claimTicket` | The only lock in the system: a second click loses, a mismatched `from` loses, an unknown id loses instead of throwing, bystanders are untouched, `updated_at` is bumped only on a win. Runs against a temp DB via `mkdtempSync` and a **dynamic** import, because `db.ts` opens the database at module load and a static import would hoist above the `DB_PATH` assignment. |
-| the port pool | A wrong slot hands two live agents the same TCP port, and the symptom is an `EADDRINUSE` inside somebody's worktree rather than an error on the board. Pinned: lowest-free selection, reuse after release, exhaustion at the cap, the block arithmetic including the last slot's upper bound (4199, not 4200), and the cap coming from `MAX_PORT_SLOTS`. The persistence half additionally pins that the UNIQUE index — not the allocator — is what refuses a double assignment. |
-
-The tests deliberately cover the three things that have actually broken — event-name normalisation, the idle-or-done readiness predicate, and the CAS — plus the naming invariants that guard them. Nothing tests plumbing. See [verification](./verification.md) and [gotchas](./gotchas.md).
-
-### The e2e suite
-
-`playwright.config.ts` + `e2e/`. **`workers: 1` is correctness, not speed:** the whole suite shares
-one backend, one port and one state dir. `e2e/fixtures.ts` is the contract every spec imports —
-`startBoard` (server on **4310**, avoiding 4010 and the 41xx dev-server band, readiness polled on
-`GET /projects`), `makeRepo`, `cleanupAll`, `requireHerdr`, plus the spawn helpers below.
-
-| Spec | Covers | Real agents |
-| --- | --- | --- |
-| `projects.spec.ts`, `tickets.spec.ts`, `board.spec.ts` | registration, validation, ticket CRUD, rendering | none |
-| `spawn.spec.ts` | spawn, prompt delivery via the agent's own `probe.txt`, cancel | 3 |
-| `teardown.spec.ts` | ticket delete, worktree-only delete (branch survives) | 2 |
-| `resilience.spec.ts` | backend restart, compare-and-swap, two concurrent tickets | 4 |
-| `ports.spec.ts` | `.env` written and git-excluded, pool exhaustion → 409, slot reused after cancel | 3 |
-
-**A spawn spec runs a real OMP agent, so teardown is the load-bearing part.** Every spawn is
-registered with `cleanupAll` *before* its request goes out, each test tears its own spawn down at
-the end, and `cleanupAll` falls back to `worktree.open`+`worktree.remove` straight at Herdr when
-the backend is gone. Per-test budgets are set with `test.setTimeout`: **120 s** spawn-only,
-**180 s** spawn-plus-completion, **240 s** for the two serial spawns in `ports.spec.ts`; the
-config's 30 s default stays for the non-spawn specs. Measured: spawn returns in **3.5–3.9 s** and
-the probe turn finishes **7–12 s** after that, so the whole suite of 21 tests runs in
-**~1.4 minutes** against the 600 s `globalTimeout`.
-
-Three things the suite reads outside the HTTP API, each for a reason:
-
-- **`storedTicket`** opens the SQLite file, because `board()` derives `branch` and `agentName` when
-  the columns are null — so the API reports them either way and cannot show teardown clearing them.
-- **`liveAgentNames` / `liveWorktreeBranches`** ask Herdr directly, so "no agent, no worktree" is
-  asserted against the source of truth rather than against our own join.
-- **`restartBoard`** starts a second backend on the *same* state dir. `startBoard` would hand out a
-  fresh empty database and prove nothing about a restart.
-
-`cleanupAll` also closes each throwaway repo's implicit Herdr **source workspace** and `rmdir`s
-`~/.herdr/worktrees/<repo>/`: both outlive the last ticket worktree, and each e2e run would
-otherwise leave one of each behind ([reconciliation](./reconciliation.md)).
-
-**Repos are created on `dev`, and specs pass `baseBranch: "dev"` explicitly.** `baseBranch` defaults
-to `main` and is only handed to git at `worktree.create` time, so registering a project whose base
-branch does not exist succeeds and fails at spawn instead. *(Verified.)*
-
-**Herdr absent is survivable for reads and fatal for teardown.** *(Verified with
-`HERDR_SOCKET_PATH` pointed at a nonexistent socket.)* The server boots, `GET /projects` and
-`GET /tickets` both answer 200, and boot reconciliation only warns — every Herdr read is wrapped
-and degrades. But `teardown` rethrows any `worktree.open` failure that is not `worktree_not_found`,
-so `DELETE /tickets/:id` answers **500 `socket_error`**. That is why `requireHerdr` exists: without
-the preflight the failure reads as a mystery, not as a missing dependency.
-
-**UI assertions use accessible semantics only** — a redesign is planned. Two consequences: the
-`<header>` is the `banner` landmark, and scoping to it is what separates the board's project
-combobox from the composer's identically labelled one; and the column headings carry their live
-count inside their accessible name (`"Backlog 1"`), which is the only semantic way to say a ticket
-is in Backlog rather than In Progress, because the columns themselves are unlabelled `div`s.
-
-**The one exception is locating a single card**, which the spawn specs need in order to say "*this*
-ticket shows the finished badge". A card is an unlabelled `div` with no accessible handle at all, so
-they scope by `#in-progress-cards [data-id="<ticket id>"]` and then assert inside it with
-`getByTitle` — the badges' `title` is accessible, the container is not. Do not widen this into
-asserting on classes or text layout.

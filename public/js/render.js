@@ -8,8 +8,12 @@
  *
  * Two rules make that guarantee real, and both are load-bearing:
  *
- * Behaviour hooks are still CSS classes at this commit; switching them to `data-*` is the
- * next one, and it is what actually makes a restyle safe.
+ *  1. **Nothing is located by class.** Elements are found by id, by `data-*` or by role.
+ *     Classes below are styling handles only; deleting one changes appearance and cannot
+ *     change behaviour.
+ *  2. **State leaves as attributes, not classes.** A busy card gets `data-busy`, a failing
+ *     poll gets `data-state="failing"`, a hidden panel gets the native `hidden`. The
+ *     stylesheet keys off those, so it can be rewritten without JS agreeing to anything.
  */
 import { icons } from "./icons.js";
 import {
@@ -42,7 +46,9 @@ function truncate(text, n) {
 
 function renderConnStatus() {
   const el = document.getElementById("conn-status");
-  el.classList.toggle("error", !state.live);
+  // `data-state`, not a class: the pill can be restyled or replaced outright and this
+  // assignment still means the same thing.
+  el.dataset.state = state.live ? "live" : "failing";
   document.getElementById("conn-status-text").textContent = state.live ? "live" : "poll failing";
 }
 
@@ -58,7 +64,7 @@ export function renderProjectSelectors() {
   const selected = state.projects.find((p) => p.id === state.currentProjectId);
   repoEl.innerHTML = selected
     ? `<span class="label">repo:</span>${escapeHtml(selected.repoPath)}`
-    : `<span class="label">repo:</span><span style="color:var(--text-faint)">— select a project —</span>`;
+    : `<span class="label">repo:</span><span class="placeholder">— select a project —</span>`;
 }
 
 /** Rebuild a <select>'s options without disturbing it while the user has it open/focused. */
@@ -130,7 +136,7 @@ export function setComposerSubmitting(submitting) {
 function renderUnowned() {
   const panel = document.getElementById("unowned-panel");
   const rows = state.ticketsData.unowned;
-  panel.classList.toggle("hidden", rows.length === 0);
+  panel.hidden = rows.length === 0;
   if (rows.length === 0) return;
   document.getElementById("unowned-rows").innerHTML = rows
     .map(
@@ -142,7 +148,7 @@ function renderUnowned() {
 
 function renderBoardError() {
   const el = document.getElementById("board-error");
-  el.classList.toggle("hidden", !state.boardErrorMsg);
+  el.hidden = !state.boardErrorMsg;
   el.textContent = state.boardErrorMsg ? `board fetch failed — ${state.boardErrorMsg}` : "";
 }
 
@@ -175,12 +181,14 @@ function diagBlock(diagnostics) {
   const rows = DIAG_FIELDS.map(([key, label, flagFn]) => {
     const raw = diagnostics[key];
     const suffix = key.endsWith("Ms") && typeof raw === "number" ? "ms" : "";
-    return `<tr><td>${escapeHtml(label)}</td><td class="${flagFn(raw) ? "flagged" : ""}">${escapeHtml(fmtDiagValue(raw))}${suffix}</td></tr>`;
+    // `data-flagged` rather than a class: "this value tripped a guard" is meaning, and the
+    // stylesheet decides what meaning looks like.
+    return `<tr><td>${escapeHtml(label)}</td><td${flagFn(raw) ? " data-flagged" : ""}>${escapeHtml(fmtDiagValue(raw))}${suffix}</td></tr>`;
   }).join("");
   const raced = Boolean(diagnostics.paneBusyRetries > 0 || diagnostics.neededReadinessPoll || diagnostics.promptNotReadyRetries > 0);
   return `
       <details class="diag">
-        <summary>diagnostics ${raced ? '<span class="race-tag">· spawn race fired (guard worked, this is normal)</span>' : ""}</summary>
+        <summary>diagnostics ${raced ? '<span data-race-tag>· spawn race fired (guard worked, this is normal)</span>' : ""}</summary>
         <table>${rows}</table>
         <div class="diag-note">Highlighted values mean a retry guard caught a transient race (e.g. a freshly created pane not yet at its prompt) and recovered on its own — not a failure.</div>
       </details>`;
@@ -197,16 +205,17 @@ function diagBlock(diagnostics) {
  * with "running but unreadable", so they get different labels.
  */
 function statusBadge(status) {
-  if (!status) return `<span class="badge status-none" title="no agent has run for this ticket">idle · not started</span>`;
-  return `<span class="badge status-${escapeAttr(status)}" ${
+  if (!status) return `<span class="badge" data-status="none" title="no agent has run for this ticket">idle · not started</span>`;
+  return `<span class="badge" data-status="${escapeAttr(status)}" ${
     status === "unknown"
       ? 'title="an agent is present but Herdr cannot classify it — this is NOT completion"'
       : ""
   }>${escapeHtml(status)}</span>`;
 }
 
+/** The badge `title`s are a card's only accessible handles, so they are content, not decoration. */
 function badgeIcon(kind, title) {
-  return `<span class="badge-icon ${kind}" title="${escapeAttr(title)}">${icons[kind]}</span>`;
+  return `<span class="badge-icon" data-icon="${kind}" title="${escapeAttr(title)}">${icons[kind]}</span>`;
 }
 
 function buildCardBody(ticket) {
@@ -275,12 +284,14 @@ function buildCardBody(ticket) {
     `;
 }
 
-function cardClassName(ticket) {
-  const cls = ["card"];
-  if (isBusy(ticket)) cls.push("is-busy");
-  if (ticket.agentStatus === "blocked") cls.push("is-blocked");
-  if (ticket.died && !ticket.finished) cls.push("is-died");
-  return cls.join(" ");
+/**
+ * Run state as attributes. The card keeps a fixed `class="card"`, so the stylesheet owns
+ * the look and this function owns only the facts.
+ */
+function applyCardState(el, ticket) {
+  el.toggleAttribute("data-busy", isBusy(ticket));
+  el.toggleAttribute("data-blocked", ticket.agentStatus === "blocked");
+  el.toggleAttribute("data-died", Boolean(ticket.died) && !ticket.finished);
 }
 
 /**
@@ -305,7 +316,7 @@ function attachCardHandlers(el, ticket, handlers) {
 const cardEls = new Map();
 
 function paintCard(el, ticket, handlers) {
-  el.className = cardClassName(ticket);
+  applyCardState(el, ticket);
   el.innerHTML = buildCardBody(ticket);
   attachCardHandlers(el, ticket, handlers);
 }
@@ -337,6 +348,11 @@ function renderColumn(containerId, countId, status, handlers) {
       el = document.createElement("div");
       cardEls.set(ticket.id, el);
       el.dataset.id = ticket.id;
+      el.className = "card";
+      // A card is an `article` named by its ticket id: the only accessible handle it has,
+      // and the reason the e2e suite no longer needs to reach through the DOM structure.
+      el.setAttribute("role", "article");
+      el.setAttribute("aria-label", ticket.id);
     }
 
     // Position it correctly.
@@ -366,10 +382,12 @@ function renderColumn(containerId, countId, status, handlers) {
     }
   }
 
+  // `data-empty` is the hook, `.empty-hint` is only the styling: the placeholder can be
+  // restyled or reworded without this lookup losing the element it has to remove.
   if (rows.length === 0) {
-    container.innerHTML = `<div class="empty-hint">empty</div>`;
+    container.innerHTML = `<div class="empty-hint" data-empty>empty</div>`;
   } else {
-    container.querySelector(".empty-hint")?.remove();
+    container.querySelector("[data-empty]")?.remove();
   }
 }
 

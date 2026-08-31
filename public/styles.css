@@ -1,8 +1,11 @@
 /* =====================================================================
  * 10x board — all styling.
  *
- * Every colour, space, radius and type value is a custom property on `:root`,
- * so a re-theme is editing that block rather than hunting the rules below.
+ * Nothing in here is read by JavaScript. Every value the JS layer needs to
+ * express lands on the element as a `data-*` attribute or a native attribute
+ * (`hidden`), never as a class, so renaming or deleting any class below
+ * cannot break behaviour. Re-theming is meant to be: edit `:root`, then edit
+ * rules — and never open `js/`.
  * ================================================================== */
 
 :root {
@@ -131,7 +134,9 @@ body {
 
 code, .mono { font-family: var(--mono); }
 
-.hidden { display: none !important; }
+/* JS hides panels with the native `hidden` attribute, not a class, so this one
+ * rule is the entire hiding contract and cannot be renamed out from under it. */
+[hidden] { display: none !important; }
 
 /* ---------- header ---------- */
 
@@ -202,6 +207,8 @@ select:focus, input:focus, textarea:focus, button:focus-visible {
   margin-right: var(--space-4);
 }
 
+.repo-path .placeholder { color: var(--text-faint); }
+
 .conn-status {
   margin-left: auto;
   font-size: var(--fs-xs);
@@ -219,8 +226,8 @@ select:focus, input:focus, textarea:focus, button:focus-visible {
   flex: none;
 }
 
-.conn-status.error .dot { background: var(--red); }
-.conn-status.error { color: var(--red); }
+.conn-status[data-state="failing"] { color: var(--red); }
+.conn-status[data-state="failing"] .dot { background: var(--red); }
 
 /* ---------- layout ---------- */
 
@@ -300,37 +307,39 @@ section.composer h2 {
   margin: 0 0 var(--space-8);
 }
 
-#composer-form {
+/* Styled by class, located by id: the id is the JS handle, the class is the
+ * styling handle, and neither can be renamed into the other's job. */
+.composer-form {
   display: grid;
   grid-template-columns: var(--board-columns);
   gap: var(--space-8) var(--space-10);
   align-items: start;
 }
 
-#composer-form .field {
+.composer-form .field {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   min-width: 0;
 }
 
-#composer-form .field.field-submit {
+.composer-form .field.field-submit {
   justify-content: flex-start;
   padding-top: var(--space-18);
 }
 
-#composer-form label {
+.composer-form label {
   font-size: var(--fs-2xs);
   text-transform: uppercase;
   letter-spacing: var(--track-field);
   color: var(--text-faint);
 }
 
-#composer-form input, #composer-form select, #composer-form textarea {
+.composer-form input, .composer-form select, .composer-form textarea {
   width: 100%;
 }
 
-#composer-form textarea {
+.composer-form textarea {
   resize: vertical;
   min-height: var(--composer-textarea-height);
   font-family: var(--sans);
@@ -385,8 +394,6 @@ button.icon-btn svg { width: var(--icon-size); height: var(--icon-size); display
   padding: var(--space-10) var(--space-12);
 }
 
-.unowned.hidden { display: none; }
-
 .unowned h2 {
   font-size: var(--fs-xs);
   text-transform: uppercase;
@@ -427,8 +434,6 @@ button.icon-btn svg { width: var(--icon-size); height: var(--icon-size); display
   font-size: var(--fs-sm);
 }
 
-.board-error.hidden { display: none; }
-
 /* ---------- card ---------- */
 
 .card {
@@ -438,9 +443,11 @@ button.icon-btn svg { width: var(--icon-size); height: var(--icon-size); display
   padding: var(--space-9) var(--space-10);
 }
 
-.card.is-busy { border-color: var(--accent-dim); }
-.card.is-blocked { border-color: var(--border-alarm); }
-.card.is-died { border-color: var(--border-alarm); }
+/* Run state arrives as data attributes, so the card's contract with JS
+ * survives any restyle. */
+.card[data-busy] { border-color: var(--accent-dim); }
+.card[data-blocked] { border-color: var(--border-alarm); }
+.card[data-died] { border-color: var(--border-alarm); }
 
 .card-top {
   display: flex;
@@ -474,10 +481,10 @@ button.icon-btn svg { width: var(--icon-size); height: var(--icon-size); display
   line-height: var(--lh-badge);
 }
 
-.badge.status-working { background: var(--amber-bg); color: var(--amber); }
-.badge.status-blocked { background: var(--red-bg); color: var(--red); font-weight: var(--fw-bold); }
-.badge.status-idle, .badge.status-done { background: var(--green-bg); color: var(--green); }
-.badge.status-unknown, .badge.status-none { background: var(--grey-bg); color: var(--grey); }
+.badge[data-status="working"] { background: var(--amber-bg); color: var(--amber); }
+.badge[data-status="blocked"] { background: var(--red-bg); color: var(--red); font-weight: var(--fw-bold); }
+.badge[data-status="idle"], .badge[data-status="done"] { background: var(--green-bg); color: var(--green); }
+.badge[data-status="unknown"], .badge[data-status="none"] { background: var(--grey-bg); color: var(--grey); }
 
 .badge-icon {
   font-size: var(--fs-xs);
@@ -490,9 +497,9 @@ button.icon-btn svg { width: var(--icon-size); height: var(--icon-size); display
   flex: none;
 }
 
-.badge-icon.finished { background: var(--green-bg); color: var(--green); }
-.badge-icon.died { background: var(--red-bg); color: var(--red); font-weight: var(--fw-bold); }
-.badge-icon.worktree {
+.badge-icon[data-icon="finished"] { background: var(--green-bg); color: var(--green); }
+.badge-icon[data-icon="died"] { background: var(--red-bg); color: var(--red); font-weight: var(--fw-bold); }
+.badge-icon[data-icon="worktree"] {
   background: var(--bg-raised);
   color: var(--text-dim);
   border: 1px solid var(--border);
@@ -601,7 +608,7 @@ details.diag summary::-webkit-details-marker { display: none; }
 details.diag summary::before { content: var(--icon-disclosure-closed); font-size: var(--fs-marker); }
 details.diag[open] summary::before { content: var(--icon-disclosure-open); }
 
-details.diag summary .race-tag {
+details.diag summary [data-race-tag] {
   color: var(--amber);
 }
 
@@ -618,7 +625,7 @@ details.diag td {
   color: var(--text-dim);
 }
 
-details.diag td.flagged { color: var(--amber); }
+details.diag td[data-flagged] { color: var(--amber); }
 
 details.diag .diag-note {
   font-size: var(--fs-2xs);

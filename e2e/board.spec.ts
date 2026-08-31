@@ -72,3 +72,54 @@ test("picks up a ticket created after load without a reload", async ({ page, req
   await expect(page.getByText(POLLED_TITLE)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Backlog 2" })).toBeVisible();
 });
+
+/**
+ * The frontend is a stylesheet plus five ES modules, so the static route is load-bearing:
+ * if it silently reverts to 404 the board renders unstyled and dead, and nothing else in
+ * this suite would notice. This pins both halves — the assets are served with usable
+ * content types, and the route stays a narrow allow-list rather than a filesystem probe.
+ */
+test("serves the frontend's assets, and refuses everything else", async ({ request }) => {
+  const assets = [
+    ["/styles.css", "text/css"],
+    ["/js/app.js", "text/javascript"],
+    ["/js/render.js", "text/javascript"],
+    ["/js/state.js", "text/javascript"],
+    ["/js/api.js", "text/javascript"],
+    ["/js/icons.js", "text/javascript"],
+    ["/", "text/html"],
+    ["/index.html", "text/html"],
+  ];
+  for (const [path, type] of assets) {
+    const res = await request.get(`${board.baseUrl}${path}`);
+    expect(res.status(), path).toBe(200);
+    expect(res.headers()["content-type"], path).toContain(type);
+  }
+
+  const refused = [
+    "/src/server.ts", // extension outside the allow-list
+    "/package.json", // ditto, and outside public/
+    "/js", // a directory: there are no listings
+    "/nope.css", // allow-listed extension, no such file
+    // Percent-encoded so the URL keeps its `..` instead of being normalised away. An
+    // allow-listed extension on a real file outside public/, so this is the containment
+    // check and not the extension check.
+    "/..%2fnode_modules%2ftypescript%2flib%2ftypescript.js",
+  ];
+  for (const path of refused) {
+    const res = await request.get(`${board.baseUrl}${path}`);
+    expect(res.status(), path).toBe(404);
+    expect(res.headers()["content-type"], path).toContain("application/json");
+  }
+
+  // A wrong path under an API prefix keeps the API's own envelope: static resolution runs
+  // only after the router has already declined, so it can never shadow a route.
+  const underApi = await request.get(`${board.baseUrl}/projects/nope.css`);
+  expect(underApi.status()).toBe(404);
+  expect(await underApi.json()).toMatchObject({ error: "not_found", path: "/projects/nope.css" });
+
+  // POST is not a way in, even to a file that exists.
+  const posted = await request.post(`${board.baseUrl}/styles.css`, { data: {} });
+  expect(posted.status()).toBe(404);
+  expect(posted.headers()["content-type"]).toContain("application/json");
+});
