@@ -35,7 +35,7 @@ enum E { A }
   SyntaxError [ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX]: TypeScript enum is not supported in strip-only mode
 ```
 
-So: no constructor parameter properties, no `enum`. `HerdrError` in `src/herdr.ts` is written the long way for exactly this reason — `readonly code: string` declared as a field, then assigned in the constructor body. Status is a **union type** (`"backlog" | "in_progress"`), never an enum.
+So: no constructor parameter properties, no `enum`. `HerdrError` in `src/herdr.ts` is written the long way for exactly this reason — `readonly code: string` declared as a field, then assigned in the constructor body. Status is a **union type** (`"backlog" | "in_progress" | "in_review"`), never an enum.
 
 `tsconfig.json` sets `erasableSyntaxOnly`, so `npm run typecheck` rejects a parameter property or an `enum` instead of letting Node discover it at load time. The typechecker is the guard, not convention.
 
@@ -45,10 +45,10 @@ Line counts are `wc -l`, current as of this node.
 
 | File | Lines | Responsibility | I/O |
 | --- | --- | --- | --- |
-| `src/server.ts` | 469 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
+| `src/server.ts` | 485 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
 | `src/runner.ts` | 453 | `spawn` / `teardown` for one ticket; the readiness guard | Herdr socket, fs, `git` via `execFile` |
 | `src/ticket-store.ts` | 281 | Ticket persistence + `/tickets` handler bodies, input narrowing | SQLite |
-| `src/db.ts` | 263 | Schema, connection, row types, `claimTicket` CAS, port-slot reserve/release | SQLite (opens DB at import) |
+| `src/db.ts` | 285 | Schema, connection, row types, the status parse boundary, `claimTicket` CAS, port-slot reserve/release | SQLite (opens DB at import) |
 | `src/projects.ts` | 214 | Project CRUD, slug / repo / base-branch validation | SQLite, `existsSync` |
 | `src/reconcile.ts` | 167 | Read-only divergence + orphan reporting | Herdr socket (reads only) |
 | `src/herdr.ts` | 158 | Newline-JSON unix-socket client: `request`, `subscribe` | `node:net` |
@@ -57,10 +57,10 @@ Line counts are `wc -l`, current as of this node.
 | `src/panes.ts` | 39 | `focusAgent`, `paneLocation`, `attachCommand` | Herdr socket (`attachCommand` is pure) |
 | `src/diagnostics.ts` | 40 | **Pure.** Per-run diagnostics record + `freshDiagnostics()` | none |
 | `src/lifecycle.test.ts` | 182 | Tests for the pure helpers | none |
-| `src/port-slots.test.ts` | 115 | Tests for reserve / release / reclaim, against a temp DB | SQLite (temp dir) |
-| `src/db.test.ts` | 101 | Tests for the CAS, against a temp DB | SQLite (temp dir) |
+| `src/db.test.ts` | 140 | Tests for the CAS, including across `in_review`, against a temp DB | SQLite (temp dir) |
+| `src/port-slots.test.ts` | 130 | Tests for reserve / release / reclaim, against a temp DB | SQLite (temp dir) |
 | `src/ports.test.ts` | 78 | Tests for the pure allocator | none |
-| `public/` | 1584 | The board's browser half: markup, stylesheet, five ES modules — see [frontend](./frontend.md) | `fetch` |
+| `public/` | 1597 | The board's browser half: markup, stylesheet, five ES modules — see [frontend](./frontend.md) | `fetch` |
 
 `lifecycle.ts`, `ports.ts` and `diagnostics.ts` are the only import-free modules, deliberately: they hold the logic that has actually broken, or that would break silently, so it must be testable without a Herdr session. A port collision surfaces as an `EADDRINUSE` inside somebody's worktree, never as an error on the board, which is exactly why the allocation policy lives apart from the SQL that stores it. `panes.ts` exports only `focusAgent`: the attach command is built in the frontend instead, because it needs `location.hostname` — which the server cannot know — so a server-side copy would be unreachable duplication ([frontend](./frontend.md)).
 
@@ -91,11 +91,11 @@ SQLite at `$DB_PATH`, defaulting to `$STATE_DIR/10x.db`, `STATE_DIR` defaulting 
 | `project_id` | TEXT NOT NULL REFERENCES projects(id) **ON DELETE CASCADE** | deleting a project drops its tickets |
 | `number` | INTEGER NOT NULL | per-project, starts at 1 |
 | `title` / `description` | TEXT NOT NULL / NOT NULL DEFAULT `''` | the only two fields a PATCH may touch |
-| `status` | TEXT NOT NULL DEFAULT `'backlog'` | `backlog` \| `in_progress`; anything else decodes as `backlog` |
-| `finished` | INTEGER NOT NULL DEFAULT 0 | a turn settled *after* `working` was seen |
+| `status` | TEXT NOT NULL DEFAULT `'backlog'` | `backlog` \| `in_progress` \| `in_review`; anything else decodes as `backlog`, in the one `toStatus` parse boundary |
+| `finished` | INTEGER NOT NULL DEFAULT 0 | a turn settled *after* `working` was seen; set in the same moment as the move to `in_review`, and never cleared while a run is live |
 | `died` | INTEGER NOT NULL DEFAULT 0 | the pane exited — **not** the same as finished |
 | `branch`, `agent_name`, `session_dir` | TEXT (nullable) | null until first spawn |
-| `port_slot` | INTEGER (nullable) | index into the port pool; held only while `in_progress` |
+| `port_slot` | INTEGER (nullable) | index into the port pool; held while `in_progress` **or** `in_review` |
 | `created_at`, `updated_at` | TEXT NOT NULL | equal ⇒ never edited |
 | — | — | **`UNIQUE (project_id, number)`** |
 
@@ -118,7 +118,9 @@ A malformed value throws at load rather than falling back, so a typo cannot masq
 
 **The UNIQUE index is the safety**, exactly as the conditional UPDATE is for `claimTicket`: SQLite makes a double assignment impossible instead of application code promising not to make one. NULLs are distinct in SQLite, so any number of tickets may hold no slot. `reservePortSlot` picks the lowest free slot inside a `BEGIN IMMEDIATE`, so the read of the held set and the write that joins it cannot be split by a second writer; it is idempotent, returning the slot a ticket already holds rather than stranding it.
 
-**Reserved at spawn, before the agent starts**, because the block is written into the worktree the agent boots in and there is no later point at which it could be injected. The accepted consequence is that `MAX_PORT_SLOTS` is *also* a cap on concurrently in-progress tickets. Released by every teardown path — cancel, ticket delete, worktree-only delete, and a failed spawn — from a `finally`, so a Herdr call that fails halfway cannot strand a tenth of the pool.
+**Reserved at spawn, before the agent starts**, because the block is written into the worktree the agent boots in and there is no later point at which it could be injected. The accepted consequence is that `MAX_PORT_SLOTS` is *also* a cap on tickets that are in progress or in review. Released by every teardown path — cancel, ticket delete, worktree-only delete, and a failed spawn — from a `finally`, so a Herdr call that fails halfway cannot strand a tenth of the pool.
+
+**A block is reserved for the ticket's active life, not leased to a running process.** It survives the move to `in_review`, and the boot-time reclaim spares both statuses, because a Preview started from review binds the same range. *(Verified: with a ticket sitting in `in_review` on slot 0, a backend restart logs no reclaim and the slot is still held afterwards.)*
 
 `db.ts` migrates an existing database in place: `CREATE TABLE IF NOT EXISTS` leaves it alone, so `port_slot` is added with `ALTER TABLE` when `PRAGMA table_info` says it is missing. The uniqueness has to be a separate `CREATE UNIQUE INDEX` because SQLite's `ADD COLUMN` rejects a UNIQUE constraint. *(Verified against a copy of a real `~/.10x/10x.db`.)*
 
@@ -143,11 +145,16 @@ export function claimTicket(id: string, from: Status, to: Status): boolean {
 
 The conditional `WHERE` *is* the lock, and the row count reports whether the caller won. A second concurrent request matches nothing and loses. There is no other lock in the system and no queue: **claim first, work second, and reject rather than queue** so the conflict stays visible instead of becoming a second spawn on the same branch. It holds across processes, unlike the in-process check-then-assign it replaced. See [operations](./operations.md).
 
+**Every transition is a claim, including the one no user asked for.** The automatic
+`in_progress → in_review` fires from the spawn handler's status callback the moment a turn settles,
+and it uses the same CAS rather than a read-then-write — which is what makes a turn settling twice
+harmless, and what makes a lost claim mean *do nothing* ([operations](./operations.md)).
+
 `PATCH /tickets/:id` therefore refuses to touch `status`, `number`, `projectId`, `branch`, `agentName`, `finished`, `died` or `sessionDir` — naming any of them is a 400 `immutable_field`. Those columns are written only by `setRunFields`, from the spawn/teardown paths.
 
 ## 6. HTTP surface
 
-`PORT` defaults to `4010`. Every JSON route answers `application/json`; a GET that no route claimed then falls through to the `public/` static handler described below, which is how `/`, `/index.html`, `/styles.css` and `/js/*.js` are served. Router excerpt this table is based on (`src/server.ts` `handle()`, lines 181–364):
+`PORT` defaults to `4010`. Every JSON route answers `application/json`; a GET that no route claimed then falls through to the `public/` static handler described below, which is how `/`, `/index.html`, `/styles.css` and `/js/*.js` are served. Router excerpt this table is based on (`src/server.ts` `handle()`, lines 181–380):
 
 ```ts
 if (method === "GET"  && path === "/projects") return json(listProjects());
@@ -230,7 +237,7 @@ JSON 404; and a 404 under an API prefix keeps the API's own envelope.)*
 5. `inFlight.add(id)`; a fresh `RunState { diagnostics, sessionDir }` goes into `runs`; `setRunFields(id, { finished: false, died: false })`.
 6. `specFor(ticket, project)` builds `RunSpec { projectId, number, title, description, repoPath, base }` — the ticket's own fields plus the *project's* repo and base branch.
 7. `spawn(spec, block, state, onStatus, onPaneExit)` in `runner.ts` talks to Herdr: `worktree.open` → `pane.list` (falling back to `worktree.create` only on `worktree_not_found`, because create is not idempotent) → **write `.env` into the worktree and exclude it from git** → `events.subscribe` **before** `agent.start`, or the first `working` transition is lost → `agent.start` behind the readiness guard, polling `agent.get` every 125 ms → `agent.prompt`, retried up to 40× at 250 ms on `agent_not_ready`. Deadlines: `PANE_WAIT_MS` 15 000, `READY_WAIT_MS` 60 000. Details in [spawn](./spawn.md).
-8. Events feed the two callbacks: `pane_agent_status_changed` sets `finished` only once `working` has been seen; `pane_exited`/`pane_closed` set `died: true, finished: false`, because a dead pane is not a finished ticket ([agent-status](./agent-status.md)).
+8. Events feed the two callbacks. `pane_agent_status_changed`, once `working` has been seen, sets `finished` **and** claims `in_progress → in_review` — the same moment is the completion record and the column move. `pane_exited`/`pane_closed` set `died: true` and nothing else, because a dead pane is not a finished ticket and must not undo a completion that really happened ([agent-status](./agent-status.md)).
 9. On success `setRunFields(id, { branch, agentName, sessionDir })` persists the three values we own. On throw, the claim *and* the port slot are released and any worktree left behind resurfaces in the board's `unowned` list.
 10. `finally` clears `inFlight`.
 
@@ -250,4 +257,4 @@ Losing them on restart is **correct**. Diagnostics describe one attempt at start
 
 The consequence is load-bearing: Herdr keeps panes and agents running across a restart of this backend, so afterwards `agent.start` returns `agent_name_taken`, and `runner.ts` treats that as *reuse* — `agent.get` the existing record, set `reusedExistingAgent`, follow the agent's authoritative `pane_id`, and **skip the prompt** so it does not redo work. A backend restart is therefore exactly what makes agent re-attachment reachable today.
 
-At boot, `server.ts` reconciles every `in_progress` ticket per project and **only warns**: it changes nothing, because the only safe automatic repair is resetting a status with no resources behind it, and even that is better surfaced than silently applied. The single exception is `reclaimStalePortSlots()`, which frees blocks held by tickets that are no longer in progress — our own bookkeeping, not the user's work, so reclaiming one cannot lose anything ([reconciliation](./reconciliation.md)).
+At boot, `server.ts` reconciles every `in_progress` ticket per project and **only warns**: it changes nothing, because the only safe automatic repair is resetting a status with no resources behind it, and even that is better surfaced than silently applied. **An `in_review` ticket is not reconciled** — its agent is alive and its worktree is real, and nothing at boot decides anything about it. The single exception to "changes nothing" is `reclaimStalePortSlots()`, which frees blocks held by tickets in neither port-holding status — our own bookkeeping, not the user's work, so reclaiming one cannot lose anything ([reconciliation](./reconciliation.md)).

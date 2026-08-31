@@ -230,10 +230,18 @@ function buildCardBody(ticket) {
 
   const err = actionErrors.get(ticket.id);
 
+  /*
+   * One branch per status, never an `else`: Cancel and Remove worktree are both
+   * `in_progress`-only on the server — Cancel claims `in_progress → backlog` and answers 409
+   * from anywhere else — so an `else` would put a button on an In Review card that cannot
+   * work. A card in review therefore offers no run action at all; the review affordances are
+   * Accept and Reject, and until they exist the honest thing to draw is nothing. Edit, Delete
+   * and Steer below are status-independent and still there.
+   */
   const actions = [];
   if (ticket.status === "backlog") {
     actions.push(`<button class="primary" data-act="spawn" ${busy ? "disabled" : ""}>Start</button>`);
-  } else {
+  } else if (ticket.status === "in_progress") {
     actions.push(`<button class="danger" data-act="cancel" ${busy ? "disabled" : ""} title="Discards the attempt: deletes the branch and worktree.">Cancel (discard)</button>`);
     if (ticket.hasWorktree) {
       actions.push(`<button data-act="drop-worktree" ${busy ? "disabled" : ""} title="Reclaims disk space. The branch and its commits are kept.">Remove worktree</button>`);
@@ -397,6 +405,7 @@ export function renderBoard(handlers) {
   renderUnowned();
   renderColumn("backlog-cards", "backlog-count", "backlog", handlers);
   renderColumn("in-progress-cards", "in-progress-count", "in_progress", handlers);
+  renderColumn("in-review-cards", "in-review-count", "in_review", handlers);
 }
 
 /* ---------------------------------------------------------------------

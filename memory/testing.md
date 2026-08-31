@@ -25,7 +25,7 @@ forgotten new spec merely runs slower under `e2e:full` and never spawns unexpect
 
 **The glob matters and so do the quotes.** `node --test src` does not pick up `.ts` files —
 verified: it reports `✖ src (40ms) 'test failed'`. Quote the glob so the shell hands it to Node
-rather than expanding it. Current state: **63 tests, 12 suites, 0 failures**, `duration_ms` ≈ 195.
+rather than expanding it. Current state: **68 tests, 13 suites, 0 failures**, `duration_ms` ≈ 200.
 
 | Target | Why it is tested |
 | --- | --- |
@@ -34,8 +34,8 @@ rather than expanding it. Current state: **63 tests, 12 suites, 0 failures**, `d
 | `branchFor` / `agentNameFor` | The alignment invariant: branch lowercased with `/`→`-` must equal the agent name. If they drift, reuse, teardown and dispatch break at once. |
 | agent-name budget | `ticket-` (7) + separator (1) leaves 24 of the 32-char ceiling; a 20-char slug + 4-digit number lands exactly on 32. That is *why* the slug cap is 20. |
 | `validateProjectSlug` | Dots are branch-legal and agent-name-illegal, so a dotted slug fails only at spawn time, after the worktree exists. Also pins that a leading digit is legal — `10x` is this project's own name. |
-| `claimTicket` | The only lock in the system: a second click loses, a mismatched `from` loses, an unknown id loses instead of throwing, bystanders are untouched, `updated_at` is bumped only on a win. Runs against a temp DB via `mkdtempSync` and a **dynamic** import, because `db.ts` opens the database at module load and a static import would hoist above the `DB_PATH` assignment. |
-| the port pool | A wrong slot hands two live agents the same TCP port, and the symptom is an `EADDRINUSE` inside somebody's worktree rather than an error on the board. Pinned: lowest-free selection, reuse after release, exhaustion at the cap, the block arithmetic including the last slot's upper bound (4199, not 4200), and the cap coming from `MAX_PORT_SLOTS`. The persistence half additionally pins that the UNIQUE index — not the allocator — is what refuses a double assignment. |
+| `claimTicket` | The only lock in the system: a second click loses, a mismatched `from` loses, an unknown id loses instead of throwing, bystanders are untouched, `updated_at` is bumped only on a win. Also pinned across `in_review`: a settled turn claims `in_progress → in_review`, a **second settle** finds nothing and leaves even `updated_at` alone, and a cancel cannot claim a ticket that has already moved to review — which is why an In Review card renders no Cancel. Runs against a temp DB via `mkdtempSync` and a **dynamic** import, because `db.ts` opens the database at module load and a static import would hoist above the `DB_PATH` assignment. |
+| the port pool | A wrong slot hands two live agents the same TCP port, and the symptom is an `EADDRINUSE` inside somebody's worktree rather than an error on the board. Pinned: lowest-free selection, reuse after release, exhaustion at the cap, the block arithmetic including the last slot's upper bound (4199, not 4200), and the cap coming from `MAX_PORT_SLOTS`. The persistence half additionally pins that the UNIQUE index — not the allocator — is what refuses a double assignment, and that the boot reclaim **spares an `in_review` ticket's block** while still freeing one dropped back to backlog. |
 
 The tests deliberately cover the three things that have actually broken — event-name normalisation,
 the idle-or-done readiness predicate, and the CAS — plus the naming invariants that guard them.
@@ -54,15 +54,21 @@ they never start an agent.
 | --- | --- | --- | --- | --- |
 | `projects.spec.ts` | fast | 5 | registration, slug / repo / duplicate validation | none |
 | `tickets.spec.ts` | fast | 4 | ticket CRUD and monotonic numbering across a delete | none |
-| `board.spec.ts` | fast | 3 | rendering, picking up a ticket via the poll, the static asset route | none |
-| `spawn.spec.ts` | full | 3 | spawn, prompt delivery via the agent's own `probe.txt`, cancel | 3 |
+| `board.spec.ts` | fast | 4 | rendering, the empty In Review column, picking up a ticket via the poll, the static asset route | none |
+| `spawn.spec.ts` | full | 3 | spawn, **the automatic move to In Review** observed on a real turn, cancel | 3 |
 | `teardown.spec.ts` | full | 2 | ticket delete, worktree-only delete (branch survives) | 2 |
-| `resilience.spec.ts` | full | 4 | backend restart, `finished` surviving a pane close, compare-and-swap, two concurrent tickets | 5 |
+| `resilience.spec.ts` | full | 4 | backend restart, `finished` and the review column surviving a pane close, compare-and-swap, two concurrent tickets | 5 |
 | `ports.spec.ts` | full | 2 | `.env` written and git-excluded, pool exhaustion → 409, slot reused after cancel | 3 |
 
-**23 tests in all.** The three `fast` specs are **12 of them and run in ~6 s with no agent and no
+**24 tests in all.** The three `fast` specs are **13 of them and run in ~6 s with no agent and no
 model cost, so run them freely** *(verified)*. The other four specs are 11 tests and **13 real agent
-spawns**, so `npm run e2e:full` costs real model turns and is not a routine check.
+spawns**, so `npm run e2e:full` costs real model turns and is not a routine check. The automatic
+In Review transition is asserted inside the existing completion test rather than in a new one,
+precisely so covering it cost **zero extra spawns**.
+
+**A completion spec's teardown must be `DELETE /tickets/:id`, not `/cancel`.** Cancel claims
+`in_progress → backlog`, and any test that waits for a turn to finish has a ticket that already
+moved itself to In Review, where cancel answers 409 — which would leave a real agent running.
 
 **A spawn spec runs a real OMP agent, so teardown is the load-bearing part.** Every spawn is
 registered with `cleanupAll` *before* its request goes out, each test tears its own spawn down at

@@ -98,7 +98,7 @@ describe("reservePortSlot", () => {
 });
 
 describe("reclaimStalePortSlots", () => {
-  test("frees slots held by tickets that are no longer in progress, and only those", () => {
+  test("frees a slot dropped back to backlog, and leaves a running ticket's alone", () => {
     // res-b still holds slot 1 from the reservation tests. Dropping it back to backlog
     // without releasing is exactly the residue a killed process leaves; res-c is genuinely
     // in progress on slot 0 and must survive.
@@ -107,6 +107,21 @@ describe("reclaimStalePortSlots", () => {
     assert.equal(reclaimStalePortSlots(), 1);
     assert.equal(storedSlot("res-b"), null);
     assert.equal(storedSlot("res-c"), 0);
+  });
+
+  test("a ticket in review keeps its block; a backlog ticket loses its", () => {
+    // A ticket in review still owns its range — a Preview started there binds it — so the
+    // reclaim has to spare it exactly as it spares a running agent. Both slots are freed
+    // first so this test owns both sides of the predicate rather than inheriting them.
+    releasePortSlot("res-c");
+    const review = seed("res-review", "in_review");
+    const backlog = seed("res-backlog", "backlog");
+    assert.deepEqual(reservePortSlot(review), { ok: true, slot: 0 });
+    assert.deepEqual(reservePortSlot(backlog), { ok: true, slot: 1 });
+
+    assert.equal(reclaimStalePortSlots(), 1);
+    assert.equal(storedSlot(review), 0);
+    assert.equal(storedSlot(backlog), null);
   });
 
   test("a boot with nothing stale reclaims nothing", () => {

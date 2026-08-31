@@ -59,6 +59,24 @@ test("shows the project and its backlog ticket", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Start" })).toBeVisible();
 });
 
+/**
+ * In Review is reached only by an agent finishing a turn, so on a fresh board it must exist
+ * and be empty. Agent-free on purpose: what is asserted is that the column is on the page and
+ * carries its accessible name, not that anything transitions into it.
+ */
+test("renders an empty In Review column", async ({ page }) => {
+  await page.goto(board.baseUrl);
+
+  // The column is a `region` labelled by its own heading, so its accessible name carries the
+  // live count — "In Review 0" is both "the column is there" and "it holds nothing", with no
+  // duplicated string to drift. Cards are `article`s, so counting them proves the emptiness
+  // rather than trusting the number in the heading.
+  const column = page.getByRole("region", { name: "In Review 0" });
+  await expect(column).toBeVisible();
+  await expect(column.getByRole("heading", { name: "In Review 0" })).toBeVisible();
+  await expect(column.getByRole("article")).toHaveCount(0);
+});
+
 test("picks up a ticket created after load without a reload", async ({ page, request }) => {
   await page.goto(board.baseUrl);
   await expect(page.getByText(SEEDED_TITLE)).toBeVisible();

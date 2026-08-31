@@ -4,29 +4,55 @@
 
 ## Ticket state machine
 
-### Scope: Backlog ↔ In Progress. That is all.
+### Scope: Backlog → In Progress → In Review. Done does not exist yet.
 
-There are **two columns and two transitions.** In Review and Done do not exist yet — not as
-columns, not as code, not as design. Nail these first.
+**Three columns.** Done is terminal (delete only) and is reached **only** by clicking Accept, so
+it ships with Accept — a Done column before that would be unreachable and permanently empty.
 
-| From | To | Side effect |
-|---|---|---|
-| Backlog | In Progress | **spawn** ([spawn](./spawn.md)), claimed by CAS ([below](#claiming-a-ticket-reject-concurrent-requests)) |
-| In Progress | Backlog | **cancel**: force-remove worktree, delete branch ([teardown](./teardown.md)) |
+| From | To | Trigger | Side effect |
+|---|---|---|---|
+| Backlog | In Progress | **spawn**, a click | the four spawn calls ([spawn](./spawn.md)), claimed by CAS ([below](#claiming-a-ticket-reject-concurrent-requests)) |
+| In Progress | Backlog | **cancel**, a click | force-remove worktree, delete branch ([teardown](./teardown.md)) |
+| In Progress | In Review | **automatic**: the agent's turn completed | none — the agent stays alive and the port block stays held |
+
+### The automatic transition
+
+`in_progress → in_review` fires from the spawn handler's status callback, at the same moment
+`finished` is set: a settled status observed **after** `working` ([agent-status](./agent-status.md)).
+It is a `claimTicket` CAS like every other transition, so it is a conditional UPDATE and not a
+read-then-write. Three consequences worth knowing:
+
+- **A turn can settle more than once.** A human steering the agent in Herdr produces a second
+  `working → done` cycle. The second claim matches no row, because the ticket is already
+  `in_review`, so nothing is re-transitioned.
+- **`finished` is never cleared by a `working` transition.** It is cleared once, before the run.
+  After a completion the ticket is already in review, so the only thing such a clear could reach
+  is the completion that put it there.
+- **A lost claim means do nothing.** The ticket is no longer `in_progress` — a cancel got there
+  first — and forcing it would drag a ticket out of the column its owner just chose.
+
+**The agent stays alive through In Review, and the ticket keeps its port slot.** Both are
+deliberate: a Reject has to re-prompt the same agent with its full context, and a Preview started
+from review binds the same port range. Killing the dev server that agent may have started is
+separate mechanics and is not built.
+
+**A ticket in review has no route back through the UI.** Cancel claims `in_progress → backlog` and
+answers 409 from review, so an In Review card deliberately renders **no run action at all** until
+Accept and Reject exist ([frontend](./frontend.md)). Delete still works from any column, and it is
+the only escape today.
 
 ### What the app does on each agent status
 
 ```
 working        → ticket stays In Progress
-idle | done    → turn finished. Mark the card DONE (a checkmark). The ticket does NOT
-                 change column — there is nowhere to move it. Worktree is kept (teardown.md).
+idle | done    → turn finished. Mark the card DONE (a checkmark) AND claim
+                 in_progress → in_review. Worktree is kept (teardown.md).
 blocked        → stays In Progress, flagged as needing a human
 unknown        → no transition, no marking, ever
-pane exited    → the run is dead. NOT finished — flag it as needing attention (gotchas.md)
+pane exited    → the run is dead. NOT finished — flag it as needing attention (gotchas.md).
+                 Writes `died` and NOTHING else, so a pane dying after the turn ended cannot
+                 pull the ticket back out of review.
 ```
-
-**A finished agent produces a checkmark, not a column change.** That is the whole completion
-behaviour for now, and it is why no automatic column transition exists anywhere in this document.
 
 ### HTTP surface
 
@@ -38,11 +64,12 @@ The HTTP surface is documented in [architecture](./architecture.md).
   focused on or attached to its pane. Intended shape: an OMP end-of-turn hook, plus a rule that a
   focused pane suppresses the transition and an unfocused one permits it. This is the real fix for
   the `idle`/`done` split ([agent-status](./agent-status.md)), replacing today's "treat both the
-  same". Matters only once there is a column to move to.
+  same" — the transition it would gate now exists, so this is reachable work rather than a
+  hypothetical.
 - **Concurrency cap: 2 tickets.** Two proves concurrency; ten is a hardware question.
 - **Base branch** is `main` by default, with an optional parameter to branch from something else.
 
-In Review, Done, merge policy, and re-dispatch live in [parking-lot.md](./parking-lot.md).
+Done, Accept, Reject, Preview and merge policy live in [parking-lot.md](./parking-lot.md).
 
 ---
 

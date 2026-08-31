@@ -21,7 +21,12 @@ import { allocateSlot, type SlotAllocation } from "./ports.ts";
 export const STATE_DIR = process.env.STATE_DIR ?? join(homedir(), ".10x");
 const DB_PATH = process.env.DB_PATH ?? join(STATE_DIR, "10x.db");
 
-export type Status = "backlog" | "in_progress";
+/**
+ * `in_review` is reached automatically when the agent's turn completes, and the ticket keeps
+ * both its live agent and its port block while it sits there — a Reject has to be able to
+ * re-prompt the same agent with its full context, and a Preview binds the same range.
+ */
+export type Status = "backlog" | "in_progress" | "in_review";
 
 export type Project = {
   /** Immutable slug used in branch and agent names. Renaming would orphan worktrees. */
@@ -82,7 +87,7 @@ CREATE TABLE IF NOT EXISTS tickets (
   agent_name  TEXT,
   session_dir TEXT,
   -- Which block of TCP ports this ticket's agent owns, as a slot index into the pool in
-  -- ports.ts. Nullable: a ticket holds one only while it is in progress. Persisted because
+  -- ports.ts. Nullable: a ticket holds one from spawn until it leaves review. Persisted because
   -- a restart that forgot the held slots would hand one slot to two tickets.
   --
   -- The uniqueness (a UNIQUE INDEX, created below) IS the safety: SQLite makes
@@ -156,13 +161,22 @@ export const toProject = (r: ProjectRow): Project => ({
   updatedAt: r.updated_at,
 });
 
+/**
+ * The status parse boundary: SQLite hands back a bare string, so exactly one place decides
+ * what a row's status means. Every value the union knows must be listed here — a status
+ * missing from it decodes as `backlog`, which would silently teleport a live ticket into the
+ * wrong column rather than failing.
+ */
+const toStatus = (raw: string): Status =>
+  raw === "in_progress" || raw === "in_review" ? raw : "backlog";
+
 export const toTicket = (r: TicketRow): Ticket => ({
   id: r.id,
   projectId: r.project_id,
   number: r.number,
   title: r.title,
   description: r.description,
-  status: r.status === "in_progress" ? "in_progress" : "backlog",
+  status: toStatus(r.status),
   finished: r.finished === 1,
   died: r.died === 1,
   branch: r.branch,
@@ -197,8 +211,15 @@ const RESERVE_SLOT = db.prepare("UPDATE tickets SET port_slot = ?, updated_at = 
 const RELEASE_SLOT = db.prepare(
   "UPDATE tickets SET port_slot = NULL, updated_at = ? WHERE id = ? AND port_slot IS NOT NULL",
 );
+/**
+ * `in_review` is spared alongside `in_progress`: a ticket in review still OWNS its range,
+ * because a Preview started there binds the same ports. The block is reserved for the
+ * ticket's whole active life, not leased to whatever process happens to be running — so the
+ * predicate names the statuses that hold a block rather than the one that has an agent.
+ */
 const RECLAIM_SLOTS = db.prepare(
-  "UPDATE tickets SET port_slot = NULL, updated_at = ? WHERE port_slot IS NOT NULL AND status <> 'in_progress'",
+  "UPDATE tickets SET port_slot = NULL, updated_at = ? " +
+    "WHERE port_slot IS NOT NULL AND status NOT IN ('in_progress', 'in_review')",
 );
 
 // node:sqlite hands back dynamic column values, so every read of `port_slot` below narrows
@@ -255,8 +276,9 @@ export function releasePortSlot(id: string): void {
  * own bookkeeping — a note saying "this number is spoken for" — so reclaiming one cannot
  * lose anything, while leaving them held silently shrinks the pool on every crash.
  *
- * `in_progress` is the only status that holds a block: it is reserved at spawn and released
- * by every teardown path, and a backlog ticket has no agent to be running a server.
+ * `in_progress` and `in_review` are the port-holding statuses: the block is reserved at spawn
+ * and released by every teardown path, a backlog ticket has no agent to be running a server,
+ * and a ticket in review still owns its range for a Preview to bind.
  */
 export function reclaimStalePortSlots(): number {
   return Number(RECLAIM_SLOTS.run(nowIso()).changes);

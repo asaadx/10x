@@ -45,6 +45,15 @@ no work done. Require an observed `working` first, or gate on the agent record's
 committed the work, asked a question in prose, errored out, or did nothing. There is no success
 signal in the protocol.
 
+**This is exactly what the settled status is allowed to mean, and no more.** It moves the ticket to
+In Review ([operations](./operations.md)) — "a human should look at this now" — and it deliberately
+does not move it anywhere that implies the work was good. That is why the only route into Done is a
+human clicking Accept.
+
+**Also why the transition is safe to automate:** a multi-step prompt is one turn (below), so it
+cannot fire at a tool boundary; and a `working` observed first is required, so the pre-prompt
+`idle` cannot fire it either.
+
 **A multi-step prompt is ONE turn (verified).** Prose, several tool calls, more prose, and a commit
 all sit inside a single `working` → `done` cycle, so tool-call boundaries do **not** produce
 intermediate settled events. Measured on a five-step prompt (read a file, create two files, run

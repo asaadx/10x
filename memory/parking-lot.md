@@ -94,26 +94,37 @@ the human sitting at a second machine. Unverified.
 
 ---
 
-## In Review, Done, and merge policy
+## Accept, Reject, Preview, Done, and merge policy
 
-Out of scope until Backlog ↔ In Progress is solid. Decisions already reached, so they are not
-re-litigated later:
+**In Review itself is built** — the column, the status and the automatic transition into it
+([operations](./operations.md)). What is still deferred is every way *out* of it. Decisions already
+reached, so they are not re-litigated later:
 
 - **A worktree is only reclaimed on merge.** A completed agent keeps its worktree ([teardown](./teardown.md)).
-  Even with In Review, the *only* point at which a run's worktree is genuinely finished with is when
-  the ticket is merged — because a passing review does **not** imply merge. Review can pass and more
-  work can still be added to the same branch.
-- **The implementation agent must be dead before a ticket reaches In Review.** In Review implies the
-  run is torn down.
+  The *only* point at which a run's worktree is genuinely finished with is when the ticket is
+  merged — because a passing review does **not** imply merge. Review can pass and more work can
+  still be added to the same branch.
+- **The implementation agent stays ALIVE through In Review**, and the ticket keeps its port block.
+  A Reject re-prompts that same agent so it has the full context of what it already did, and a
+  Preview started from review binds the same range. (This reverses an earlier plan to tear the run
+  down on entry to review, which would have thrown away exactly the context Reject needs.)
+- **Done is terminal: delete only, and reached only by Accept.** That is why the Done column does
+  not exist yet — before Accept it would be unreachable and permanently empty.
 - **In Review starts as a manual human review**, later a fresh reviewing agent working on the same
   branch.
-- **In Review → In Progress is never automatic.** That is the infinite-loop guard. Performed by
-  hand, it must check for a live agent first: `agent.prompt` if one exists, `agent.start` if not.
+- **In Review → In Progress is never automatic.** That is the infinite-loop guard, and it is what
+  Reject performs by hand. It must check for a live agent first: `agent.prompt` if one exists,
+  `agent.start` if not.
 - **Success is not verified by the app.** No commit counting or diffing; human PR review is the
   gate ([agent status](./agent-status.md)).
 
-Consequence to keep in mind: until merge exists, disk is user-managed. Completed-but-unmerged
-tickets keep their worktrees indefinitely, and reconciliation only makes them visible.
+Two consequences to keep in mind. Until merge exists, disk is user-managed: completed-but-unmerged
+tickets keep their worktrees indefinitely and reconciliation only makes them visible. And until
+Accept and Reject exist, **Delete is the only way out of In Review** — cancel claims
+`in_progress → backlog` and answers 409 from there.
+
+**Killing the dev server an in-progress agent started** is separate mechanics — finding a process
+by port rather than by ticket — and is not built.
 
 ---
 

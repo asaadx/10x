@@ -81,27 +81,41 @@ test("spawns a worktree, a branch and an agent, and persists the run", async ({ 
   await expect(page.locator(`#in-progress-cards [data-id="${id}"]`)).toContainText("ticket/spwn/1");
 
   // Not an assertion — this test owns a live agent and must not hand it to the next test.
-  expect((await api(board, "POST", `/tickets/${id}/cancel`)).status).toBe(200);
+  // DELETE rather than cancel because it is status-agnostic: if this agent's turn settles
+  // before the test ends, the ticket has already moved itself to In Review and cancel, which
+  // claims `in_progress → backlog`, would answer 409 and leave the agent running.
+  expect((await api(board, "DELETE", `/tickets/${id}`)).status).toBe(200);
 });
 
-test("delivers the prompt, and the agent's own output lands in the worktree", async ({ page }) => {
+/**
+ * The automatic transition, end to end against a real agent: the turn finishing is what moves
+ * the ticket, so nothing but a real completion can prove it. The agent is deliberately left
+ * alive in review — a later Reject has to be able to re-prompt it with its full context — and
+ * the ticket keeps its port block for a Preview to bind.
+ */
+test("a finished turn moves the ticket to In Review by itself", async ({ page }) => {
   test.setTimeout(COMPLETION_MS);
   await createProject(board, "cmpl", repoPath);
   const id = await createTicket(board, "cmpl", "Probe completion", PROBE_DESCRIPTION);
 
   const run = await spawnTicket(board, repoPath, id);
-  // Completion is the ticket reporting `finished`, which the event subscription sets.
+  // Waiting on the STATUS, not on `finished`: the column is the contract under test, and the
+  // flag alone would pass even if the claim never fired.
   const row = await waitForTicket(
     board,
     id,
-    "reported finished",
-    (t) => t["finished"] === true,
+    "moved to review",
+    (t) => t["status"] === "in_review",
     150_000,
   );
 
-  // A dead pane is not a finished ticket (memory/teardown.md rule 3), and `finished` is only set
-  // after a `working` transition was observed, so the first `idle` cannot fake this.
+  // `finished` stays set alongside the move — it is the record that the turn completed, which
+  // is what the checkmark renders and what Accept will read. A dead pane is not a finished
+  // ticket (memory/teardown.md rule 3), and `finished` is only set after a `working`
+  // transition was observed, so the first `idle` cannot fake this.
+  expect(row["finished"]).toBe(true);
   expect(row["died"]).toBe(false);
+  expect(storedTicket(board, id)).toMatchObject({ status: "in_review", branch: run.branch });
 
   const probe = join(run.worktreePath, PROBE_FILE);
   expect(existsSync(probe), `the agent never created ${probe}`).toBe(true);
@@ -110,12 +124,19 @@ test("delivers the prompt, and the agent's own output lands in the worktree", as
   expect((await readFile(probe, "utf8")).trim()).toBe(PROBE_CONTENT);
 
   await page.goto(board.baseUrl);
-  const card = page.locator(`#in-progress-cards [data-id="${id}"]`);
+  // A column is a `region` whose accessible name carries its live count and a card is an
+  // `article` named by its ticket id, so "the card is in In Review" is assertable without
+  // reaching through the DOM.
+  const card = page.getByRole("region", { name: /^In Review/ }).getByRole("article", { name: id });
   await expect(card.getByTitle("finished")).toBeVisible();
   // The worktree indicator is read live from Herdr, not from our store (memory/reconciliation.md).
   await expect(card.getByTitle("worktree exists")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "In Review 1" })).toBeVisible();
+  // Cancel is `in_progress`-only, so review offers no run action until Accept and Reject exist.
+  await expect(card.getByRole("button", { name: /Cancel/ })).toHaveCount(0);
 
-  expect((await api(board, "POST", `/tickets/${id}/cancel`)).status).toBe(200);
+  // DELETE, not cancel: cancel claims `in_progress → backlog` and answers 409 from review.
+  expect((await api(board, "DELETE", `/tickets/${id}`)).status).toBe(200);
 });
 
 test("cancel leaves zero residue and returns the ticket to backlog", async () => {

@@ -99,3 +99,42 @@ describe("claimTicket", () => {
     assert.equal(readString("t-stamp", "updated_at"), bumped);
   });
 });
+
+/**
+ * The `in_progress → in_review` transition is automatic: it fires from the spawn handler's
+ * status callback the moment a turn settles. Since a turn can settle more than once — a human
+ * steering the agent in Herdr produces a second `working → done` cycle — the claim is the only
+ * thing standing between "the turn completed" and a ticket being re-transitioned.
+ */
+describe("claimTicket across in_review", () => {
+  test("a settled turn claims in_progress to in_review", () => {
+    seed("t-review", "in_progress");
+    assert.equal(claimTicket("t-review", "in_progress", "in_review"), true);
+    assert.equal(readString("t-review", "status"), "in_review");
+  });
+
+  test("a second settle finds nothing to claim and leaves the row untouched", () => {
+    seed("t-resettle", "in_progress");
+    assert.equal(claimTicket("t-resettle", "in_progress", "in_review"), true);
+    const moved = readString("t-resettle", "updated_at");
+
+    assert.equal(claimTicket("t-resettle", "in_progress", "in_review"), false);
+    assert.equal(readString("t-resettle", "status"), "in_review");
+    assert.equal(readString("t-resettle", "updated_at"), moved);
+  });
+
+  // Why an In Review card offers no Cancel: the endpoint claims `in_progress → backlog` and
+  // matches no row from here, so the button would be one that cannot work.
+  test("a cancel cannot claim a ticket that has moved to review", () => {
+    seed("t-review-cancel", "in_review");
+    assert.equal(claimTicket("t-review-cancel", "in_progress", "backlog"), false);
+    assert.equal(readString("t-review-cancel", "status"), "in_review");
+  });
+
+  test("a claim into review from the wrong source state loses", () => {
+    seed("t-review-wrong", "backlog");
+    assert.equal(claimTicket("t-review-wrong", "in_progress", "in_review"), false);
+    assert.equal(readString("t-review-wrong", "status"), "backlog");
+    assert.equal(readString("t-review-wrong", "updated_at"), ANCIENT);
+  });
+});
