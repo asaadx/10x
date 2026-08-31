@@ -231,12 +231,12 @@ function buildCardBody(ticket) {
   const err = actionErrors.get(ticket.id);
 
   /*
-   * One branch per status, never an `else`: Cancel and Remove worktree are both
-   * `in_progress`-only on the server — Cancel claims `in_progress → backlog` and answers 409
-   * from anywhere else — so an `else` would put a button on an In Review card that cannot
-   * work. A card in review therefore offers no run action at all; the review affordances are
-   * Accept and Reject, and until they exist the honest thing to draw is nothing. Edit, Delete
-   * and Steer below are status-independent and still there.
+   * One branch per status, never an `else`: Cancel, Remove worktree and Accept are all
+   * scoped to one status each on the server — Cancel claims `in_progress → backlog`, Accept
+   * claims `in_review → done`, and each answers 409 from anywhere else — so an `else` would
+   * put a button on a card whose status can't take it. Done is terminal and matches no
+   * branch here, so it draws no run action at all. Edit, Delete and Steer below are
+   * status-independent and still there.
    */
   const actions = [];
   if (ticket.status === "backlog") {
@@ -246,6 +246,8 @@ function buildCardBody(ticket) {
     if (ticket.hasWorktree) {
       actions.push(`<button data-act="drop-worktree" ${busy ? "disabled" : ""} title="Reclaims disk space. The branch and its commits are kept.">Remove worktree</button>`);
     }
+  } else if (ticket.status === "in_review") {
+    actions.push(`<button class="primary" data-act="accept" ${busy ? "disabled" : ""} title="Pushes the branch, opens a pull request, and retires the agent.">Accept</button>`);
   }
   actions.push(`<button class="ghost" data-act="edit" ${busy ? "disabled" : ""}>Edit</button>`);
   actions.push(`<button class="danger ghost" data-act="delete" ${busy ? "disabled" : ""}>Delete</button>`);
@@ -279,6 +281,11 @@ function buildCardBody(ticket) {
       <div class="card-title">${escapeHtml(ticket.title)}</div>
       <div class="card-desc" title="${escapeAttr(ticket.description || "")}">${escapeHtml(truncate(ticket.description, 140))}</div>
       ${ticket.branch ? `<div class="card-meta"><span>branch: ${escapeHtml(ticket.branch)}</span></div>` : ""}
+      ${
+        ticket.status === "done" && ticket.prUrl
+          ? `<div class="card-meta"><a href="${escapeAttr(ticket.prUrl)}" target="_blank" rel="noopener noreferrer">PR #${escapeHtml(String(ticket.prNumber))}</a></div>`
+          : ""
+      }
       ${
         ticket.died && !ticket.finished
           ? `<div class="died-note">Run died — the pane exited unexpectedly. This is NOT a finished ticket. The worktree was deliberately kept so you can inspect it before deciding what to do.</div>`
@@ -406,6 +413,7 @@ export function renderBoard(handlers) {
   renderColumn("backlog-cards", "backlog-count", "backlog", handlers);
   renderColumn("in-progress-cards", "in-progress-count", "in_progress", handlers);
   renderColumn("in-review-cards", "in-review-count", "in_review", handlers);
+  renderColumn("done-cards", "done-count", "done", handlers);
 }
 
 /* ---------------------------------------------------------------------

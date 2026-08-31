@@ -16,6 +16,7 @@ import {
   fetchProjects,
   messageFor,
   patchTicket,
+  postAccept,
   postCancel,
   postFocus,
   postSpawn,
@@ -209,6 +210,7 @@ const CARD_ACTIONS = {
     runAction(t, () => postCancel(t.id));
   },
   "drop-worktree": (t) => runAction(t, () => deleteWorktree(t.id)),
+  accept: (t) => runAction(t, () => postAccept(t.id)),
   edit: startEdit,
   delete: (t) => {
     if (!confirm(`Delete ticket "${t.title}"? This cannot be undone.`)) return;

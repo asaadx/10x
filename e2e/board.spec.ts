@@ -77,6 +77,49 @@ test("renders an empty In Review column", async ({ page }) => {
   await expect(column.getByRole("article")).toHaveCount(0);
 });
 
+/**
+ * Done is reached only via Accept, which this suite deliberately never triggers (memory/
+ * parking-lot.md warns Accept pushes real branches and opens real PRs). So on a fresh board
+ * it must exist and be empty, exactly like In Review above.
+ */
+test("renders an empty Done column", async ({ page }) => {
+  await page.goto(board.baseUrl);
+
+  const column = page.getByRole("region", { name: "Done 0" });
+  await expect(column).toBeVisible();
+  await expect(column.getByRole("heading", { name: "Done 0" })).toBeVisible();
+  await expect(column.getByRole("article")).toHaveCount(0);
+});
+
+/**
+ * The four columns are named regions; asserting their accessible names in DOM order is the
+ * only way to pin "Done comes after In Review" without reaching into DOM structure.
+ */
+test("shows all four columns in order", async ({ page }) => {
+  await page.goto(board.baseUrl);
+
+  // Wait for the first poll to land before reading the snapshot below: a bare `evaluateAll`
+  // has no retry and can otherwise run against the pre-poll, ticket-less DOM.
+  await expect(page.getByRole("heading", { name: "Backlog 1" })).toBeVisible();
+
+  const names = await page.getByRole("region").evaluateAll((els) =>
+    els.map((el) => el.getAttribute("aria-labelledby") && document.getElementById(el.getAttribute("aria-labelledby")!)?.textContent?.trim()),
+  );
+  expect(names).toEqual(["Backlog 1", "In Progress 0", "In Review 0", "Done 0"]);
+});
+
+/**
+ * Accept is In-Review-only. A backlog card offers Start instead, and must never grow an
+ * Accept button of its own.
+ */
+test("a backlog card shows no Accept button", async ({ page }) => {
+  await page.goto(board.baseUrl);
+
+  const backlog = page.getByRole("region", { name: "Backlog 1" });
+  await expect(backlog.getByRole("button", { name: "Start" })).toBeVisible();
+  await expect(backlog.getByRole("button", { name: "Accept" })).toHaveCount(0);
+});
+
 test("picks up a ticket created after load without a reload", async ({ page, request }) => {
   await page.goto(board.baseUrl);
   await expect(page.getByText(SEEDED_TITLE)).toBeVisible();
