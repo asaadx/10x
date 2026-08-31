@@ -44,10 +44,17 @@ retire the agent. Only the first three can hand the claim back.
 - **`gh webhook forward --repo=… --events=pull_request --url=…` works**, creates an **ephemeral**
   hook, tears it down on exit, and sends **no HMAC signature header**. Events that occur while it
   is down are **lost, not queued** — GitHub does not replay them to an ephemeral hook.
-- Consequence for the receiver: **verify the signature when a signature is present, and require one
-  when a secret is configured.** That is the only shape that is safe under both `gh webhook forward`
-  (no header) and a public URL or Smee (header always). The two `.env` secrets `WEBHOOK_10X` and
-  `WEBHOOK_10X_TEST` are unused on the `gh` path and essential on any other.
+- **No signature verification, deliberately.** `gh webhook forward` is the only delivery path that
+  exists, and it never sends a header to verify. More to the point, the board **binds `0.0.0.0`**
+  (`server.ts` `.listen(PORT, …)`, no host) and **has no auth on any endpoint** — anyone who could
+  forge a webhook can already call `DELETE /tickets/:id`, which force-removes the worktree, deletes
+  the branch and drops the row with no audit trail. HMAC on this one route would harden the least
+  dangerous door in an unlocked house. The two `.env` secrets `WEBHOOK_10X` and `WEBHOOK_10X_TEST`
+  are wired to nothing.
+- **What would change that: the endpoint becoming reachable from the public internet** — a tunnel,
+  Smee, or a hosted deploy. A tailnet does not count. The rule then needs no mode flag: **verify iff
+  a secret env var is set.** Set one in production, leave it unset locally, and `gh webhook forward`
+  never trips it. If the board ever goes public, webhook HMAC is far from the most urgent fix.
 - Because events are lossy, the receiver **cannot be the only source of PR state**. The on-demand
   read below doubles as the recovery path.
 
