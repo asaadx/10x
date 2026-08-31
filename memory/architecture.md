@@ -149,7 +149,7 @@ if (action === "/worktree" && method === "DELETE") { … }
 return json({ error: "not_found", path, method }, 404);
 ```
 
-**Twelve** JSON endpoints, plus the two static routes.
+**Twelve** JSON endpoints, plus one static handler covering everything under `public/`.
 
 | # | Method | Path | Returns |
 | --- | --- | --- | --- |
