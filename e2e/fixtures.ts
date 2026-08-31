@@ -487,6 +487,8 @@ export async function branchExists(repoPath: string, branch: string): Promise<bo
 
 export type StoredTicket = {
   status: string;
+  finished: boolean;
+  died: boolean;
   branch: string | null;
   agentName: string | null;
   sessionDir: string | null;
@@ -505,13 +507,16 @@ export function storedTicket(board: Board, ticketId: string): StoredTicket {
   if (stateDir === undefined) throw new Error("that board did not come from startBoard()");
   const db = new DatabaseSync(join(stateDir, "10x.db"), { readOnly: true });
   try {
-    const sql = "SELECT status, branch, agent_name, session_dir FROM tickets WHERE id = ?";
+    const sql = "SELECT status, finished, died, branch, agent_name, session_dir FROM tickets WHERE id = ?";
     const row = db.prepare(sql).get(ticketId);
     if (row === undefined) throw new Error(`no ticket ${ticketId} in the store`);
     const status = nullableText(row["status"]);
     if (status === null) throw new Error(`ticket ${ticketId} has no status`);
     return {
       status,
+      // Stored as SQLite INTEGER 0/1 (matches src/db.ts's toTicket), converted to boolean here.
+      finished: row["finished"] === 1,
+      died: row["died"] === 1,
       branch: nullableText(row["branch"]),
       agentName: nullableText(row["agent_name"]),
       sessionDir: nullableText(row["session_dir"]),
