@@ -231,12 +231,12 @@ function buildCardBody(ticket) {
   const err = actionErrors.get(ticket.id);
 
   /*
-   * One branch per status, never an `else`: Cancel, Remove worktree and Accept are all
-   * scoped to one status each on the server — Cancel claims `in_progress → backlog`, Accept
-   * claims `in_review → done`, and each answers 409 from anywhere else — so an `else` would
-   * put a button on a card whose status can't take it. Done is terminal and matches no
-   * branch here, so it draws no run action at all. Edit, Delete and Steer below are
-   * status-independent and still there.
+   * One branch per status, never an `else`: Cancel, Remove worktree, Accept and Reject are
+   * all scoped to one status each on the server — Cancel claims `in_progress → backlog`,
+   * Accept and Reject both claim `in_review`, and each answers 409 from anywhere else — so
+   * an `else` would put a button on a card whose status can't take it. Done is terminal and
+   * matches no branch here, so it draws no run action at all. Edit, Delete and Steer below
+   * are status-independent and still there.
    */
   const actions = [];
   if (ticket.status === "backlog") {
@@ -248,6 +248,7 @@ function buildCardBody(ticket) {
     }
   } else if (ticket.status === "in_review") {
     actions.push(`<button class="primary" data-act="accept" ${busy ? "disabled" : ""} title="Pushes the branch, opens a pull request, and retires the agent.">Accept</button>`);
+    actions.push(`<button data-act="reject" ${busy ? "disabled" : ""} title="Sends your feedback back to the agent, which keeps working. Not destructive — the worktree, branch and agent all survive.">Reject</button>`);
   }
   actions.push(`<button class="ghost" data-act="edit" ${busy ? "disabled" : ""}>Edit</button>`);
   actions.push(`<button class="danger ghost" data-act="delete" ${busy ? "disabled" : ""}>Delete</button>`);
