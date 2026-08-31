@@ -21,7 +21,7 @@ import { agentNameFor, branchFor, isSettled } from "./lifecycle.ts";
 import { focusAgent } from "./panes.ts";
 import { createProject, deleteProject, listProjects, getProject, updateProject } from "./projects.ts";
 import { findOrphans, listWorktrees, reconcileTickets } from "./reconcile.ts";
-import { spawn, teardown, type RunSpec, type RunState } from "./runner.ts";
+import { retireAgent, spawn, teardown, type RunSpec, type RunState } from "./runner.ts";
 import {
   createTicket,
   deleteTicket,
@@ -35,9 +35,11 @@ import {
   reclaimStalePortSlots,
   releasePortSlot,
   reservePortSlot,
+  setPullRequest,
   type Project,
   type Ticket,
 } from "./db.ts";
+import { openPullRequest, pushTicketBranch } from "./github.ts";
 import { blockFor } from "./ports.ts";
 
 const PORT = Number(process.env.PORT ?? 4010);
@@ -204,7 +206,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     return r.ok ? json(r.ticket, 201) : json(r.body, r.status);
   }
 
-  const m = /^\/tickets\/([^/]+)(\/spawn|\/cancel|\/worktree|\/focus)?$/.exec(path);
+  const m = /^\/tickets\/([^/]+)(\/spawn|\/cancel|\/worktree|\/focus|\/accept)?$/.exec(path);
   if (!m?.[1]) return json({ error: "not_found", path }, 404);
   const id = decodeURIComponent(m[1]);
   const action = m[2];
@@ -372,6 +374,67 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       return json({ error: err instanceof Error ? err.message : String(err) }, 500);
     } finally {
       releasePortSlot(id);
+      inFlight.delete(id);
+    }
+  }
+
+  if (action === "/accept" && method === "POST") {
+    // A ticket that never spawned (or was force-cleaned) has no branch to publish.
+    // Reject before touching the claim, same as every other precondition here.
+    if (!ticket.branch) {
+      return json({ error: "no_branch", id }, 409);
+    }
+
+    const token = process.env.GITHUB_TOKEN;
+    if (!token) {
+      return json({ error: "missing_github_token", message: "GITHUB_TOKEN is not set" }, 500);
+    }
+
+    // Claim first, work second (memory/operations.md): the status IS the lock, and this
+    // claim is what makes the publish-then-retire sequence below safe to run unguarded.
+    if (!claimTicket(id, "in_review", "done")) {
+      return json({ error: "not_in_review", status: ticket.status }, 409);
+    }
+
+    inFlight.add(id);
+    try {
+      let pr: { number: number; url: string };
+      try {
+        await pushTicketBranch(project.repoPath, ticket.branch, token);
+        pr = await openPullRequest(
+          project.repoPath,
+          {
+            branch: ticket.branch,
+            base: project.baseBranch,
+            title: ticket.title,
+            description: ticket.description,
+            ticketId: ticket.id,
+          },
+          token,
+        );
+        setPullRequest(id, pr.number, pr.url);
+      } catch (err) {
+        // Hand the claim back: a ticket sitting in Done with no PR is worse than a visible
+        // failure. The message is already redacted by github.ts — do not log the raw error
+        // separately or that redaction is undone.
+        claimTicket(id, "done", "in_review");
+        return json({ error: err instanceof Error ? err.message : String(err) }, 502);
+      }
+
+      // The publish is the irreversible part and it already succeeded. Retiring the agent
+      // is cleanup, not part of the contract with the user: its failure must not fail the
+      // request or revert the status the PR now depends on.
+      try {
+        const state = runStateFor(ticket);
+        await retireAgent(specFor(ticket, project), state);
+        runs.delete(id);
+        releasePortSlot(id);
+      } catch (err) {
+        console.warn(`[${id}] accepted with PR #${pr.number} but retiring the agent failed:`, err);
+      }
+
+      return json(getTicket(id));
+    } finally {
       inFlight.delete(id);
     }
   }

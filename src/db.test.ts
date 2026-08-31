@@ -168,6 +168,27 @@ describe("claimTicket into done", () => {
     assert.equal(claimTicket("t-done-progress", "in_review", "done"), false);
     assert.equal(readString("t-done-progress", "status"), "in_progress");
   });
+
+  test("a claim into done fails from a ticket already done", () => {
+    seed("t-done-twice", "done");
+    assert.equal(claimTicket("t-done-twice", "in_review", "done"), false);
+    assert.equal(readString("t-done-twice", "status"), "done");
+  });
+
+  // The Accept handler's failure-recovery path: a publish that throws after the claim must
+  // be able to hand the ticket back to review rather than stranding it in Done with no PR.
+  test("a done ticket can be claimed back to in_review", () => {
+    seed("t-done-revert", "in_review");
+    assert.equal(claimTicket("t-done-revert", "in_review", "done"), true);
+    assert.equal(claimTicket("t-done-revert", "done", "in_review"), true);
+    assert.equal(readString("t-done-revert", "status"), "in_review");
+  });
+
+  test("handing a ticket back from done loses if it never made it to done", () => {
+    seed("t-done-revert-miss", "in_review");
+    assert.equal(claimTicket("t-done-revert-miss", "done", "in_review"), false);
+    assert.equal(readString("t-done-revert-miss", "status"), "in_review");
+  });
 });
 
 describe("setPullRequest", () => {
