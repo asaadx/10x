@@ -118,7 +118,6 @@ export function subscribe(
   let sock: Socket | null = connect(SOCKET_PATH);
   let buf = "";
   let closedByUs = false;
-  let notified = false;
 
   sock.on("connect", () => {
     sock?.write(
@@ -155,12 +154,12 @@ export function subscribe(
   });
 
   // Node always emits `close` after `error`, so this one handler covers both a clean far-end
-  // hangup (no `error` at all) and an error teardown. The caller is notified because a dead
+  // hangup (no `error` at all) and an error teardown. `close` is a one-time socket lifecycle
+  // event, so "at most once" needs no flag of its own. The caller is notified because a dead
   // stream means statuses silently stop updating — reconciliation writes nothing back, it only
   // reports `Divergence[]`, so nothing else will catch this.
   sock.on("close", () => {
-    if (closedByUs || notified) return;
-    notified = true;
+    if (closedByUs) return;
     onClose?.();
   });
 
