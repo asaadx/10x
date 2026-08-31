@@ -539,6 +539,8 @@ button.icon-btn svg { width: var(--icon-size); height: var(--icon-size); display
   margin-bottom: var(--space-6);
 }
 
+.card-meta a { color: var(--accent); }
+
 .died-note {
   background: var(--red-bg);
   color: var(--red);

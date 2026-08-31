@@ -71,6 +71,10 @@ export function postCancel(id) {
   return api(ticketPath(id, "/cancel"), { method: "POST" });
 }
 
+export function postAccept(id) {
+  return api(ticketPath(id, "/accept"), { method: "POST" });
+}
+
 export function deleteWorktree(id) {
   return api(ticketPath(id, "/worktree"), { method: "DELETE" });
 }
