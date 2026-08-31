@@ -75,6 +75,10 @@ export function postAccept(id) {
   return api(ticketPath(id, "/accept"), { method: "POST" });
 }
 
+export function postReject(id, reason) {
+  return api(ticketPath(id, "/reject"), { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ reason }) });
+}
+
 export function deleteWorktree(id) {
   return api(ticketPath(id, "/worktree"), { method: "DELETE" });
 }

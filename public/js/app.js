@@ -19,6 +19,7 @@ import {
   postAccept,
   postCancel,
   postFocus,
+  postReject,
   postSpawn,
   postTicket,
 } from "./api.js";
@@ -211,6 +212,13 @@ const CARD_ACTIONS = {
   },
   "drop-worktree": (t) => runAction(t, () => deleteWorktree(t.id)),
   accept: (t) => runAction(t, () => postAccept(t.id)),
+  // The reason becomes the agent's re-prompt, so a blank one is useless: `prompt` mirrors
+  // the `confirm` used by cancel/delete above, and a cancelled or blank prompt sends nothing.
+  reject: (t) => {
+    const reason = window.prompt("What needs to change before this is accepted?")?.trim();
+    if (!reason) return;
+    runAction(t, () => postReject(t.id, reason));
+  },
   edit: startEdit,
   delete: (t) => {
     if (!confirm(`Delete ticket "${t.title}"? This cannot be undone.`)) return;
