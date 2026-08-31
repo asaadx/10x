@@ -451,3 +451,49 @@ export async function teardown(spec: RunSpec, state: RunState, deleteBranch: boo
     }
   }
 }
+
+/**
+ * Retire the agent for an accepted ticket. Deliberately NOT `teardown`: Accept never merges
+ * (the user merges on GitHub), so the worktree holds the only copy of the reviewed commits
+ * until then and must survive — reclaiming it here would destroy work the PR still points at.
+ * This closes the pane (and, per Herdr, the workspace that pane belongs to) and deletes the
+ * OMP transcript, and touches nothing on disk: no `worktree.remove`, no branch delete.
+ */
+export async function retireAgent(spec: RunSpec, state: RunState): Promise<void> {
+  state.stream?.close();
+  state.stream = undefined;
+
+  const name = agentNameFor(spec.projectId, spec.number);
+
+  // Resolve the session directory AND the pane id BEFORE closing the pane, while the agent
+  // can still be asked — exactly teardown's ordering, for exactly its reason: once the pane
+  // is gone, agent.get can no longer find either, and the transcript path is not ours to
+  // derive by hand (memory/teardown.md).
+  let sessionDir = state.sessionDir;
+  let paneId: string | undefined;
+  try {
+    const live = await request<AgentEnvelope>("agent.get", { target: name });
+    const value = live.agent?.agent_session?.value;
+    if (value) sessionDir = dirname(value);
+    paneId = live.agent?.pane_id;
+  } catch (err) {
+    // Agent already gone (crash, hand-closed tab, prior retire) — nothing left to close.
+    if (!sessionDir) {
+      console.warn(
+        `[${name}] no session directory known and agent is gone; ` +
+          `its OMP transcript will be left behind:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  if (paneId) {
+    await request("pane.close", { pane_id: paneId });
+  }
+
+  // The OMP transcript lives outside the worktree and survives pane closure (memory/reconciliation.md).
+  if (sessionDir) {
+    await rm(sessionDir, { recursive: true, force: true });
+    state.sessionDir = null;
+  }
+}
