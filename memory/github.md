@@ -34,13 +34,29 @@ retire the agent. Only the first three can hand the claim back.
 
 ## Webhooks
 
-**Not built.** `POST /webhooks/github` is the next piece of work.
+**Built.** `POST /webhooks/github` records a PR's state and ±LOC on the ticket that owns it.
+Three lines of glue in `server.ts` between one pure narrowing function and one writer.
 
 - **The `pull_request` payload carries `additions`, `deletions`, `changed_files`, `merged`,
   `merged_at`, `merge_commit_sha`, `html_url` and `number`.** So **±LOC needs no API call** — it is
   already in the event.
 - **A merge arrives as `action: "closed"` with `merged: true`.** Closed-without-merging is the same
   action with `merged: false`. That single boolean is the whole distinction the delete guard needs.
+- **State is derived from `merged` + `state`, never from `action`.** `pullRequestUpdate` in
+  `github.ts` maps `merged === true` → `merged`, else `state === "closed"` → `closed`, else `open`.
+  Every action — opened, synchronize, reopened, closed — flows through those same three lines, so
+  no allow-list can fall behind GitHub's action vocabulary.
+- **The ticket is matched by `pr_url`, not `pr_number`.** PR numbers are per-repo and would collide
+  across projects; the URL is globally unique and already stored, so this needs no `owner/repo`
+  parsing. A webhook for a PR no ticket owns answers `{ok: true, matched: false}` and writes
+  nothing — normal, not an error.
+- **The route always answers 2xx.** GitHub retries a non-2xx, and a retry cannot fix a body we do
+  not recognise or a PR we do not own, so a 4xx would only buy repeated deliveries of the same
+  useless event. An unrecognised body answers `{ok: true, ignored: true}`.
+- Stored in three nullable columns — `pr_state`, `pr_additions`, `pr_deletions` — added by
+  `addColumnIfMissing` ([architecture](./architecture.md)). `toPullRequestState` decodes an
+  unrecognised value to **`null`, not a default**, unlike `toStatus`: "we have not heard about this
+  PR" is a real and common state, since most tickets never reach `done`.
 - **`gh webhook forward --repo=… --events=pull_request --url=…` works**, creates an **ephemeral**
   hook, tears it down on exit, and sends **no HMAC signature header**. Events that occur while it
   is down are **lost, not queued** — GitHub does not replay them to an ephemeral hook.
