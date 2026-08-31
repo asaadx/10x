@@ -45,6 +45,8 @@ const STATE_DIR = process.env.STATE_DIR ?? join(homedir(), ".10x");
 const PANE_WAIT_MS = 15_000;
 /** How long the agent may take to become interactive after start. Normally ~3s. */
 const READY_WAIT_MS = 60_000;
+/** Backoff for reopening a dropped event stream. Bounded: give up loudly rather than spin. */
+const STREAM_REOPEN_DELAYS_MS = [250, 500, 1000, 2000, 4000] as const;
 
 /**
  * `block` is interpolated because the range is per-ticket. The port rules are a CONVENTION,
@@ -303,6 +305,8 @@ export async function spawn(
   // 2. Inject the port block before anything can start a server in there.
   await injectPortBlock(worktreePath, block, branch);
 
+  const agentName = agentNameFor(spec.projectId, spec.number);
+
   // 3. Subscribe BEFORE starting the agent, or the first `working` transition is missed (memory/spawn.md).
   //
   // `pane.exited` and `pane.closed` are DIFFERENT events and we need both: `pane_exited`
@@ -336,7 +340,32 @@ export async function spawn(
           if ("pane_id" in data && data.pane_id === watched) onPaneExit();
         }
       },
+      () => void reopenStream(),
     );
+  };
+
+  const reopenStream = async (): Promise<void> => {
+    for (const wait of STREAM_REOPEN_DELAYS_MS) {
+      await delay(wait);
+      // Teardown/retire set this to undefined, and both close the stream first, so a close
+      // we caused never reaches here. An undefined stream means the run is over: stop.
+      if (!state.stream) return;
+      let live: AgentEnvelope;
+      try {
+        live = await request<AgentEnvelope>("agent.get", { target: agentName });
+      } catch (err) {
+        // The one code that unambiguously means the agent is gone. A pane exit during the
+        // gap is invisible (pane.exited is a global subscription we were not listening to),
+        // so this probe IS the dead-pane detection for that window.
+        if (err instanceof HerdrError && err.code === "agent_not_found") return onPaneExit();
+        continue;
+      }
+      const pane = live.agent?.pane_id;
+      if (!pane) continue;
+      watch(pane);
+      return;
+    }
+    console.warn(`[${agentName}] event stream closed and could not be reopened; statuses will stop updating`);
   };
   watch(paneId);
 

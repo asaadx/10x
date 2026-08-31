@@ -46,14 +46,14 @@ Line counts are `wc -l`, current as of this node.
 | File | Lines | Responsibility | I/O |
 | --- | --- | --- | --- |
 | `src/server.ts` | 603 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
-| `src/runner.ts` | 499 | `spawn` / `teardown` / `retireAgent` for one ticket; the readiness guard | Herdr socket, fs, `git` via `execFile` |
+| `src/runner.ts` | 528 | `spawn` / `teardown` / `retireAgent` for one ticket; the readiness guard; event-stream reopen | Herdr socket, fs, `git` via `execFile` |
 | `src/db.ts` | 312 | Schema + in-place migration, connection, row types, the status parse boundary, `claimTicket` CAS, port-slot reserve/release, `setPullRequest` | SQLite (opens DB at import) |
 | `src/ticket-store.ts` | 291 | Ticket persistence + `/tickets` handler bodies, input narrowing | SQLite |
 | `src/db.test.ts` | 248 | Tests for the CAS, including across `in_review` and the Accept/Reject hand-backs, against a temp DB | SQLite (temp dir) |
 | `src/projects.ts` | 214 | Project CRUD, slug / repo / base-branch validation | SQLite, `existsSync` |
 | `src/lifecycle.test.ts` | 182 | Tests for the pure helpers | none |
 | `src/reconcile.ts` | 167 | Read-only divergence + orphan reporting | Herdr socket (reads only) |
-| `src/herdr.ts` | 158 | Newline-JSON unix-socket client: `request`, `subscribe` | `node:net` |
+| `src/herdr.ts` | 174 | Newline-JSON unix-socket client: `request`, `subscribe` with far-end close detection | `node:net` |
 | `src/github.ts` | 131 | `pushTicketBranch`, `openPullRequest`; token redaction on every error path | `git` via `execFile`, `fetch` |
 | `src/port-slots.test.ts` | 130 | Tests for reserve / release / reclaim, against a temp DB | SQLite (temp dir) |
 | `src/ports.ts` | 98 | **Pure.** Port-slot pool: cap, block arithmetic, `.env` body | none |
@@ -61,6 +61,7 @@ Line counts are `wc -l`, current as of this node.
 | `src/lifecycle.ts` | 71 | **Pure.** Naming, event normalisation, readiness predicates | none |
 | `src/ticket-store.test.ts` | 63 | Tests for ticket input narrowing | SQLite (temp dir) |
 | `src/github.test.ts` | 55 | Tests for PR body construction and token redaction | none |
+| `src/herdr.test.ts` | 107 | Tests for `onClose`, against a real unix socket | `node:net` (temp socket) |
 | `src/diagnostics.ts` | 40 | **Pure.** Per-run diagnostics record + `freshDiagnostics()` | none |
 | `src/panes.ts` | 39 | `focusAgent`, `paneLocation`, `attachCommand` | Herdr socket (`attachCommand` is pure) |
 | `public/` | 1630 | The board's browser half: markup, stylesheet, five ES modules — see [frontend](./frontend.md) | `fetch` |

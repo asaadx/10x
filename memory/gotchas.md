@@ -100,11 +100,21 @@ Recorded so nobody assumes these are proven.
   Progress permanently**, because the transition rides on that same subscription. Boot
   reconciliation only reports it ([reconciliation](./reconciliation.md), divergence row 1).
 
-  **A dropped socket is equally silent (verified).** `subscribe()` in `src/herdr.ts` registers
-  `'connect'`, `'data'` and `'error'` handlers and **no `'close'` handler at all**, so a clean
-  close — a Herdr restart, or the server hanging up — produces no warning and no reconnect. The
-  comment on the `'error'` handler claiming *"reconciliation is the real safety net"* is **false**:
-  reconciliation never writes.
+  **A dropped socket is now detected and reopened (verified).** `subscribe()` takes an optional
+  third argument, `onClose`, fired at most once when the connection drops from the far end and
+  never when the caller calls the returned `close()` — the `closedByUs` flag, which is what stops
+  teardown from triggering a pointless reopen. **Node emits `'close'` on a graceful hangup and
+  `'error'` only on ECONNRESET/EPIPE/connect failure**, and always emits `'close'` after `'error'`,
+  so the single `'close'` handler covers both. Before it, a clean Herdr restart matched none of the
+  registered handlers: the stream object stayed truthy, every status event stopped, and
+  `pane.exited`/`pane.closed` stopped with them, so even dead-pane detection died. Silently.
+
+  `runner.ts` responds by probing `agent.get` on a bounded backoff (`STREAM_REOPEN_DELAYS_MS`,
+  250 ms → 4 s): agent alive → re-subscribe to its authoritative `pane_id`; `agent_not_found` →
+  `onPaneExit()`, the existing dead-pane path. **The probe is load-bearing, not decoration** —
+  `pane.exited` is a global subscription we are not listening to during the gap, so the probe is
+  the only dead-pane detection for that window. Covered by `src/herdr.test.ts` against a real unix
+  socket; falsifiable (neuter the handler and two of its three tests time out).
 
   Four options were considered and **none chosen**: **A** subscribe at boot for every
   `in_progress` ticket; **B** = A plus persisting `sawWorking`, so a restart mid-turn cannot
