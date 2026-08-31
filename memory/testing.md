@@ -25,7 +25,7 @@ forgotten new spec merely runs slower under `e2e:full` and never spawns unexpect
 
 **The glob matters and so do the quotes.** `node --test src` does not pick up `.ts` files —
 verified: it reports `✖ src (40ms) 'test failed'`. Quote the glob so the shell hands it to Node
-rather than expanding it. Current state: **97 tests, 22 suites, 0 failures**, `duration_ms` ≈ 400.
+rather than expanding it. Current state: **105 tests, 24 suites, 0 failures**, `duration_ms` ≈ 400.
 
 | Target | Why it is tested |
 | --- | --- |
@@ -37,6 +37,8 @@ rather than expanding it. Current state: **97 tests, 22 suites, 0 failures**, `d
 | `claimTicket` | The only lock in the system: a second click loses, a mismatched `from` loses, an unknown id loses instead of throwing, bystanders are untouched, `updated_at` is bumped only on a win. Also pinned across `in_review`: a settled turn claims `in_progress → in_review`, a **second settle** finds nothing and leaves even `updated_at` alone, and a cancel cannot claim a ticket that has already moved to review — which is why an In Review card renders no Cancel. Runs against a temp DB via `mkdtempSync` and a **dynamic** import, because `db.ts` opens the database at module load and a static import would hoist above the `DB_PATH` assignment. |
 | the port pool | A wrong slot hands two live agents the same TCP port, and the symptom is an `EADDRINUSE` inside somebody's worktree rather than an error on the board. Pinned: lowest-free selection, reuse after release, exhaustion at the cap, the block arithmetic including the last slot's upper bound (4199, not 4200), and the cap coming from `MAX_PORT_SLOTS`. The persistence half additionally pins that the UNIQUE index — not the allocator — is what refuses a double assignment, and that the boot reclaim **spares an `in_review` ticket's block** while still freeing one dropped back to backlog. |
 | `subscribe` `onClose` | Node emits `'close'` on a graceful hangup and `'error'` only on ECONNRESET/EPIPE, so a clean Herdr restart fired none of the registered handlers and every ticket status silently stopped updating. Pinned against a **real unix socket** (`net.createServer` in a temp dir): a far-end `end()` fires `onClose` exactly once, a caller-initiated `close()` never fires it — the flag that stops teardown triggering a pointless reopen — and an event still arrives before the close. Same **dynamic** import trick as the CAS tests, because `SOCKET_PATH` is read from the env at module load. |
+| `pullRequestUpdate` | The webhook's whole decision surface, and pure, so it costs nothing to pin. Derives state from `merged` + `state` rather than `action`, so pinning **closed-but-unmerged → `closed`, not `merged`** is what stops the delete guard later reading a rejected PR as a safe one. Also pins that a missing LOC pair still yields a valid update, and that a non-`pull_request` body yields `null` instead of throwing. |
+| `setPullRequestState` | Matched by `pr_url`, because PR numbers collide across repos. Pins that an unknown URL returns `false` and leaves every row untouched — a webhook for somebody else's repo is normal traffic, not an error. |
 
 The tests deliberately cover the three things that have actually broken — event-name normalisation,
 the idle-or-done readiness predicate, and the CAS — plus the naming invariants that guard them.

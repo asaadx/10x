@@ -45,28 +45,36 @@ Line counts are `wc -l`, current as of this node.
 
 | File | Lines | Responsibility | I/O |
 | --- | --- | --- | --- |
-| `src/server.ts` | 603 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
+| `src/server.ts` | 614 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
 | `src/runner.ts` | 528 | `spawn` / `teardown` / `retireAgent` for one ticket; the readiness guard; event-stream reopen | Herdr socket, fs, `git` via `execFile` |
-| `src/db.ts` | 312 | Schema + in-place migration, connection, row types, the status parse boundary, `claimTicket` CAS, port-slot reserve/release, `setPullRequest` | SQLite (opens DB at import) |
-| `src/ticket-store.ts` | 291 | Ticket persistence + `/tickets` handler bodies, input narrowing | SQLite |
-| `src/db.test.ts` | 248 | Tests for the CAS, including across `in_review` and the Accept/Reject hand-backs, against a temp DB | SQLite (temp dir) |
+| `src/db.ts` | 361 | Schema + in-place migration, connection, row types, the status and PR-state parse boundaries, `claimTicket` CAS, port-slot reserve/release, `setPullRequest`, `setPullRequestState` | SQLite (opens DB at import) |
+| `src/ticket-store.ts` | 294 | Ticket persistence + `/tickets` handler bodies, input narrowing | SQLite |
+| `src/db.test.ts` | 275 | Tests for the CAS, the Accept/Reject hand-backs and `setPullRequestState`, against a temp DB | SQLite (temp dir) |
 | `src/projects.ts` | 214 | Project CRUD, slug / repo / base-branch validation | SQLite, `existsSync` |
 | `src/lifecycle.test.ts` | 182 | Tests for the pure helpers | none |
 | `src/reconcile.ts` | 167 | Read-only divergence + orphan reporting | Herdr socket (reads only) |
 | `src/herdr.ts` | 174 | Newline-JSON unix-socket client: `request`, `subscribe` with far-end close detection | `node:net` |
-| `src/github.ts` | 131 | `pushTicketBranch`, `openPullRequest`; token redaction on every error path | `git` via `execFile`, `fetch` |
+| `src/github.ts` | 160 | `pushTicketBranch`, `openPullRequest`, `pullRequestUpdate`; token redaction on every error path | `git` via `execFile`, `fetch` |
 | `src/port-slots.test.ts` | 130 | Tests for reserve / release / reclaim, against a temp DB | SQLite (temp dir) |
 | `src/ports.ts` | 98 | **Pure.** Port-slot pool: cap, block arithmetic, `.env` body | none |
 | `src/ports.test.ts` | 78 | Tests for the pure allocator | none |
 | `src/lifecycle.ts` | 71 | **Pure.** Naming, event normalisation, readiness predicates | none |
 | `src/ticket-store.test.ts` | 63 | Tests for ticket input narrowing | SQLite (temp dir) |
-| `src/github.test.ts` | 55 | Tests for PR body construction and token redaction | none |
+| `src/github.test.ts` | 95 | Tests for PR body construction, token redaction and webhook payload narrowing | none |
 | `src/herdr.test.ts` | 107 | Tests for `onClose`, against a real unix socket | `node:net` (temp socket) |
 | `src/diagnostics.ts` | 40 | **Pure.** Per-run diagnostics record + `freshDiagnostics()` | none |
 | `src/panes.ts` | 39 | `focusAgent`, `paneLocation`, `attachCommand` | Herdr socket (`attachCommand` is pure) |
 | `public/` | 1630 | The board's browser half: markup, stylesheet, five ES modules — see [frontend](./frontend.md) | `fetch` |
 
 `lifecycle.ts`, `ports.ts` and `diagnostics.ts` are the only import-free modules, deliberately: they hold the logic that has actually broken, or that would break silently, so it must be testable without a Herdr session. A port collision surfaces as an `EADDRINUSE` inside somebody's worktree, never as an error on the board, which is exactly why the allocation policy lives apart from the SQL that stores it. `panes.ts` exports only `focusAgent`: the attach command is built in the frontend instead, because it needs `location.hostname` — which the server cannot know — so a server-side copy would be unreachable duplication ([frontend](./frontend.md)).
+
+**A new ticket column has to be added in two mappers, not one.** `db.ts` `toTicket` maps a
+`TicketRow`, and `ticket-store.ts` `decode` builds that `TicketRow` field-by-field from a raw
+`SQLOutputValue` row — and `decode` feeds every production read (`listTickets`, `getTicket`).
+`SELECT *` picks a new column up automatically, but `decode` does not, so extending only `db.ts`
+leaves the field permanently `undefined` at runtime. **Typecheck catches it** (`toTicket`'s
+argument is missing properties), which is why this is a wart rather than a trap — but budget the
+second edit.
 
 ## 3. Stored vs derived — the load-bearing idea
 
@@ -101,6 +109,8 @@ SQLite at `$DB_PATH`, defaulting to `$STATE_DIR/10x.db`, `STATE_DIR` defaulting 
 | `branch`, `agent_name`, `session_dir` | TEXT (nullable) | null until first spawn |
 | `port_slot` | INTEGER (nullable) | index into the port pool; held while `in_progress` **or** `in_review` |
 | `pr_number`, `pr_url` | INTEGER / TEXT (nullable) | written together by `setPullRequest`, only when Accept opens the PR |
+| `pr_state` | TEXT (nullable) | `open` \| `merged` \| `closed`, from the webhook. Unlike `status`, an unrecognised value decodes to **`null`** in `toPullRequestState`, because "no news about this PR" is a real state |
+| `pr_additions`, `pr_deletions` | INTEGER (nullable) | ±LOC, read straight off the `pull_request` payload — no API call ([github](./github.md)) |
 | `created_at`, `updated_at` | TEXT NOT NULL | equal ⇒ never edited |
 | — | — | **`UNIQUE (project_id, number)`** |
 
@@ -172,6 +182,7 @@ if (projectMatch?.[1]) {
 }
 if (method === "GET"  && path.startsWith("/tickets")) { … return board(q?.get("project") …); }
 if (method === "POST" && path === "/tickets") { … }
+if (method === "POST" && path === "/webhooks/github") { … }
 const m = /^\/tickets\/([^/]+)(\/spawn|\/cancel|\/worktree|\/focus|\/accept|\/reject)?$/.exec(path);
 if (!m?.[1]) return json({ error: "not_found", path }, 404);
 …
@@ -187,7 +198,7 @@ if (action === "/reject"   && method === "POST")   { … }
 return json({ error: "not_found", path, method }, 404);
 ```
 
-**Fourteen** JSON endpoints, plus one static handler covering everything under `public/`.
+**Fifteen** JSON endpoints, plus one static handler covering everything under `public/`.
 
 | # | Method | Path | Returns |
 | --- | --- | --- | --- |
@@ -205,6 +216,7 @@ return json({ error: "not_found", path, method }, 404);
 | 12 | POST | `/tickets/:id/focus` | `{ok}` or `{ok:false, error:<herdr code>}` — always 200 |
 | 13 | POST | `/tickets/:id/accept` | the updated `Ticket` with `prNumber`/`prUrl`; `409 no_branch` / `409 not_in_review`, `500 missing_github_token`, `502` on a failed push or PR call (claim handed back) |
 | 14 | POST | `/tickets/:id/reject` | `{reason}` in, the updated `Ticket` out; `400 reason_required`, `409 no_agent` / `not_in_review` / `agent_not_alive` / `prompt_failed` |
+| 15 | POST | `/webhooks/github` | `{ok:true, matched}` when a ticket owns that `pr_url`, `{ok:true, ignored:true}` for anything that is not a `pull_request` payload. **Always 2xx**, unauthenticated by decision ([github](./github.md)) |
 | — | GET | `/`, `/index.html`, `/styles.css`, `/js/*.js` | the board's static assets |
 
 **Naming and shape decisions.** The spawn endpoint is canonically **`/spawn`**; earlier drafts called it `/start`, `spawn` is the name, it is the only spelling in the code, and `/start` must not be reintroduced. `spawn` and `cancel` are **separate endpoints** because they are opposite operations with different side effects, and `GET /tickets` is a read — that is why there is no single "transition" endpoint taking a target state: one verb per irreversible act, so the destructive ones cannot be reached by passing a different string.

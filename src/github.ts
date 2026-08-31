@@ -5,6 +5,7 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import type { PullRequestState } from "./db.ts";
 
 const run = promisify(execFile);
 
@@ -128,4 +129,32 @@ export const openPullRequest = async (
 
   const message = stringField(parsed, "message") ?? JSON.stringify(parsed);
   throw new Error(redact(`GitHub API error (${response.status}): ${message}`, token));
+};
+
+export type PullRequestUpdate = {
+  url: string;
+  state: PullRequestState;
+  additions: number | null;
+  deletions: number | null;
+};
+
+/**
+ * Narrow a `pull_request` webhook payload to what the board stores, or null if the body is
+ * not one. Derived from `merged` + `state` rather than from `action`, so every action
+ * (opened, synchronize, reopened, closed) is handled by the same three lines and no
+ * allow-list can fall behind GitHub's action vocabulary.
+ */
+export const pullRequestUpdate = (payload: unknown): PullRequestUpdate | null => {
+  const pr = typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>).pull_request : undefined;
+  const url = stringField(pr, "html_url");
+  if (url === undefined) return null;
+  const merged = field(pr, "merged", (v): v is boolean => typeof v === "boolean");
+  const rawState = stringField(pr, "state");
+  const state: PullRequestState = merged === true ? "merged" : rawState === "closed" ? "closed" : "open";
+  return {
+    url,
+    state,
+    additions: numberField(pr, "additions") ?? null,
+    deletions: numberField(pr, "deletions") ?? null,
+  };
 };
