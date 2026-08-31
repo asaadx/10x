@@ -52,7 +52,13 @@ Line counts are `wc -l`, current as of this node.
 | `src/diagnostics.ts` | 40 | **Pure.** Per-run diagnostics record + `freshDiagnostics()` | none |
 | `src/lifecycle.test.ts` | 182 | Tests for the pure helpers | none |
 | `src/db.test.ts` | 101 | Tests for the CAS, against a temp DB | SQLite (temp dir) |
-| `public/index.html` | 1232 | The entire frontend | `fetch` |
+| `public/styles.css` | 651 | **All styling.** Design tokens on `:root`; read by nothing | none |
+| `public/js/render.js` | 415 | **The DOM layer.** Every `document` reference in the frontend | none |
+| `public/js/app.js` | 244 | Wiring: what a click means, and the poll loop. Touches no DOM | none |
+| `public/js/state.js` | 87 | Module state and its derivations | none |
+| `public/js/api.js` | 80 | `fetch` + the `{error, message}` envelope | `fetch` |
+| `public/js/icons.js` | 34 | Every icon JS renders, in one map | none |
+| `public/index.html` | 73 | Markup only: landmarks, the composer, the two columns | none |
 
 `lifecycle.ts` and `diagnostics.ts` are the only import-free modules, deliberately: they hold the logic that has actually broken, so it must be testable without a Herdr session. `panes.ts` exports only `focusAgent`. The attach command is built in the frontend instead, because it needs `location.hostname` — which the server cannot know — so a server-side copy would be unreachable duplication.
 
@@ -117,7 +123,7 @@ The conditional `WHERE` *is* the lock, and the row count reports whether the cal
 
 ## 6. HTTP surface
 
-`PORT` defaults to `4010`. `GET /` and `GET /index.html` serve `public/index.html` as `text/html`; everything else is `application/json`. Router excerpt this table is based on (`src/server.ts` `handle()`, lines 160–305):
+`PORT` defaults to `4010`. Every JSON route answers `application/json`; a GET that no route claimed then falls through to the `public/` static handler ([section 9](#9-frontend)), which is how `/`, `/index.html`, `/styles.css` and `/js/*.js` are served. Router excerpt this table is based on (`src/server.ts` `handle()`, lines 160–305):
 
 ```ts
 if (method === "GET"  && path === "/projects") return json(listProjects());
@@ -159,7 +165,7 @@ return json({ error: "not_found", path, method }, 404);
 | 10 | POST | `/tickets/:id/cancel` | `{ok:true}` after teardown + branch delete |
 | 11 | DELETE | `/tickets/:id/worktree` | `{ok:true, branchKept}` — disk reclaimed, branch kept |
 | 12 | POST | `/tickets/:id/focus` | `{ok}` or `{ok:false, error:<herdr code>}` — always 200 |
-| — | GET | `/`, `/index.html` | the HTML board |
+| — | GET | `/`, `/index.html`, `/styles.css`, `/js/*.js` | the board's static assets |
 
 **Naming and shape decisions.** The spawn endpoint is canonically **`/spawn`**; earlier drafts called it `/start`, `spawn` is the name, it is the only spelling in the code, and `/start` must not be reintroduced. `spawn` and `cancel` are **separate endpoints** because they are opposite operations with different side effects, and `GET /tickets` is a read — that is why there is no single "transition" endpoint taking a target state: one verb per irreversible act, so the destructive ones cannot be reached by passing a different string.
 
@@ -202,9 +208,50 @@ At boot, `server.ts` reconciles every `in_progress` ticket per project and **onl
 
 ## 9. Frontend
 
-One self-contained `public/index.html` (1232 lines): inline `<style>`, one `<script type="module">`, no framework, no build step, no bundler. It keeps module-level state (`projects`, `currentProjectId`, `ticketsData`, `editingId`, `editBuffer`, `actionErrors`, `pendingActions`) and reconciles cards in place through a `cardEls` map. A single `api()` helper wraps `fetch` and surfaces every non-2xx through `messageFor(body, status)`, reading exactly the `{error, message}` envelope described under the HTTP surface below.
+Four layers, native ES modules, no framework, no build step, no bundler. The split exists so
+that **a redesign is layout, colours and icons only** — a change to `styles.css` and the
+templates in `render.js` cannot alter what the board does.
+
+| Layer | File | Rule |
+| --- | --- | --- |
+| transport | `js/api.js` | one `api()` wrapper plus a named function per endpoint. **No DOM.** |
+| state | `js/state.js` | the `state` object, `actionErrors`, `pendingActions`, `copyConfirms`, and derivations (`isBusy`, `attachCommandFor`). **No DOM, no `fetch`.** |
+| rendering | `js/render.js` | **every `document` reference in the frontend.** Reads state, writes markup, decides nothing. |
+| wiring | `js/app.js` | what a click means, and the poll loop. **Touches no DOM.** |
+| icons | `js/icons.js` | every icon JS renders, in one map. |
+
+Behaviour crosses the render/wiring seam as a **`handlers` object**. `render.js` reads a
+button's `data-act` and forwards it verbatim — it has no idea what `"spawn"` does — and
+`app.js` owns the `CARD_ACTIONS` dispatch table. Cards are still reconciled in place through
+the `cardEls` map, because a card mid-edit must survive a poll landing underneath it.
+
+**No JS locates an element by CSS class, and no JS computes one.** State leaves as attributes:
+`data-busy` / `data-blocked` / `data-died` on a card, `data-status` on a badge, `data-icon` on
+a badge icon, `data-state="live|failing"` on the connection pill, `data-flagged` and
+`data-race-tag` in diagnostics, `data-empty` on the empty-column placeholder, and the native
+`hidden` attribute on the two panels. The only class JS writes is the static `class="card"` on
+a card it creates, which carries no state. **Renaming or deleting any class is therefore
+guaranteed not to change behaviour** — that single property is what makes a restyle reviewable
+as a restyle. The mirror problem was fixed too: `#composer-form` was styled by the id JS needs,
+so the id stayed the behaviour hook and `.composer-form` became the styling hook.
+
+`styles.css` holds every colour, space, radius and type value as a custom property on `:root`.
+The spacing scale is **named by its current pixel value** (`--space-9: 9px`): the design uses
+fourteen distinct spacings, enumerating them is the finding, and a name that lied about its
+value would make collapsing the list harder rather than easier. Two icons live in `:root`
+rather than `icons.js` — the diagnostics disclosure triangles — because they are CSS
+`content` and JS never renders them.
 
 **It polls.** `setInterval(loadTickets, 1000)` and `setInterval(loadProjects, 5000)`. A failed poll keeps the last-known board on screen and flips a status pill to "poll failing" rather than blanking it. The 1 s poll is a **placeholder**: the backend already learns of `pane.agent_status_changed` the instant it fires, so only the browser is behind. SSE is parked, with a sketch, in [parking-lot](./parking-lot.md). The frontend only *reads* projects (`GET /projects`); project creation and editing are not wired into the UI, though endpoints 2–4 exist.
+
+**The server serves `public/` as static files**, which the split made a prerequisite: resolution
+runs *after* the API router has declined, only for a GET, on an extension allow-list
+(`.html .css .js .svg`), with containment checked on the **realpath** so a symlink inside
+`public/` pointing outside it is refused. Unknown extensions are refused rather than guessed
+and directories have no listing. Before this the router special-cased `/` and `/index.html`
+against one hardcoded path. *(Verified: traversal, percent-encoded traversal, a symlink to
+`/etc/passwd`, a symlink to `../package.json`, a directory, a NUL byte and a malformed escape
+all answer the JSON 404; POST to an existing file answers the JSON 404.)*
 
 The attach command is built client-side:
 
@@ -247,7 +294,7 @@ one backend, one port and one state dir. `e2e/fixtures.ts` is the contract every
 
 | Spec | Covers | Real agents |
 | --- | --- | --- |
-| `projects.spec.ts`, `tickets.spec.ts`, `board.spec.ts` | registration, validation, ticket CRUD, rendering | none |
+| `projects.spec.ts`, `tickets.spec.ts`, `board.spec.ts` | registration, validation, ticket CRUD, rendering, the static asset route | none |
 | `spawn.spec.ts` | spawn, prompt delivery via the agent's own `probe.txt`, cancel | 3 |
 | `teardown.spec.ts` | ticket delete, worktree-only delete (branch survives) | 2 |
 | `resilience.spec.ts` | backend restart, compare-and-swap, two concurrent tickets | 4 |
@@ -258,7 +305,8 @@ the end, and `cleanupAll` falls back to `worktree.open`+`worktree.remove` straig
 the backend is gone. Per-test budgets are set with `test.setTimeout`: **120 s** spawn-only,
 **180 s** spawn-plus-completion; the config's 30 s default stays for the non-spawn specs. Measured:
 spawn returns in **3.2–3.9 s** and the probe turn finishes **7–12 s** after that, so the whole
-suite of 19 tests runs in **~1.2 minutes** against the 600 s `globalTimeout`.
+suite of 21 tests runs in **~1.2 minutes** against the 600 s `globalTimeout`. The 12 tests in the
+three non-spawn specs run in **~6 s** and can be run freely; the other 9 cost real model turns.
 
 Three things the suite reads outside the HTTP API, each for a reason:
 
@@ -284,14 +332,18 @@ and degrades. But `teardown` rethrows any `worktree.open` failure that is not `w
 so `DELETE /tickets/:id` answers **500 `socket_error`**. That is why `requireHerdr` exists: without
 the preflight the failure reads as a mystery, not as a missing dependency.
 
-**UI assertions use accessible semantics only** — a redesign is planned. Two consequences: the
-`<header>` is the `banner` landmark, and scoping to it is what separates the board's project
-combobox from the composer's identically labelled one; and the column headings carry their live
-count inside their accessible name (`"Backlog 1"`), which is the only semantic way to say a ticket
-is in Backlog rather than In Progress, because the columns themselves are unlabelled `div`s.
+**UI assertions use accessible semantics only** — a redesign is planned. The `<header>` is the
+`banner` landmark, and scoping to it is what separates the board's project combobox from the
+composer's identically labelled one. Each **column is a `region` labelled by its own heading**
+via `aria-labelledby`, so its accessible name carries the live count (`"Backlog 1"`) with no
+duplicated string to drift, and the heading itself is still assertable.
 
-**The one exception is locating a single card**, which the spawn specs need in order to say "*this*
-ticket shows the finished badge". A card is an unlabelled `div` with no accessible handle at all, so
-they scope by `#in-progress-cards [data-id="<ticket id>"]` and then assert inside it with
-`getByTitle` — the badges' `title` is accessible, the container is not. Do not widen this into
-asserting on classes or text layout.
+**A card is an `article` named by its ticket id**, which is how a spec says "*this* ticket shows
+the finished badge": `getByRole("region", {name: /^In Progress/}).getByRole("article", {name: id})`,
+then `getByTitle` inside it — the badges' `title` is their accessible handle. `resilience.spec.ts`
+uses exactly that.
+
+**`spawn.spec.ts` has not been migrated and still scopes by `#in-progress-cards [data-id="<id>"]`**
+— DOM structure plus an element id, which is why `id="in-progress-cards"` and the cards'
+`data-id` must both stay until it is. It is the last place the suite breaks its own rule; port it
+to the locator above. Do not widen any of these into asserting on classes or text layout.

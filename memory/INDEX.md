@@ -80,8 +80,10 @@ compare-and-swap that makes status the lock, why transient statuses were rejecte
 
 **[architecture](./architecture.md)** — how 10x itself is built: zero dependencies, the module map,
 **stored vs derived**, the database schema and the monotonic ticket counter, all twelve endpoints,
-the spawn request lifecycle, what is deliberately not persisted, and the two test suites.
-`node:sqlite · node:test · playwright · e2e · schema · next_number · endpoints · RunSpec · stored vs derived`
+the spawn request lifecycle, what is deliberately not persisted, the two test suites, and the
+**four frontend layers** — including the rule that makes a redesign safe: no JS reads or computes
+a CSS class, so renaming one cannot change behaviour.
+`node:sqlite · node:test · playwright · e2e · schema · next_number · endpoints · RunSpec · stored vs derived · frontend layers · data-* hooks · design tokens · static route`
 
 ### Reference
 
