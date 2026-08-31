@@ -20,8 +20,8 @@ const git = promisify(execFile);
 const REPO_ROOT = join(import.meta.dirname, "..");
 
 /**
- * 4310 avoids two ranges that are already spoken for: the real board runs on 4010, and 41xx
- * is reserved for per-ticket dev servers (memory/parking-lot.md).
+ * 4310 avoids two ranges that are already spoken for: the real board runs on 4010, and
+ * 4100-4199 is the per-ticket dev-server pool (memory/architecture.md).
  */
 const PORT = 4310;
 

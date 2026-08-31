@@ -30,7 +30,15 @@ import {
   setRunFields,
   updateTicket,
 } from "./ticket-store.ts";
-import { claimTicket, type Project, type Ticket } from "./db.ts";
+import {
+  claimTicket,
+  reclaimStalePortSlots,
+  releasePortSlot,
+  reservePortSlot,
+  type Project,
+  type Ticket,
+} from "./db.ts";
+import { blockFor } from "./ports.ts";
 
 const PORT = Number(process.env.PORT ?? 4010);
 const UI = join(import.meta.dirname, "..", "public", "index.html");
@@ -209,6 +217,9 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       runs.delete(id);
       return json(deleteTicket(id));
     } finally {
+      // Deleting the row frees the slot with it, but only if teardown got that far. A
+      // failed Herdr call must not strand a tenth of the pool until the next boot.
+      releasePortSlot(id);
       inFlight.delete(id);
     }
   }
@@ -221,6 +232,24 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     // Claim first, work second. No `await` between the check and the write (memory/operations.md).
     if (!claimTicket(id, "backlog", "in_progress")) {
       return json({ error: "not_in_backlog", status: ticket.status }, 409);
+    }
+
+    // Reserved BEFORE the agent starts, because the block is written into the worktree the
+    // agent boots in — there is no later point at which it could be injected. The accepted
+    // consequence is that the cap is also a cap on concurrent in-progress tickets.
+    const reserved = reservePortSlot(id);
+    if (!reserved.ok) {
+      claimTicket(id, "in_progress", "backlog");
+      return json(
+        {
+          error: "port_pool_exhausted",
+          cap: reserved.cap,
+          message:
+            `all ${reserved.cap} port slots are in use; cancel a ticket or raise ` +
+            "MAX_PORT_SLOTS",
+        },
+        409,
+      );
     }
     inFlight.add(id);
     const state: RunState = { diagnostics: freshDiagnostics(), sessionDir: ticket.sessionDir };
@@ -238,6 +267,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     try {
       const res = await spawn(
         specFor(ticket, project),
+        blockFor(reserved.slot),
         state,
         (status) => {
           // memory/agent-status.md: the FIRST `idle` arrives before the prompt, so it is not completion.
@@ -267,8 +297,10 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       });
       return json({ ok: true, ...res, diagnostics: state.diagnostics });
     } catch (err) {
-      // Release the claim. Any worktree left behind surfaces via `unowned` (memory/reconciliation.md).
+      // Release the claim AND the block. Any worktree left behind surfaces via `unowned`
+      // (memory/reconciliation.md); a slot left behind would just silently shrink the pool.
       claimTicket(id, "in_progress", "backlog");
+      releasePortSlot(id);
       const message = err instanceof Error ? err.message : String(err);
       return json({ error: message, diagnostics: state.diagnostics }, 500);
     } finally {
@@ -292,6 +324,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     } catch (err) {
       return json({ error: err instanceof Error ? err.message : String(err) }, 500);
     } finally {
+      releasePortSlot(id);
       inFlight.delete(id);
     }
   }
@@ -309,6 +342,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     } catch (err) {
       return json({ error: err instanceof Error ? err.message : String(err) }, 500);
     } finally {
+      releasePortSlot(id);
       inFlight.delete(id);
     }
   }
@@ -339,6 +373,20 @@ createServer(async (req, res) => {
   }
 }).listen(PORT, async () => {
   console.log(`10x → http://localhost:${PORT}`);
+
+  /*
+   * Reclaim port blocks held by tickets that are no longer in progress — the residue of a
+   * process killed between reserving one and releasing it. Before the projects check,
+   * because a stale slot outlives the project that produced it only in the sense that it
+   * would still be counted against the cap.
+   *
+   * This one reconciliation DOES change state, and that is not a breach of "reconciliation
+   * reports, it never destroys" (memory/reconciliation.md): that rule protects the user's
+   * work — worktrees, branches, transcripts, none of them recreatable. A port slot is our
+   * own bookkeeping, so reclaiming one cannot lose anything.
+   */
+  const reclaimed = reclaimStalePortSlots();
+  if (reclaimed > 0) console.log(`  reclaimed ${reclaimed} stale port slot(s)`);
   const projects = listProjects();
   if (projects.length === 0) {
     console.log("no projects yet — POST /projects { id, name, repoPath } to add one");

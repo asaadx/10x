@@ -8,7 +8,7 @@
  * the return value loses the prompt.
  */
 import { execFile } from "node:child_process";
-import { mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -16,6 +16,7 @@ import { promisify } from "node:util";
 import { HerdrError, request, subscribe } from "./herdr.ts";
 import { agentNameFor, branchFor, isAgentReady, normalizeEvent } from "./lifecycle.ts";
 import type { Diagnostics } from "./diagnostics.ts";
+import { ENV_FILE, envFileFor, type PortBlock } from "./ports.ts";
 
 /**
  * Everything a run needs, passed explicitly so this module never touches the store.
@@ -45,7 +46,13 @@ const PANE_WAIT_MS = 15_000;
 /** How long the agent may take to become interactive after start. Normally ~3s. */
 const READY_WAIT_MS = 60_000;
 
-const SYSTEM_PROMPT = `You are an autonomous ticket-executing agent working inside a dedicated git worktree.
+/**
+ * `block` is interpolated because the range is per-ticket. The port rules are a CONVENTION,
+ * not a sandbox: nothing stops the agent binding elsewhere, so the prompt has to say plainly
+ * what the range is and that straying out of it breaks another ticket.
+ */
+const systemPrompt = (block: PortBlock) =>
+  `You are an autonomous ticket-executing agent working inside a dedicated git worktree.
 
 Rules:
 - You are on a dedicated branch for this ticket. Do all work here.
@@ -54,6 +61,12 @@ Rules:
 - Never ask clarifying questions. A question ends your turn and is indistinguishable
   from success to the system watching you. If something is ambiguous, choose the most
   reasonable interpretation, implement it, and note the assumption in the commit message.
+- This worktree owns TCP ports ${block.start}-${block.end} and no others. A .env file in the
+  worktree root holds PORT=${block.start} plus PORT_RANGE_START and PORT_RANGE_END; read the
+  port from there rather than hardcoding one, and take further ports from inside the range if
+  you need more than one service.
+- Never bind a port outside ${block.start}-${block.end}. Every other port belongs to another
+  ticket's agent or to the board itself, and nothing enforces this but you.
 - When finished, stop and summarise what you changed.
 `;
 
@@ -81,11 +94,17 @@ type AgentEnvelope = { agent?: AgentRecord };
  * interactive, or throws. Records what happened so the UI can show whether the
  * race fired on this run.
  */
-async function startAgentAndWait(spec: RunSpec, state: RunState, paneId: string, diag: Diagnostics) {
+async function startAgentAndWait(
+  spec: RunSpec,
+  block: PortBlock,
+  state: RunState,
+  paneId: string,
+  diag: Diagnostics,
+) {
   const name = agentNameFor(spec.projectId, spec.number);
   const promptFile = join(STATE_DIR, "prompts", `${spec.projectId}-${spec.number}.md`);
   await mkdir(dirname(promptFile), { recursive: true });
-  await writeFile(promptFile, SYSTEM_PROMPT, "utf8");
+  await writeFile(promptFile, systemPrompt(block), "utf8");
 
   const started = Date.now();
   let record: AgentRecord | undefined;
@@ -194,6 +213,40 @@ async function startAgentAndWait(spec: RunSpec, state: RunState, paneId: string,
   return { reused: diag.reusedExistingAgent, paneId: record.pane_id ?? paneId };
 }
 
+/**
+ * Put the ticket's port block in its worktree, and keep git from seeing the file.
+ *
+ * The worktree is a REAL git worktree that the agent commits in, so an untracked `.env`
+ * showing up in `git status` is one `git add -A` away from being committed. The project's
+ * tracked `.gitignore` belongs to the project and is not ours to edit, so the entry goes in
+ * the exclude file instead: same effect on `git status`, nothing tracked touched.
+ *
+ * `rev-parse --git-path`, never `join(worktreePath, ".git", …)`. In a linked worktree `.git`
+ * is a FILE, and git resolves `info/exclude` against the COMMON git directory — the source
+ * repo's `.git/info/exclude`, shared by every ticket worktree of that repo. Verified: after
+ * appending the entry there, `git status` inside the worktree is clean and `git check-ignore`
+ * names that file. Being shared is why the append is conditional.
+ */
+async function injectPortBlock(worktreePath: string, block: PortBlock, ticket: string) {
+  await writeFile(join(worktreePath, ENV_FILE), envFileFor(block, ticket), "utf8");
+
+  const resolved = await run("git", [
+    "-C",
+    worktreePath,
+    "rev-parse",
+    "--path-format=absolute",
+    "--git-path",
+    "info/exclude",
+  ]);
+  const excludeFile = resolved.stdout.trim();
+  // Absent on a repo cloned without the template, so create the directory rather than assume.
+  await mkdir(dirname(excludeFile), { recursive: true });
+  const current = await readFile(excludeFile, "utf8").catch(() => "");
+  if (current.split("\n").includes(ENV_FILE)) return;
+  const separator = current === "" || current.endsWith("\n") ? "" : "\n";
+  await writeFile(excludeFile, `${current}${separator}${ENV_FILE}\n`, "utf8");
+}
+
 export type SpawnResult = {
   workspaceId: string;
   paneId: string;
@@ -201,9 +254,14 @@ export type SpawnResult = {
   branch: string;
 };
 
-/** Backlog -> In Progress. The caller must already have claimed the ticket (CAS). */
+/**
+ * Backlog -> In Progress. The caller must already have claimed the ticket (CAS) and reserved
+ * `block`: the port has to exist before the agent starts, because it is written into the
+ * worktree the agent boots in.
+ */
 export async function spawn(
   spec: RunSpec,
+  block: PortBlock,
   state: RunState,
   onStatus: (status: string) => void,
   onPaneExit: () => void,
@@ -242,7 +300,10 @@ export async function spawn(
     worktreePath = created.worktree.path;
   }
 
-  // 2. Subscribe BEFORE starting the agent, or the first `working` transition is missed (memory/spawn.md).
+  // 2. Inject the port block before anything can start a server in there.
+  await injectPortBlock(worktreePath, block, branch);
+
+  // 3. Subscribe BEFORE starting the agent, or the first `working` transition is missed (memory/spawn.md).
   //
   // `pane.exited` and `pane.closed` are DIFFERENT events and we need both: `pane_exited`
   // fires when the process in the pane dies (agent crash, someone typing `exit`), while
@@ -279,9 +340,10 @@ export async function spawn(
   };
   watch(paneId);
 
-  // 3. Start, with the readiness guard.
+  // 4. Start, with the readiness guard.
   const { reused, paneId: actualPane } = await startAgentAndWait(
     spec,
+    block,
     state,
     paneId,
     state.diagnostics,
@@ -293,7 +355,7 @@ export async function spawn(
     watch(paneId);
   }
 
-  // 4. Prompt — but ONLY for a fresh start.
+  // 5. Prompt — but ONLY for a fresh start.
   //
   // Reuse means we re-attached to an agent that is already running this ticket (memory/teardown.md
   // re-dispatch). Re-sending the ticket text would make it redo work it may have already
