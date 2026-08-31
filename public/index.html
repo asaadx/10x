@@ -1038,8 +1038,11 @@
     const badges = [];
     if (ticket.agentStatus) badges.push(statusBadge(ticket.agentStatus));
     else badges.push(statusBadge(null));
-    if (ticket.finished && !ticket.died) badges.push(`<span class="badge-icon finished" title="finished">✓</span>`);
-    if (ticket.died) badges.push(`<span class="badge-icon died" title="run died">✗</span>`);
+    // A pane closing AFTER the turn finished no longer erases `finished` server-side, so `died`
+    // on its own no longer means the run failed. The checkmark follows the completion; the cross
+    // and the red border are reserved for a run that died without ever finishing.
+    if (ticket.finished) badges.push(`<span class="badge-icon finished" title="finished">✓</span>`);
+    if (ticket.died && !ticket.finished) badges.push(`<span class="badge-icon died" title="run died">✗</span>`);
     if (ticket.hasWorktree) badges.push(`<span class="badge-icon worktree" title="worktree exists">⌂</span>`);
 
     const err = actionErrors.get(ticket.id);
@@ -1086,7 +1089,7 @@
       <div class="card-desc" title="${escapeAttr(ticket.description || "")}">${escapeHtml(truncate(ticket.description, 140))}</div>
       ${ticket.branch ? `<div class="card-meta"><span>branch: ${escapeHtml(ticket.branch)}</span></div>` : ""}
       ${
-        ticket.died
+        ticket.died && !ticket.finished
           ? `<div class="died-note">Run died — the pane exited unexpectedly. This is NOT a finished ticket. The worktree was deliberately kept so you can inspect it before deciding what to do.</div>`
           : ""
       }
@@ -1135,7 +1138,7 @@
     const cls = ["card"];
     if (busy) cls.push("is-busy");
     if (ticket.agentStatus === "blocked") cls.push("is-blocked");
-    if (ticket.died) cls.push("is-died");
+    if (ticket.died && !ticket.finished) cls.push("is-died");
     return cls.join(" ");
   }
 

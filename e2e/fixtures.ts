@@ -454,6 +454,18 @@ export async function spawnTicket(board: Board, repoPath: string, ticketId: stri
   };
 }
 
+/**
+ * Close a pane straight at Herdr, the way a user closing the tab does. Deliberately NOT
+ * `/cancel` or `DELETE`, which run the product's own teardown and take the worktree, the
+ * branch and the row with them — they can never show what a bare pane closure alone does to
+ * a ticket. `pane.close` emits `pane_closed` and then `workspace_closed`, never `pane_exited`
+ * (memory/socket.md), so this also exercises the half of the death path a `pane.exited`-only
+ * subscription would miss.
+ */
+export async function closePane(paneId: string): Promise<void> {
+  await request("pane.close", { pane_id: paneId });
+}
+
 // --- Reading the world back -------------------------------------------------
 
 export async function liveAgentNames(): Promise<string[]> {

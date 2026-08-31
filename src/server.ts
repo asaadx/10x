@@ -225,10 +225,17 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     inFlight.add(id);
     const state: RunState = { diagnostics: freshDiagnostics(), sessionDir: ticket.sessionDir };
     runs.set(id, state);
+
+    /*
+     * `sawWorking` gates the completion signal (memory/agent-status.md: the first `idle` arrives
+     * BEFORE the prompt, so a settled status alone never proves completion). The persisted
+     * `finished`/`died` columns are what the board renders, and a respawn reuses this same row,
+     * so stale flags left by a previous attempt are cleared here.
+     */
+    let sawWorking = false;
     setRunFields(id, { finished: false, died: false });
 
     try {
-      let sawWorking = false;
       const res = await spawn(
         specFor(ticket, project),
         state,
@@ -242,9 +249,14 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
           }
         },
         () => {
-          // memory/teardown.md rule 3: a dead pane is NOT a finished ticket. The worktree and transcript
-          // are kept deliberately so the failure can be inspected.
-          setRunFields(id, { died: true, finished: false });
+          /*
+           * A dead pane is not a finished ticket (memory/teardown.md rule 3), so record `died`
+           * and nothing else. `finished` is deliberately left alone: the status callback above is
+           * its only writer and already knows whether the turn completed, so touching it here
+           * could only erase a completion that really happened. The worktree and transcript are
+           * kept for inspection either way.
+           */
+          setRunFields(id, { died: true });
           console.warn(`[${id}] pane exited — run is dead, worktree kept for inspection`);
         },
       );
