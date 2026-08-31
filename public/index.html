@@ -15,12 +15,12 @@
     <select id="project-select"></select>
   </div>
   <div class="repo-path" id="repo-path"></div>
-  <div class="conn-status" id="conn-status"><span class="dot"></span><span id="conn-status-text">live</span></div>
+  <div class="conn-status" id="conn-status" data-state="live"><span class="dot"></span><span id="conn-status-text">live</span></div>
 </header>
 
 <section class="composer">
   <h2>New ticket</h2>
-  <form id="composer-form">
+  <form class="composer-form" id="composer-form">
     <div class="field">
       <label for="c-title">Title</label>
       <input id="c-title" type="text" autocomplete="off" placeholder="Short summary" />
@@ -43,9 +43,9 @@
   </form>
 </section>
 
-<div class="board-error hidden" id="board-error"></div>
+<div class="board-error" id="board-error" hidden></div>
 
-<section class="unowned hidden" id="unowned-panel">
+<section class="unowned" id="unowned-panel" hidden>
   <h2>Unowned worktrees</h2>
   <div class="note">Reported only — nothing here is ever removed automatically. Clean these up by hand if they are no longer needed.</div>
   <div id="unowned-rows"></div>
