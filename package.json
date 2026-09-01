@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@11.25.0",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "dev": "node src/server.ts",
+    "dev": "pnpm --filter @10x/backend dev",
     "typecheck": "tsc --noEmit",
-    "test": "node --test 'src/*.test.ts'",
+    "test": "pnpm -r test",
     "e2e": "playwright test --project=fast",
     "e2e:full": "playwright test --project=full"
   },

@@ -46,7 +46,9 @@ import { blockFor } from "./ports.ts";
 import { killDevServers } from "./dev-server.ts";
 
 const PORT = Number(process.env.PORT ?? 4010);
-const PUBLIC_DIR = join(import.meta.dirname, "..", "public");
+// The frontend is its own workspace package. Served straight from source today; once Vite
+// lands this becomes its build output, and the served directory is the only line that moves.
+const PUBLIC_DIR = join(import.meta.dirname, "..", "..", "frontend");
 
 /**
  * Extension → content type, and the whole allow-list of what may be served. An extension

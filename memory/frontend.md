@@ -2,7 +2,7 @@
 
 **Node:** frontend · Parent: [INDEX.md](./INDEX.md)
 
-The board's browser half — everything under `public/`. The server that serves it, the HTTP surface
+The board's browser half — everything under `frontend/`. The server that serves it, the HTTP surface
 it calls and the database behind that are in [architecture](./architecture.md).
 
 ## 1. Four layers, five modules
@@ -50,8 +50,8 @@ Two rules, both load-bearing, both stated at the top of `render.js`.
 
 **Nothing is located by class.** Every lookup is `document.getElementById`, a `[data-*]` selector or
 a role. There is no class-based `querySelector`, no `classList` read, no `className` read and no
-`closest()` anywhere in `public/js/`. *(Verified.)* The one hit for
-`git grep -nE 'classList|className|closest\(' public/js/` is `el.className = "card"` in
+`closest()` anywhere in `frontend/js/`. *(Verified.)* The one hit for
+`git grep -nE 'classList|className|closest\(' frontend/js/` is `el.className = "card"` in
 `renderColumn` — a **write** of a constant, which is the rule rather than an exception to it.
 
 **State leaves as an attribute, never as a class:** `data-busy` / `data-blocked` / `data-died` on a

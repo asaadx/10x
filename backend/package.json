@@ -1,0 +1,13 @@
+{
+  "name": "@10x/backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node src/server.ts",
+    "test": "node --test 'src/*.test.ts'"
+  }
+}
