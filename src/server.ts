@@ -38,9 +38,10 @@ import {
   setPullRequest,
   setPullRequestState,
   type Project,
+  type PullRequestState,
   type Ticket,
 } from "./db.ts";
-import { openPullRequest, pullRequestUpdate, pushTicketBranch } from "./github.ts";
+import { fetchPullRequestState, needsLiveCheck, openPullRequest, pullRequestUpdate, pushTicketBranch } from "./github.ts";
 import { blockFor } from "./ports.ts";
 
 const PORT = Number(process.env.PORT ?? 4010);
@@ -236,6 +237,47 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
   if (!action && method === "DELETE") {
     // memory/teardown.md: deleting a ticket is an explicit user action, so a full destructive teardown
     // is correct — worktree forced, branch deleted, transcript removed.
+    //
+    // But a ticket with an open PR still points a live GitHub review at this branch, so the
+    // teardown is refused rather than trusting `ticket.prState`: that column is null whenever no
+    // webhook has arrived, which is the common case, so a guard reading only the column would
+    // fail open exactly when it matters most. A live read is required for anything non-terminal.
+    if (ticket.prNumber !== null && needsLiveCheck(ticket.prState)) {
+      const token = process.env.GITHUB_TOKEN;
+      if (!token) {
+        return json(
+          { error: "pr_state_unknown", message: "GITHUB_TOKEN is not set; the PR state cannot be verified before deleting" },
+          409,
+        );
+      }
+      let liveState: PullRequestState;
+      try {
+        liveState = await fetchPullRequestState(project.repoPath, ticket.prNumber, token);
+      } catch (err) {
+        // Fail closed: we cannot verify the PR is safe to orphan, and the teardown is irreversible.
+        const message = err instanceof Error ? err.message : String(err);
+        return json({ error: "pr_state_unknown", message }, 409);
+      }
+      if (liveState === "open") {
+        return json(
+          {
+            error: "pr_open",
+            message: `PR #${ticket.prNumber} is still open — merge or close it on GitHub first`,
+            prNumber: ticket.prNumber,
+            prUrl: ticket.prUrl,
+          },
+          409,
+        );
+      }
+      // Persist the freshly-read terminal state. This is also the recovery path for a merge/close
+      // event missed while webhook forwarding was down (memory/teardown.md): the next delete
+      // attempt catches up the row instead of needing a manual fix. LOC is passed through
+      // unchanged since this read has no additions/deletions to offer.
+      if (ticket.prUrl) {
+        setPullRequestState(ticket.prUrl, liveState, ticket.prAdditions, ticket.prDeletions);
+      }
+    }
+
     inFlight.add(id);
     try {
       const state = runStateFor(ticket);
