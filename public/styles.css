@@ -10,42 +10,45 @@
 
 :root {
   /* ---------- colour · surfaces ---------- */
-  --bg: #14161a;
-  --bg-raised: #1b1e24;
-  --bg-sunken: #101216;
-  --bg-hover: #23262d;
+  --bg: #f5f6f8;
+  --bg-raised: #ffffff;
+  --bg-sunken: #eceef2;
+  --bg-hover: #e7eaef;
 
   /* ---------- colour · lines ---------- */
-  --border: #2a2e36;
-  --border-soft: #22252c;
-  --border-strong: #3a3f49;
+  --border: #d5d9e0;
+  --border-soft: #e4e7ec;
+  --border-strong: #b4bac4;
   /* Destructive affordances: a `danger` button, the board error banner. */
-  --border-danger: #5a2e2c;
+  --border-danger: #e6b4b1;
   /* A card whose run is blocked or dead — deliberately louder than --border-danger. */
-  --border-alarm: #6b2f2c;
-  --border-warn: #5c4a24;
-  --border-warn-soft: rgba(224, 169, 64, 0.25);
+  --border-alarm: #d3837d;
+  --border-warn: #ddc084;
+  --border-warn-soft: rgba(154, 107, 0, 0.28);
 
   /* ---------- colour · text ---------- */
-  --text: #d7dae0;
-  --text-dim: #8b909c;
-  --text-faint: #5c6169;
-  --text-on-accent: #eaf3fb;
+  --text: #1f2328;
+  --text-dim: #59606a;
+  --text-faint: #848c97;
+  --text-on-accent: #ffffff;
 
-  /* ---------- colour · accent and status ---------- */
-  --accent: #5b9dd9;
-  --accent-dim: #3a5f7d;
-  --accent-hover: #46708f;
-  --amber: #e0a940;
-  --amber-bg: rgba(224, 169, 64, 0.12);
-  --red: #e2554f;
-  --red-bg: rgba(226, 85, 79, 0.14);
-  --green: #57b06b;
-  --green-bg: rgba(87, 176, 107, 0.12);
-  --grey: #7d828c;
-  --grey-bg: rgba(125, 130, 140, 0.1);
-  /* GitHub's merged-PR purple — nothing else in the palette fits a merge state. */
-  --purple: #a371f7;
+  /* ---------- colour · accent and status ----------
+   * Darkened against the dark palette these replace: the same hues at their old
+   * lightness fail contrast on a white surface. Status hues keep their meaning
+   * (amber caution, red alarm, green healthy, purple merged). */
+  --accent: #2f6fb0;
+  --accent-dim: #a8c6e4;
+  --accent-hover: #255c95;
+  --amber: #8a5f00;
+  --amber-bg: rgba(224, 169, 64, 0.20);
+  --red: #c8332c;
+  --red-bg: rgba(200, 51, 44, 0.10);
+  --green: #1f7a34;
+  --green-bg: rgba(31, 122, 52, 0.10);
+  --grey: #6b7280;
+  --grey-bg: rgba(107, 114, 128, 0.10);
+  /* GitHub's merged-PR purple, light-mode value. */
+  --purple: #8250df;
 
   /* ---------- typography ---------- */
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
