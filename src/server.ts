@@ -36,10 +36,11 @@ import {
   releasePortSlot,
   reservePortSlot,
   setPullRequest,
+  setPullRequestState,
   type Project,
   type Ticket,
 } from "./db.ts";
-import { openPullRequest, pushTicketBranch } from "./github.ts";
+import { openPullRequest, pullRequestUpdate, pushTicketBranch } from "./github.ts";
 import { blockFor } from "./ports.ts";
 
 const PORT = Number(process.env.PORT ?? 4010);
@@ -204,6 +205,16 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
   if (method === "POST" && path === "/tickets") {
     const r = createTicket(body);
     return r.ok ? json(r.ticket, 201) : json(r.body, r.status);
+  }
+
+  // Always answers 2xx: GitHub retries a non-2xx, and a retry cannot fix a body we do not
+  // recognise or a PR no ticket owns, so a 4xx would just buy repeated deliveries of the
+  // same useless event. No signature check — see memory/github.md.
+  if (method === "POST" && path === "/webhooks/github") {
+    const update = pullRequestUpdate(body);
+    if (!update) return json({ ok: true, ignored: true });
+    const matched = setPullRequestState(update.url, update.state, update.additions, update.deletions);
+    return json({ ok: true, matched });
   }
 
   const m = /^\/tickets\/([^/]+)(\/spawn|\/cancel|\/worktree|\/focus|\/accept|\/reject)?$/.exec(path);

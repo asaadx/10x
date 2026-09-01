@@ -87,6 +87,9 @@ const decode = (row: Row): Ticket =>
     session_dir: maybeText(row, "session_dir"),
     pr_number: intOrNull(row, "pr_number"),
     pr_url: maybeText(row, "pr_url"),
+    pr_state: maybeText(row, "pr_state"),
+    pr_additions: intOrNull(row, "pr_additions"),
+    pr_deletions: intOrNull(row, "pr_deletions"),
     created_at: text(row, "created_at"),
     updated_at: text(row, "updated_at"),
   });
