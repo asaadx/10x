@@ -43,6 +43,7 @@ import {
 } from "./db.ts";
 import { fetchPullRequestState, needsLiveCheck, openPullRequest, pullRequestUpdate, pushTicketBranch } from "./github.ts";
 import { blockFor } from "./ports.ts";
+import { killDevServers } from "./dev-server.ts";
 
 const PORT = Number(process.env.PORT ?? 4010);
 const PUBLIC_DIR = join(import.meta.dirname, "..", "public");
@@ -359,7 +360,34 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
              * forcing it would drag a ticket back out of the column its owner just chose.
              */
             setRunFields(id, { finished: true });
-            claimTicket(id, "in_progress", "in_review");
+            const claimed = claimTicket(id, "in_progress", "in_review");
+
+            // Kill the agent's dev server now that the ticket is off the agent's hands —
+            // the reserved block is the only handle 10x has on that process
+            // (memory/architecture.md, port pool; see dev-server.ts for the containment proof).
+            // Only when the claim actually landed: a lost claim means a cancel got there
+            // first and the ports are somebody else's problem now. Fire-and-forget with an
+            // attached catch — this callback is not async, and a kill failure must never
+            // fail the column transition that already happened above.
+            if (claimed) {
+              if (state.worktreePath) {
+                void killDevServers(blockFor(reserved.slot), state.worktreePath)
+                  .then((result) => {
+                    if (result.killed.length > 0 || result.skipped.length > 0) {
+                      console.warn(`[${id}] dev-server reap: killed ${JSON.stringify(result.killed)}, skipped ${JSON.stringify(result.skipped)}`);
+                    }
+                  })
+                  .catch((err) => console.warn(`[${id}] dev-server reap failed:`, err));
+              } else {
+                // Unreachable in practice, and kept only because `worktreePath` is optional on
+                // `RunState`: `spawn` sets it before it subscribes, and this closure cannot
+                // outlive the process that made that subscription, so any event able to reach
+                // here was delivered to a state that already has the path. It is NOT the
+                // restart case — after a restart no subscription exists at all, so this
+                // callback never runs and the ticket stays In Progress (gotchas.md G2).
+                console.warn(`[${id}] cannot reap dev server: worktree path unknown`);
+              }
+            }
           }
         },
         () => {

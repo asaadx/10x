@@ -125,9 +125,6 @@ Still deferred:
   own port range.
 - **A fresh reviewing agent** spawned at In Review to check the code on the same branch. In Review
   is a manual human review today.
-- **Killing the dev server an in-progress agent started** — separate mechanics, finding a process
-  by port rather than by ticket, because 10x did not spawn that process. The port block is the
-  only handle. Not built, and agents' dev servers leak until it is.
 
 Disk stays user-managed until merge handling exists: accepted-but-unmerged tickets keep their
 worktrees indefinitely and reconciliation only makes them visible.

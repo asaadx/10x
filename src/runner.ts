@@ -36,6 +36,10 @@ export type RunState = {
   diagnostics: Diagnostics;
   sessionDir: string | null;
   stream?: { close: () => void };
+  // Cache of the worktree path spawn() resolved, for the dev-server reaper
+  // (memory/architecture.md, port pool). NOT persisted: Herdr derives the path from the
+  // branch on demand, so a restart simply forgets it and the reaper skips with a warning.
+  worktreePath?: string;
 };
 
 const run = promisify(execFile);
@@ -301,6 +305,11 @@ export async function spawn(
     paneId = created.root_pane.pane_id;
     worktreePath = created.worktree.path;
   }
+
+  // Cached for the dev-server reaper (memory/architecture.md, port pool): the settled-status
+  // callback in server.ts needs the worktree path to prove containment before it kills
+  // anything, and this is the only place that path is resolved.
+  state.worktreePath = worktreePath;
 
   // 2. Inject the port block before anything can start a server in there.
   await injectPortBlock(worktreePath, block, branch);

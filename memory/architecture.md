@@ -45,8 +45,8 @@ Line counts are `wc -l`, current as of this node.
 
 | File | Lines | Responsibility | I/O |
 | --- | --- | --- | --- |
-| `src/server.ts` | 656 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
-| `src/runner.ts` | 528 | `spawn` / `teardown` / `retireAgent` for one ticket; the readiness guard; event-stream reopen | Herdr socket, fs, `git` via `execFile` |
+| `src/server.ts` | 681 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
+| `src/runner.ts` | 537 | `spawn` / `teardown` / `retireAgent` for one ticket; the readiness guard; event-stream reopen | Herdr socket, fs, `git` via `execFile` |
 | `src/db.ts` | 361 | Schema + in-place migration, connection, row types, the status and PR-state parse boundaries, `claimTicket` CAS, port-slot reserve/release, `setPullRequest`, `setPullRequestState` | SQLite (opens DB at import) |
 | `src/ticket-store.ts` | 294 | Ticket persistence + `/tickets` handler bodies, input narrowing | SQLite |
 | `src/db.test.ts` | 275 | Tests for the CAS, the Accept/Reject hand-backs and `setPullRequestState`, against a temp DB | SQLite (temp dir) |
@@ -56,6 +56,8 @@ Line counts are `wc -l`, current as of this node.
 | `src/herdr.ts` | 174 | Newline-JSON unix-socket client: `request`, `subscribe` with far-end close detection | `node:net` |
 | `src/github.ts` | 192 | `pushTicketBranch`, `openPullRequest`, `pullRequestUpdate`, `fetchPullRequestState`, `needsLiveCheck`; token redaction on every error path | `git` via `execFile`, `fetch` |
 | `src/port-slots.test.ts` | 130 | Tests for reserve / release / reclaim, against a temp DB | SQLite (temp dir) |
+| `src/dev-server.ts` | 135 | Reap the agent's dev server by port block, gated on worktree containment | `ss` via `execFile`, `/proc` |
+| `src/dev-server.test.ts` | 145 | Tests for `ss` parsing and, against real listeners, that a stranger in the block is spared | `node:net`, temp dirs |
 | `src/ports.ts` | 98 | **Pure.** Port-slot pool: cap, block arithmetic, `.env` body | none |
 | `src/ports.test.ts` | 78 | Tests for the pure allocator | none |
 | `src/lifecycle.ts` | 71 | **Pure.** Naming, event normalisation, readiness predicates | none |

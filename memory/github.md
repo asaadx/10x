@@ -3,8 +3,8 @@
 **Node:** github · Parent: [INDEX.md](./INDEX.md)
 
 Everything 10x knows about GitHub. Publishing is **built** ([`src/github.ts`](../src/github.ts),
-driven by `POST /tickets/:id/accept`). The webhook receiver is **not built** — the facts below are
-what it must be written against, and they exist so nobody re-derives them by experiment.
+driven by `POST /tickets/:id/accept`), and so is the webhook receiver and the live PR-state read
+the delete guard depends on ([teardown](./teardown.md)).
 
 > **Provenance.** The publishing section is verified against the source in this repo. The webhook
 > and merge-state section was observed in an earlier session against a live
