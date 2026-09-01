@@ -34,20 +34,43 @@ retire the agent. Only the first three can hand the claim back.
 
 ## Webhooks
 
-**Not built.** `POST /webhooks/github` is the next piece of work.
+**Built.** `POST /webhooks/github` records a PR's state and ±LOC on the ticket that owns it.
+Three lines of glue in `server.ts` between one pure narrowing function and one writer.
 
 - **The `pull_request` payload carries `additions`, `deletions`, `changed_files`, `merged`,
   `merged_at`, `merge_commit_sha`, `html_url` and `number`.** So **±LOC needs no API call** — it is
   already in the event.
 - **A merge arrives as `action: "closed"` with `merged: true`.** Closed-without-merging is the same
   action with `merged: false`. That single boolean is the whole distinction the delete guard needs.
+- **State is derived from `merged` + `state`, never from `action`.** `pullRequestUpdate` in
+  `github.ts` maps `merged === true` → `merged`, else `state === "closed"` → `closed`, else `open`.
+  Every action — opened, synchronize, reopened, closed — flows through those same three lines, so
+  no allow-list can fall behind GitHub's action vocabulary.
+- **The ticket is matched by `pr_url`, not `pr_number`.** PR numbers are per-repo and would collide
+  across projects; the URL is globally unique and already stored, so this needs no `owner/repo`
+  parsing. A webhook for a PR no ticket owns answers `{ok: true, matched: false}` and writes
+  nothing — normal, not an error.
+- **The route always answers 2xx.** GitHub retries a non-2xx, and a retry cannot fix a body we do
+  not recognise or a PR we do not own, so a 4xx would only buy repeated deliveries of the same
+  useless event. An unrecognised body answers `{ok: true, ignored: true}`.
+- Stored in three nullable columns — `pr_state`, `pr_additions`, `pr_deletions` — added by
+  `addColumnIfMissing` ([architecture](./architecture.md)). `toPullRequestState` decodes an
+  unrecognised value to **`null`, not a default**, unlike `toStatus`: "we have not heard about this
+  PR" is a real and common state, since most tickets never reach `done`.
 - **`gh webhook forward --repo=… --events=pull_request --url=…` works**, creates an **ephemeral**
   hook, tears it down on exit, and sends **no HMAC signature header**. Events that occur while it
   is down are **lost, not queued** — GitHub does not replay them to an ephemeral hook.
-- Consequence for the receiver: **verify the signature when a signature is present, and require one
-  when a secret is configured.** That is the only shape that is safe under both `gh webhook forward`
-  (no header) and a public URL or Smee (header always). The two `.env` secrets `WEBHOOK_10X` and
-  `WEBHOOK_10X_TEST` are unused on the `gh` path and essential on any other.
+- **No signature verification, deliberately.** `gh webhook forward` is the only delivery path that
+  exists, and it never sends a header to verify. More to the point, the board **binds `0.0.0.0`**
+  (`server.ts` `.listen(PORT, …)`, no host) and **has no auth on any endpoint** — anyone who could
+  forge a webhook can already call `DELETE /tickets/:id`, which force-removes the worktree, deletes
+  the branch and drops the row with no audit trail. HMAC on this one route would harden the least
+  dangerous door in an unlocked house. The two `.env` secrets `WEBHOOK_10X` and `WEBHOOK_10X_TEST`
+  are wired to nothing.
+- **What would change that: the endpoint becoming reachable from the public internet** — a tunnel,
+  Smee, or a hosted deploy. A tailnet does not count. The rule then needs no mode flag: **verify iff
+  a secret env var is set.** Set one in production, leave it unset locally, and `gh webhook forward`
+  never trips it. If the board ever goes public, webhook HMAC is far from the most urgent fix.
 - Because events are lossy, the receiver **cannot be the only source of PR state**. The on-demand
   read below doubles as the recovery path.
 

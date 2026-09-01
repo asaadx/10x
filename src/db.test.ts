@@ -16,7 +16,7 @@ process.env.DB_PATH = join(dir, "10x.db");
 // db.ts opens the database at module load, so DB_PATH must already be set: the one place
 // a dynamic import is required rather than preferred. Static imports hoist above the
 // assignments above and would open the real ~/.10x/10x.db.
-const { claimTicket, db, nowIso, setPullRequest, toStatus, toTicket } = await import("./db.ts");
+const { claimTicket, db, nowIso, setPullRequest, setPullRequestState, toStatus, toTicket } = await import("./db.ts");
 
 // WAL leaves -wal and -shm siblings, so the whole temp directory goes, not just the file.
 after(() => {
@@ -244,5 +244,32 @@ describe("setPullRequest", () => {
     const ticket = toTicket(row);
     assert.equal(ticket.prNumber, null);
     assert.equal(ticket.prUrl, null);
+  });
+});
+
+describe("setPullRequestState", () => {
+  test("stores all three columns and moves updated_at, matched by pr_url", () => {
+    seed("t-pr-state", "in_review");
+    db.prepare("UPDATE tickets SET pr_url = ? WHERE id = ?").run("https://example.com/pr/9", "t-pr-state");
+    const before = readString("t-pr-state", "updated_at");
+    const matched = setPullRequestState("https://example.com/pr/9", "merged", 12, 3);
+    assert.equal(matched, true);
+    const row = db.prepare("SELECT * FROM tickets WHERE id = ?").get("t-pr-state") as TicketRow;
+    const ticket = toTicket(row);
+    assert.equal(ticket.prState, "merged");
+    assert.equal(ticket.prAdditions, 12);
+    assert.equal(ticket.prDeletions, 3);
+    assert.notEqual(readString("t-pr-state", "updated_at"), before);
+  });
+
+  test("an unknown PR url matches nothing and leaves every existing row untouched", () => {
+    seed("t-pr-other", "in_review");
+    db.prepare("UPDATE tickets SET pr_url = ? WHERE id = ?").run("https://example.com/pr/99", "t-pr-other");
+    const before = readString("t-pr-other", "updated_at");
+    const matched = setPullRequestState("https://example.com/pr/does-not-exist", "closed", 1, 1);
+    assert.equal(matched, false);
+    const row = db.prepare("SELECT * FROM tickets WHERE id = ?").get("t-pr-other") as TicketRow;
+    assert.equal(row.pr_state, null);
+    assert.equal(readString("t-pr-other", "updated_at"), before);
   });
 });

@@ -28,6 +28,9 @@ const DB_PATH = process.env.DB_PATH ?? join(STATE_DIR, "10x.db");
  */
 export type Status = "backlog" | "in_progress" | "in_review" | "done";
 
+/** The three states a PR can be in from the board's point of view, mirroring `Status`. */
+export type PullRequestState = "open" | "merged" | "closed";
+
 export type Project = {
   /** Immutable slug used in branch and agent names. Renaming would orphan worktrees. */
   id: string;
@@ -58,6 +61,11 @@ export type Ticket = {
   /** Set together by `setPullRequest` once Accept opens the PR. Null until then. */
   prNumber: number | null;
   prUrl: string | null;
+  // Written by the webhook receiver from the `pull_request` payload (server.ts
+  // /webhooks/github). additions/deletions need no API call — they are already on the event.
+  prState: PullRequestState | null;
+  prAdditions: number | null;
+  prDeletions: number | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -102,6 +110,11 @@ CREATE TABLE IF NOT EXISTS tickets (
   -- "done", and the pair is written by exactly one function, setPullRequest.
   pr_number   INTEGER,
   pr_url      TEXT,
+  -- Written by the webhook receiver from the pull_request payload. additions/deletions
+  -- need no API call: both are already on the event (see memory/github.md).
+  pr_state     TEXT,
+  pr_additions INTEGER,
+  pr_deletions INTEGER,
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL,
   UNIQUE (project_id, number)
@@ -134,6 +147,9 @@ db.exec("CREATE UNIQUE INDEX IF NOT EXISTS tickets_port_slot ON tickets (port_sl
 
 addColumnIfMissing("tickets", "pr_number", "INTEGER");
 addColumnIfMissing("tickets", "pr_url", "TEXT");
+addColumnIfMissing("tickets", "pr_state", "TEXT");
+addColumnIfMissing("tickets", "pr_additions", "INTEGER");
+addColumnIfMissing("tickets", "pr_deletions", "INTEGER");
 
 export const nowIso = () => new Date().toISOString();
 
@@ -160,6 +176,9 @@ export type TicketRow = {
   session_dir: string | null;
   pr_number: number | null;
   pr_url: string | null;
+  pr_state: string | null;
+  pr_additions: number | null;
+  pr_deletions: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -182,6 +201,14 @@ export const toProject = (r: ProjectRow): Project => ({
 export const toStatus = (raw: string): Status =>
   raw === "in_progress" || raw === "in_review" || raw === "done" ? raw : "backlog";
 
+/**
+ * Unlike toStatus, an unrecognised value decodes to null rather than a default: "we have
+ * not heard about this PR" is a real and common state — most tickets never reach `done`,
+ * let alone get their PR merged, so null must not read as any specific state.
+ */
+export const toPullRequestState = (raw: string | null): PullRequestState | null =>
+  raw === "open" || raw === "merged" || raw === "closed" ? raw : null;
+
 export const toTicket = (r: TicketRow): Ticket => ({
   id: r.id,
   projectId: r.project_id,
@@ -196,6 +223,9 @@ export const toTicket = (r: TicketRow): Ticket => ({
   sessionDir: r.session_dir,
   prNumber: r.pr_number,
   prUrl: r.pr_url,
+  prState: toPullRequestState(r.pr_state),
+  prAdditions: r.pr_additions,
+  prDeletions: r.pr_deletions,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });
@@ -291,6 +321,25 @@ const SET_PULL_REQUEST = db.prepare(
  */
 export function setPullRequest(id: string, number: number, url: string): void {
   SET_PULL_REQUEST.run(number, url, nowIso(), id);
+}
+
+const SET_PULL_REQUEST_STATE = db.prepare(
+  "UPDATE tickets SET pr_state = ?, pr_additions = ?, pr_deletions = ?, updated_at = ? WHERE pr_url = ?",
+);
+
+/**
+ * Matched by PR URL, not number: PR numbers are per-repo and would collide across projects,
+ * while the URL is globally unique and already stored. Returns false when no ticket owns that
+ * PR — a webhook for somebody else's repo is normal, not an error.
+ */
+export function setPullRequestState(
+  prUrl: string,
+  state: PullRequestState,
+  additions: number | null,
+  deletions: number | null,
+): boolean {
+  const res = SET_PULL_REQUEST_STATE.run(state, additions, deletions, nowIso(), prUrl);
+  return Number(res.changes) > 0;
 }
 
 /**

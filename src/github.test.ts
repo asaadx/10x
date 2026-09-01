@@ -5,7 +5,7 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { redact, parseRemote, pullRequestBody } from "./github.ts";
+import { redact, parseRemote, pullRequestBody, pullRequestUpdate } from "./github.ts";
 
 describe("redact", () => {
   test("removes a token embedded in a plain string", () => {
@@ -51,5 +51,45 @@ describe("pullRequestBody", () => {
     const body = pullRequestBody("Fixes the flaky spawn test.", "ticket/10x/7");
     assert.match(body, /Fixes the flaky spawn test\./);
     assert.match(body, /ticket\/10x\/7/);
+  });
+});
+
+describe("pullRequestUpdate", () => {
+  test("a merged PR reads state merged and the LOC pair off the payload", () => {
+    const update = pullRequestUpdate({
+      pull_request: { html_url: "https://github.com/o/r/pull/7", merged: true, state: "closed", additions: 12, deletions: 3 },
+    });
+    assert.deepEqual(update, { url: "https://github.com/o/r/pull/7", state: "merged", additions: 12, deletions: 3 });
+  });
+
+  test("closed but unmerged is state closed, not merged — the delete guard depends on this distinction", () => {
+    const update = pullRequestUpdate({
+      pull_request: { html_url: "https://github.com/o/r/pull/7", merged: false, state: "closed" },
+    });
+    assert.equal(update?.state, "closed");
+  });
+
+  test("an open PR reads state open", () => {
+    const update = pullRequestUpdate({
+      pull_request: { html_url: "https://github.com/o/r/pull/7", merged: false, state: "open" },
+    });
+    assert.equal(update?.state, "open");
+  });
+
+  test("a missing additions/deletions pair is still a valid update, with null LOC", () => {
+    const update = pullRequestUpdate({
+      pull_request: { html_url: "https://github.com/o/r/pull/7", merged: false, state: "open" },
+    });
+    assert.equal(update?.additions, null);
+    assert.equal(update?.deletions, null);
+  });
+
+  test("returns null when the payload has no pull_request key", () => {
+    assert.equal(pullRequestUpdate({ action: "opened" }), null);
+  });
+
+  test("returns null for a non-object body", () => {
+    assert.equal(pullRequestUpdate(null), null);
+    assert.equal(pullRequestUpdate("not a payload"), null);
   });
 });
