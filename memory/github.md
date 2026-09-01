@@ -2,7 +2,7 @@
 
 **Node:** github · Parent: [INDEX.md](./INDEX.md)
 
-Everything 10x knows about GitHub. Publishing is **built** ([`src/github.ts`](../src/github.ts),
+Everything 10x knows about GitHub. Publishing is **built** ([`backend/src/github.ts`](../backend/src/github.ts),
 driven by `POST /tickets/:id/accept`), and so is the webhook receiver and the live PR-state read
 the delete guard depends on ([teardown](./teardown.md)).
 
@@ -13,7 +13,7 @@ the delete guard depends on ([teardown](./teardown.md)).
 
 ## Publishing a branch as a PR
 
-`src/github.ts` is two network calls, no client class and no injected transport: `git push` via
+`backend/src/github.ts` is two network calls, no client class and no injected transport: `git push` via
 `execFile`, then `POST /repos/{owner}/{repo}/pulls` via `fetch`. Four decisions in it are
 load-bearing.
 

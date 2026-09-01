@@ -113,7 +113,7 @@ Recorded so nobody assumes these are proven.
   250 ms → 4 s): agent alive → re-subscribe to its authoritative `pane_id`; `agent_not_found` →
   `onPaneExit()`, the existing dead-pane path. **The probe is load-bearing, not decoration** —
   `pane.exited` is a global subscription we are not listening to during the gap, so the probe is
-  the only dead-pane detection for that window. Covered by `src/herdr.test.ts` against a real unix
+  the only dead-pane detection for that window. Covered by `backend/src/herdr.test.ts` against a real unix
   socket; falsifiable (neuter the handler and two of its three tests time out).
 
   **The mechanism that closes the restart half needs no subscription at all:** a
