@@ -96,10 +96,37 @@ Recorded so nobody assumes these are proven.
   worktree and its port block, and the board re-reads the live agent as `done` — covered by
   `e2e/resilience.spec.ts`. **What is still missing is re-subscribing:** the new process holds no
   event subscription for a running ticket, and nothing at boot creates one, so a turn that ends
-  *after* the restart is never recorded — the ticket keeps reading unfinished **and never moves to
-  In Review**, because the transition rides on that same subscription. Boot reconciliation only
-  reports it ([reconciliation](./reconciliation.md), divergence row 1). A Herdr server restart is
-  still unaddressed: panes and agents die with it.
+  *after* the restart is never recorded — the ticket keeps reading unfinished and **sticks in In
+  Progress permanently**, because the transition rides on that same subscription. Boot
+  reconciliation only reports it ([reconciliation](./reconciliation.md), divergence row 1).
+
+  **A dropped socket is now detected and reopened (verified).** `subscribe()` takes an optional
+  third argument, `onClose`, fired at most once when the connection drops from the far end and
+  never when the caller calls the returned `close()` — the `closedByUs` flag, which is what stops
+  teardown from triggering a pointless reopen. **Node emits `'close'` on a graceful hangup and
+  `'error'` only on ECONNRESET/EPIPE/connect failure**, and always emits `'close'` after `'error'`,
+  so the single `'close'` handler covers both. Before it, a clean Herdr restart matched none of the
+  registered handlers: the stream object stayed truthy, every status event stopped, and
+  `pane.exited`/`pane.closed` stopped with them, so even dead-pane detection died. Silently.
+
+  `runner.ts` responds by probing `agent.get` on a bounded backoff (`STREAM_REOPEN_DELAYS_MS`,
+  250 ms → 4 s): agent alive → re-subscribe to its authoritative `pane_id`; `agent_not_found` →
+  `onPaneExit()`, the existing dead-pane path. **The probe is load-bearing, not decoration** —
+  `pane.exited` is a global subscription we are not listening to during the gap, so the probe is
+  the only dead-pane detection for that window. Covered by `src/herdr.test.ts` against a real unix
+  socket; falsifiable (neuter the handler and two of its three tests time out).
+
+  Four options were considered and **none chosen**: **A** subscribe at boot for every
+  `in_progress` ticket; **B** = A plus persisting `sawWorking`, so a restart mid-turn cannot
+  mistake the first settle for completion; **C** drop subscriptions entirely and poll `agent.get`;
+  **D** derive the transition from status alone — **unsound**, because the first `idle` arrives
+  before the prompt ([agent-status](./agent-status.md)). A plain boot catch-up
+  (`in_progress AND finished → in_review`) was designed and **deliberately dropped**: it makes
+  steering worse, since restarting while you are talking to an agent jumps the ticket immediately.
+
+  **Operational consequence: do not restart the board while an agent is working.** If Herdr
+  restarts, restart the board *after* it. A Herdr server restart is still unaddressed: panes and
+  agents die with it.
 - **G3 — concurrency, proven at two agents (verified).** Two tickets spawned with `Promise.all`
   both reached ready in 3.2-3.9 s, ran their turns simultaneously, and each committed its own
   file: distinct branches, worktrees, agent names and panes, with a third unrelated agent live in

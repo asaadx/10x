@@ -12,20 +12,20 @@ this node.
 
 | Layer | File | Lines | Rule |
 | --- | --- | --- | --- |
-| transport | `js/api.js` | 80 | one `api()` wrapper — it never throws and never swallows, so a network failure and a 500 arrive in the same `{ok, status, body}` shape — plus a named function per endpoint the UI uses. **No DOM.** |
+| transport | `js/api.js` | 88 | one `api()` wrapper — it never throws and never swallows, so a network failure and a 500 arrive in the same `{ok, status, body}` shape — plus a named function per endpoint the UI uses. **No DOM.** |
 | state | `js/state.js` | 87 | the `state` object, `actionErrors`, `pendingActions`, `copyConfirms`, and the derivations (`isBusy`, `cardIsProtected`, `attachCommandFor`). **No DOM, no `fetch`.** |
-| rendering | `js/render.js` | 424 | **every `document` reference in the frontend.** Reads state, writes markup, decides nothing. |
-| wiring | `js/app.js` | 244 | what a click means, and the poll loop. **Touches no DOM.** |
+| rendering | `js/render.js` | 433 | **every `document` reference in the frontend.** Reads state, writes markup, decides nothing. |
+| wiring | `js/app.js` | 254 | what a click means, and the poll loop. **Touches no DOM.** |
 
 Three files sit outside the layering. `js/icons.js` (34) is a table, not a layer: the five icons JS
-renders — steer, finished, died, worktree, busy — in one map. `index.html` (77) is markup only: the
-landmarks, the composer, the unowned panel and the three columns. `styles.css` (651) is all styling
+renders — steer, finished, died, worktree, busy — in one map. `index.html` (81) is markup only: the
+landmarks, the composer, the unowned panel and the four columns. `styles.css` (653) is all styling
 and is read by nothing.
 
 The split exists so that **a redesign is layout, colours and icons only** — a change to
 `styles.css` and to the templates in `render.js` cannot alter what the board does.
 
-`api.js` covers nine of the twelve endpoints. The frontend only *reads* projects
+`api.js` covers eleven of the fourteen endpoints. The frontend only *reads* projects
 (`GET /projects`); project creation, renaming and deletion are not wired into the UI, though those
 three endpoints exist.
 
@@ -69,8 +69,9 @@ the behaviour hook and `.composer-form` became the styling hook.
 In Review was the first real test of these seams, and it landed in **four edits and no stylesheet
 change**: a `<div class="column" role="region" aria-labelledby data-status>` in `index.html`, one
 `renderColumn(...)` line in `renderBoard`, one `else if` in the card's action list, and nothing
-else. *(Verified in the browser: three columns, 460 px each at a 1440 px viewport, no horizontal
-scroll.)*
+else. Done, the fourth column, cost the same shape plus **two lines of CSS**: 4 lines of
+`index.html`, 20 of `render.js`, 4 of `api.js`, 2 of `app.js`, 2 of `styles.css` *(verified from
+the commit diffstat)*. No layout change either time.
 
 Two reasons it was that cheap, both worth preserving. `main.board` is a **flex row of `flex: 1;
 min-width: 0` columns**, so an n-th column shares the width without any per-column rule to add or

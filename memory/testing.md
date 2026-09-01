@@ -25,7 +25,7 @@ forgotten new spec merely runs slower under `e2e:full` and never spawns unexpect
 
 **The glob matters and so do the quotes.** `node --test src` does not pick up `.ts` files —
 verified: it reports `✖ src (40ms) 'test failed'`. Quote the glob so the shell hands it to Node
-rather than expanding it. Current state: **68 tests, 13 suites, 0 failures**, `duration_ms` ≈ 200.
+rather than expanding it. Current state: **97 tests, 22 suites, 0 failures**, `duration_ms` ≈ 400.
 
 | Target | Why it is tested |
 | --- | --- |
@@ -36,6 +36,7 @@ rather than expanding it. Current state: **68 tests, 13 suites, 0 failures**, `d
 | `validateProjectSlug` | Dots are branch-legal and agent-name-illegal, so a dotted slug fails only at spawn time, after the worktree exists. Also pins that a leading digit is legal — `10x` is this project's own name. |
 | `claimTicket` | The only lock in the system: a second click loses, a mismatched `from` loses, an unknown id loses instead of throwing, bystanders are untouched, `updated_at` is bumped only on a win. Also pinned across `in_review`: a settled turn claims `in_progress → in_review`, a **second settle** finds nothing and leaves even `updated_at` alone, and a cancel cannot claim a ticket that has already moved to review — which is why an In Review card renders no Cancel. Runs against a temp DB via `mkdtempSync` and a **dynamic** import, because `db.ts` opens the database at module load and a static import would hoist above the `DB_PATH` assignment. |
 | the port pool | A wrong slot hands two live agents the same TCP port, and the symptom is an `EADDRINUSE` inside somebody's worktree rather than an error on the board. Pinned: lowest-free selection, reuse after release, exhaustion at the cap, the block arithmetic including the last slot's upper bound (4199, not 4200), and the cap coming from `MAX_PORT_SLOTS`. The persistence half additionally pins that the UNIQUE index — not the allocator — is what refuses a double assignment, and that the boot reclaim **spares an `in_review` ticket's block** while still freeing one dropped back to backlog. |
+| `subscribe` `onClose` | Node emits `'close'` on a graceful hangup and `'error'` only on ECONNRESET/EPIPE, so a clean Herdr restart fired none of the registered handlers and every ticket status silently stopped updating. Pinned against a **real unix socket** (`net.createServer` in a temp dir): a far-end `end()` fires `onClose` exactly once, a caller-initiated `close()` never fires it — the flag that stops teardown triggering a pointless reopen — and an event still arrives before the close. Same **dynamic** import trick as the CAS tests, because `SOCKET_PATH` is read from the env at module load. |
 
 The tests deliberately cover the three things that have actually broken — event-name normalisation,
 the idle-or-done readiness predicate, and the CAS — plus the naming invariants that guard them.
@@ -54,17 +55,26 @@ they never start an agent.
 | --- | --- | --- | --- | --- |
 | `projects.spec.ts` | fast | 5 | registration, slug / repo / duplicate validation | none |
 | `tickets.spec.ts` | fast | 4 | ticket CRUD and monotonic numbering across a delete | none |
-| `board.spec.ts` | fast | 4 | rendering, the empty In Review column, picking up a ticket via the poll, the static asset route | none |
+| `board.spec.ts` | fast | 9 | the four columns and their order, empty In Review and Done, Accept/Reject button presence per column, picking up a ticket via the poll, the static asset route | none |
 | `spawn.spec.ts` | full | 3 | spawn, **the automatic move to In Review** observed on a real turn, cancel | 3 |
 | `teardown.spec.ts` | full | 2 | ticket delete, worktree-only delete (branch survives) | 2 |
 | `resilience.spec.ts` | full | 4 | backend restart, `finished` and the review column surviving a pane close, compare-and-swap, two concurrent tickets | 5 |
 | `ports.spec.ts` | full | 2 | `.env` written and git-excluded, pool exhaustion → 409, slot reused after cancel | 3 |
+| `accept.spec.ts` | full | 1 | publish the branch as a PR, ticket to Done, agent retired | 1 |
+| `reject.spec.ts` | full | 2 | re-prompt back to In Progress destroying nothing, empty reason → 400 | 2 |
 
-**24 tests in all.** The three `fast` specs are **13 of them and run in ~6 s with no agent and no
-model cost, so run them freely** *(verified)*. The other four specs are 11 tests and **13 real agent
+**32 tests in all.** The three `fast` specs are **18 of them and run in ~7 s with no agent and no
+model cost, so run them freely** *(verified)*. The other six specs are 14 tests and **16 real agent
 spawns**, so `npm run e2e:full` costs real model turns and is not a routine check. The automatic
 In Review transition is asserted inside the existing completion test rather than in a new one,
 precisely so covering it cost **zero extra spawns**.
+
+*(Test counts verified with `playwright test --list`. The 13 spawns in the first four full specs
+were measured; the 3 added by `accept`/`reject` are counted from their `spawnTicket` calls, not
+yet observed on a run.)*
+
+`accept.spec.ts` **skips itself without `GITHUB_TOKEN`**, because it pushes to `asaadx/10x-test`
+and opens a real PR, then closes it in a failure-proof `finally`.
 
 **A completion spec's teardown must be `DELETE /tickets/:id`, not `/cancel`.** Cancel claims
 `in_progress → backlog`, and any test that waits for a turn to finish has a ticket that already

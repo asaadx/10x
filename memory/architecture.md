@@ -45,22 +45,26 @@ Line counts are `wc -l`, current as of this node.
 
 | File | Lines | Responsibility | I/O |
 | --- | --- | --- | --- |
-| `src/server.ts` | 485 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
-| `src/runner.ts` | 453 | `spawn` / `teardown` for one ticket; the readiness guard | Herdr socket, fs, `git` via `execFile` |
-| `src/ticket-store.ts` | 281 | Ticket persistence + `/tickets` handler bodies, input narrowing | SQLite |
-| `src/db.ts` | 285 | Schema, connection, row types, the status parse boundary, `claimTicket` CAS, port-slot reserve/release | SQLite (opens DB at import) |
+| `src/server.ts` | 603 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
+| `src/runner.ts` | 528 | `spawn` / `teardown` / `retireAgent` for one ticket; the readiness guard; event-stream reopen | Herdr socket, fs, `git` via `execFile` |
+| `src/db.ts` | 312 | Schema + in-place migration, connection, row types, the status parse boundary, `claimTicket` CAS, port-slot reserve/release, `setPullRequest` | SQLite (opens DB at import) |
+| `src/ticket-store.ts` | 291 | Ticket persistence + `/tickets` handler bodies, input narrowing | SQLite |
+| `src/db.test.ts` | 248 | Tests for the CAS, including across `in_review` and the Accept/Reject hand-backs, against a temp DB | SQLite (temp dir) |
 | `src/projects.ts` | 214 | Project CRUD, slug / repo / base-branch validation | SQLite, `existsSync` |
-| `src/reconcile.ts` | 167 | Read-only divergence + orphan reporting | Herdr socket (reads only) |
-| `src/herdr.ts` | 158 | Newline-JSON unix-socket client: `request`, `subscribe` | `node:net` |
-| `src/ports.ts` | 98 | **Pure.** Port-slot pool: cap, block arithmetic, `.env` body | none |
-| `src/lifecycle.ts` | 71 | **Pure.** Naming, event normalisation, readiness predicates | none |
-| `src/panes.ts` | 39 | `focusAgent`, `paneLocation`, `attachCommand` | Herdr socket (`attachCommand` is pure) |
-| `src/diagnostics.ts` | 40 | **Pure.** Per-run diagnostics record + `freshDiagnostics()` | none |
 | `src/lifecycle.test.ts` | 182 | Tests for the pure helpers | none |
-| `src/db.test.ts` | 140 | Tests for the CAS, including across `in_review`, against a temp DB | SQLite (temp dir) |
+| `src/reconcile.ts` | 167 | Read-only divergence + orphan reporting | Herdr socket (reads only) |
+| `src/herdr.ts` | 174 | Newline-JSON unix-socket client: `request`, `subscribe` with far-end close detection | `node:net` |
+| `src/github.ts` | 131 | `pushTicketBranch`, `openPullRequest`; token redaction on every error path | `git` via `execFile`, `fetch` |
 | `src/port-slots.test.ts` | 130 | Tests for reserve / release / reclaim, against a temp DB | SQLite (temp dir) |
+| `src/ports.ts` | 98 | **Pure.** Port-slot pool: cap, block arithmetic, `.env` body | none |
 | `src/ports.test.ts` | 78 | Tests for the pure allocator | none |
-| `public/` | 1597 | The board's browser half: markup, stylesheet, five ES modules — see [frontend](./frontend.md) | `fetch` |
+| `src/lifecycle.ts` | 71 | **Pure.** Naming, event normalisation, readiness predicates | none |
+| `src/ticket-store.test.ts` | 63 | Tests for ticket input narrowing | SQLite (temp dir) |
+| `src/github.test.ts` | 55 | Tests for PR body construction and token redaction | none |
+| `src/herdr.test.ts` | 107 | Tests for `onClose`, against a real unix socket | `node:net` (temp socket) |
+| `src/diagnostics.ts` | 40 | **Pure.** Per-run diagnostics record + `freshDiagnostics()` | none |
+| `src/panes.ts` | 39 | `focusAgent`, `paneLocation`, `attachCommand` | Herdr socket (`attachCommand` is pure) |
+| `public/` | 1630 | The board's browser half: markup, stylesheet, five ES modules — see [frontend](./frontend.md) | `fetch` |
 
 `lifecycle.ts`, `ports.ts` and `diagnostics.ts` are the only import-free modules, deliberately: they hold the logic that has actually broken, or that would break silently, so it must be testable without a Herdr session. A port collision surfaces as an `EADDRINUSE` inside somebody's worktree, never as an error on the board, which is exactly why the allocation policy lives apart from the SQL that stores it. `panes.ts` exports only `focusAgent`: the attach command is built in the frontend instead, because it needs `location.hostname` — which the server cannot know — so a server-side copy would be unreachable duplication ([frontend](./frontend.md)).
 
@@ -96,6 +100,7 @@ SQLite at `$DB_PATH`, defaulting to `$STATE_DIR/10x.db`, `STATE_DIR` defaulting 
 | `died` | INTEGER NOT NULL DEFAULT 0 | the pane exited — **not** the same as finished |
 | `branch`, `agent_name`, `session_dir` | TEXT (nullable) | null until first spawn |
 | `port_slot` | INTEGER (nullable) | index into the port pool; held while `in_progress` **or** `in_review` |
+| `pr_number`, `pr_url` | INTEGER / TEXT (nullable) | written together by `setPullRequest`, only when Accept opens the PR |
 | `created_at`, `updated_at` | TEXT NOT NULL | equal ⇒ never edited |
 | — | — | **`UNIQUE (project_id, number)`** |
 
@@ -122,7 +127,7 @@ A malformed value throws at load rather than falling back, so a typo cannot masq
 
 **A block is reserved for the ticket's active life, not leased to a running process.** It survives the move to `in_review`, and the boot-time reclaim spares both statuses, because a Preview started from review binds the same range. *(Verified: with a ticket sitting in `in_review` on slot 0, a backend restart logs no reclaim and the slot is still held afterwards.)*
 
-`db.ts` migrates an existing database in place: `CREATE TABLE IF NOT EXISTS` leaves it alone, so `port_slot` is added with `ALTER TABLE` when `PRAGMA table_info` says it is missing. The uniqueness has to be a separate `CREATE UNIQUE INDEX` because SQLite's `ADD COLUMN` rejects a UNIQUE constraint. *(Verified against a copy of a real `~/.10x/10x.db`.)*
+`db.ts` migrates an existing database in place: `CREATE TABLE IF NOT EXISTS` leaves it alone, so `addColumnIfMissing` adds `port_slot`, `pr_number` and `pr_url` with `ALTER TABLE` when `PRAGMA table_info` says a column is missing. The uniqueness has to be a separate `CREATE UNIQUE INDEX` because SQLite's `ADD COLUMN` rejects a UNIQUE constraint. *(Verified against a copy of a real `~/.10x/10x.db`.)*
 
 **`next_number` is why ticket numbers are safe.** The next number is claimed by *advancing* the counter, never by `MAX(number)+1`:
 
@@ -154,7 +159,7 @@ harmless, and what makes a lost claim mean *do nothing* ([operations](./operatio
 
 ## 6. HTTP surface
 
-`PORT` defaults to `4010`. Every JSON route answers `application/json`; a GET that no route claimed then falls through to the `public/` static handler described below, which is how `/`, `/index.html`, `/styles.css` and `/js/*.js` are served. Router excerpt this table is based on (`src/server.ts` `handle()`, lines 181–380):
+`PORT` defaults to `4010`. Every JSON route answers `application/json`; a GET that no route claimed then falls through to the `public/` static handler described below, which is how `/`, `/index.html`, `/styles.css` and `/js/*.js` are served. Router excerpt this table is based on (`src/server.ts` `handle()`, lines 183–498):
 
 ```ts
 if (method === "GET"  && path === "/projects") return json(listProjects());
@@ -167,7 +172,7 @@ if (projectMatch?.[1]) {
 }
 if (method === "GET"  && path.startsWith("/tickets")) { … return board(q?.get("project") …); }
 if (method === "POST" && path === "/tickets") { … }
-const m = /^\/tickets\/([^/]+)(\/spawn|\/cancel|\/worktree|\/focus)?$/.exec(path);
+const m = /^\/tickets\/([^/]+)(\/spawn|\/cancel|\/worktree|\/focus|\/accept|\/reject)?$/.exec(path);
 if (!m?.[1]) return json({ error: "not_found", path }, 404);
 …
 if (!action   && method === "PATCH")  { … }
@@ -177,10 +182,12 @@ if (action === "/focus"    && method === "POST")   { … }
 if (action === "/spawn"    && method === "POST")   { … }
 if (action === "/cancel"   && method === "POST")   { … }
 if (action === "/worktree" && method === "DELETE") { … }
+if (action === "/accept"   && method === "POST")   { … }
+if (action === "/reject"   && method === "POST")   { … }
 return json({ error: "not_found", path, method }, 404);
 ```
 
-**Twelve** JSON endpoints, plus one static handler covering everything under `public/`.
+**Fourteen** JSON endpoints, plus one static handler covering everything under `public/`.
 
 | # | Method | Path | Returns |
 | --- | --- | --- | --- |
@@ -196,6 +203,8 @@ return json({ error: "not_found", path, method }, 404);
 | 10 | POST | `/tickets/:id/cancel` | `{ok:true}` after teardown + branch delete |
 | 11 | DELETE | `/tickets/:id/worktree` | `{ok:true, branchKept}` — disk reclaimed, branch kept |
 | 12 | POST | `/tickets/:id/focus` | `{ok}` or `{ok:false, error:<herdr code>}` — always 200 |
+| 13 | POST | `/tickets/:id/accept` | the updated `Ticket` with `prNumber`/`prUrl`; `409 no_branch` / `409 not_in_review`, `500 missing_github_token`, `502` on a failed push or PR call (claim handed back) |
+| 14 | POST | `/tickets/:id/reject` | `{reason}` in, the updated `Ticket` out; `400 reason_required`, `409 no_agent` / `not_in_review` / `agent_not_alive` / `prompt_failed` |
 | — | GET | `/`, `/index.html`, `/styles.css`, `/js/*.js` | the board's static assets |
 
 **Naming and shape decisions.** The spawn endpoint is canonically **`/spawn`**; earlier drafts called it `/start`, `spawn` is the name, it is the only spelling in the code, and `/start` must not be reintroduced. `spawn` and `cancel` are **separate endpoints** because they are opposite operations with different side effects, and `GET /tickets` is a read — that is why there is no single "transition" endpoint taking a target state: one verb per irreversible act, so the destructive ones cannot be reached by passing a different string.

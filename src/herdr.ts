@@ -105,13 +105,19 @@ export type Subscription = { type: string; [key: string]: unknown };
  *
  * NOTE: `pane.agent_status_changed` REQUIRES a pane_id — there is no global
  * agent-status stream, so this is one connection per running ticket (memory/socket.md).
+ *
+ * `onClose` fires at most once, only when the connection drops from the far end (a
+ * graceful Herdr restart ends the socket without an `error`, per the module doc above).
+ * It is never called when the caller itself ends the stream via the returned `close()`.
  */
 export function subscribe(
   subscriptions: Subscription[],
   onEvent: (event: string, data: unknown) => void,
+  onClose?: () => void,
 ): { close: () => void } {
   let sock: Socket | null = connect(SOCKET_PATH);
   let buf = "";
+  let closedByUs = false;
 
   sock.on("connect", () => {
     sock?.write(
@@ -144,13 +150,22 @@ export function subscribe(
   });
 
   sock.on("error", (err) => {
-    // The stream is best-effort: reconciliation is the real safety net. Still say so,
-    // because a dead stream means ticket statuses silently stop updating.
     console.warn("herdr event stream error (statuses will stop updating):", err.message);
+  });
+
+  // Node always emits `close` after `error`, so this one handler covers both a clean far-end
+  // hangup (no `error` at all) and an error teardown. `close` is a one-time socket lifecycle
+  // event, so "at most once" needs no flag of its own. The caller is notified because a dead
+  // stream means statuses silently stop updating — reconciliation writes nothing back, it only
+  // reports `Divergence[]`, so nothing else will catch this.
+  sock.on("close", () => {
+    if (closedByUs) return;
+    onClose?.();
   });
 
   return {
     close: () => {
+      closedByUs = true;
       sock?.destroy();
       sock = null;
     },

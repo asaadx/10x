@@ -94,37 +94,43 @@ the human sitting at a second machine. Unverified.
 
 ---
 
-## Accept, Reject, Preview, Done, and merge policy
+## Preview, merge policy, and a reviewing agent
 
-**In Review itself is built** — the column, the status and the automatic transition into it
-([operations](./operations.md)). What is still deferred is every way *out* of it. Decisions already
-reached, so they are not re-litigated later:
+**Accept, Reject and Done are built** — the column, both endpoints and the buttons
+([operations](./operations.md)). The decisions behind them, kept because they are what stops the
+design being re-litigated wrongly:
 
 - **A worktree is only reclaimed on merge.** A completed agent keeps its worktree ([teardown](./teardown.md)).
   The *only* point at which a run's worktree is genuinely finished with is when the ticket is
   merged — because a passing review does **not** imply merge. Review can pass and more work can
-  still be added to the same branch.
+  still be added to the same branch. Accept therefore keeps both the worktree and the branch.
 - **The implementation agent stays ALIVE through In Review**, and the ticket keeps its port block.
-  A Reject re-prompts that same agent so it has the full context of what it already did, and a
-  Preview started from review binds the same range. (This reverses an earlier plan to tear the run
-  down on entry to review, which would have thrown away exactly the context Reject needs.)
-- **Done is terminal: delete only, and reached only by Accept.** That is why the Done column does
-  not exist yet — before Accept it would be unreachable and permanently empty.
-- **In Review starts as a manual human review**, later a fresh reviewing agent working on the same
-  branch.
+  Reject re-prompts that same agent so it has the full context of what it already did. The agent
+  and its transcript are killed at Accept, and the port slot is released there.
+- **Reject bounces to In Progress, not Backlog.** The branch, worktree and agent all still exist,
+  so a Backlog respawn would collide with an existing branch and a taken agent name, and
+  `worktree.create` is not idempotent.
+- **Accept opens a PR and never merges.** Human review on GitHub is the quality gate, so the app
+  never handles a merge conflict — it only *reads* mergeability to display it.
 - **In Review → In Progress is never automatic.** That is the infinite-loop guard, and it is what
-  Reject performs by hand. It must check for a live agent first: `agent.prompt` if one exists,
-  `agent.start` if not.
+  Reject performs by hand.
 - **Success is not verified by the app.** No commit counting or diffing; human PR review is the
   gate ([agent status](./agent-status.md)).
 
-Two consequences to keep in mind. Until merge exists, disk is user-managed: completed-but-unmerged
-tickets keep their worktrees indefinitely and reconciliation only makes them visible. And until
-Accept and Reject exist, **Delete is the only way out of In Review** — cancel claims
-`in_progress → backlog` and answers 409 from there.
+Still deferred:
 
-**Killing the dev server an in-progress agent started** is separate mechanics — finding a process
-by port rather than by ticket — and is not built.
+- **Preview** — needs per-project run config (command, port count, path to open), absent by
+  default so the button hides. A backend-only project has no meaningful preview, so do not
+  generalise for projects that do not exist yet. A preview started from review binds the ticket's
+  own port range.
+- **A fresh reviewing agent** spawned at In Review to check the code on the same branch. In Review
+  is a manual human review today.
+- **Killing the dev server an in-progress agent started** — separate mechanics, finding a process
+  by port rather than by ticket, because 10x did not spawn that process. The port block is the
+  only handle. Not built, and agents' dev servers leak until it is.
+
+Disk stays user-managed until merge handling exists: accepted-but-unmerged tickets keep their
+worktrees indefinitely and reconciliation only makes them visible.
 
 ---
 

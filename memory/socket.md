@@ -32,6 +32,10 @@ the request/response + pushed-event model. Do not reach for a WS client.
    persistent-connection assumption fails on its second call.
 2. **`events.subscribe` is the sole exception** — its connection stays open and streams events.
    First line is the `subscription_started` ack; every later line is a pushed event.
+   **A stream that dies is silent unless you listen for `'close'`.** Node emits `'close'` on a
+   graceful hangup and `'error'` only on ECONNRESET/EPIPE/connect failure, so a clean Herdr
+   restart fires no `'error'` at all. `subscribe()` takes an `onClose` callback for exactly this;
+   see G2 in [gotchas](./gotchas.md) for the reopen policy.
 3. **`params` is mandatory, even when empty.** `ping` without `params` returns
    `{"error":{"code":"invalid_request","message":"missing field `params`"}}`.
 
