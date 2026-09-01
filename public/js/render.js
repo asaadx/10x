@@ -122,6 +122,16 @@ export function setComposerSubmitting(submitting) {
   document.getElementById("c-submit").disabled = submitting;
 }
 
+/**
+ * Drive the drawer from `state.composerOpen`. `showModal` is what gives Escape and focus
+ * containment; calling it on an already-open dialog throws, hence the `open` guard.
+ */
+export function renderComposer() {
+  const dialog = document.getElementById("composer-dialog");
+  if (state.composerOpen && !dialog.open) dialog.showModal();
+  if (!state.composerOpen && dialog.open) dialog.close();
+}
+
 /* ---------------------------------------------------------------------
  * Panels
  * ------------------------------------------------------------------- */
@@ -430,6 +440,17 @@ export function renderBoard(handlers) {
 export function bindControls(handlers) {
   document.getElementById("project-select").addEventListener("change", (e) => {
     handlers.onProjectChange(e.target.value);
+  });
+  document.getElementById("new-ticket").addEventListener("click", () => {
+    handlers.onComposerOpen();
+  });
+  document.getElementById("c-cancel").addEventListener("click", () => {
+    handlers.onComposerClose();
+  });
+  // Fires for Escape and for any close we did not initiate, so state cannot drift out of
+  // sync with what is on screen.
+  document.getElementById("composer-dialog").addEventListener("close", () => {
+    handlers.onComposerClose();
   });
   document.getElementById("composer-form").addEventListener("submit", (e) => {
     e.preventDefault();

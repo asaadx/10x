@@ -13,6 +13,8 @@ export const state = {
   currentProjectId: null,
   ticketsData: { tickets: [], unowned: [] },
   boardErrorMsg: null,
+  /** Whether the New ticket drawer is open. Nothing else may open it. */
+  composerOpen: false,
   /** id of the ticket being edited inline; that card is frozen against re-render. */
   editingId: null,
   /** Live buffer for the open edit form, so a poll landing mid-edit can't clobber keystrokes. */

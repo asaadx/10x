@@ -39,6 +39,7 @@ import {
   readComposerDraft,
   renderBoard,
   renderCard,
+  renderComposer,
   renderProjectSelectors,
   setComposerSubmitting,
   showComposerError,
@@ -48,6 +49,8 @@ import {
 const handlers = {
   onProjectChange,
   onComposerSubmit,
+  onComposerOpen,
+  onComposerClose,
   onCardAction,
   onEditInput,
 };
@@ -85,6 +88,24 @@ function onProjectChange(value) {
   loadTickets();
 }
 
+function onComposerOpen() {
+  clearComposerErrors();
+  state.composerOpen = true;
+  renderComposer();
+}
+
+/**
+ * Also runs for Escape and the backdrop, via the dialog's own `close` event, so this is
+ * the single place the drawer's closed state is recorded. Text is cleared on the way out:
+ * reopening should be a fresh ticket, not a half-typed one.
+ */
+function onComposerClose() {
+  state.composerOpen = false;
+  clearComposerText();
+  clearComposerErrors();
+  renderComposer();
+}
+
 async function onComposerSubmit() {
   clearComposerErrors();
   const { title, description, projectId } = readComposerDraft();
@@ -103,6 +124,8 @@ async function onComposerSubmit() {
     const { ok, status, body } = await postTicket({ projectId, title, description });
     if (ok) {
       clearComposerText();
+      state.composerOpen = false;
+      renderComposer();
       await loadTickets();
       return;
     }
