@@ -42,16 +42,8 @@ function truncate(text, n) {
 }
 
 /* ---------------------------------------------------------------------
- * Header: connection pill, repo path, both project selectors
+ * Header: repo path, both project selectors
  * ------------------------------------------------------------------- */
-
-function renderConnStatus() {
-  const el = document.getElementById("conn-status");
-  // `data-state`, not a class: the pill can be restyled or replaced outright and this
-  // assignment still means the same thing.
-  el.dataset.state = state.live ? "live" : "failing";
-  document.getElementById("conn-status-text").textContent = state.live ? "live" : "poll failing";
-}
 
 export function renderProjectSelectors() {
   fillSelect(document.getElementById("project-select"), [
@@ -422,7 +414,6 @@ function renderColumn(containerId, countId, status, handlers) {
 }
 
 export function renderBoard(handlers) {
-  renderConnStatus();
   renderBoardError();
   renderUnowned();
   renderColumn("backlog-cards", "backlog-count", "backlog", handlers);

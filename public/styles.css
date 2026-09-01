@@ -101,7 +101,6 @@
   --column-max-height: calc(100vh - 240px);
   --icon-size: 15px;
   --badge-icon-size: 16px;
-  --dot-size: 6px;
   --composer-textarea-height: 32px;
   --edit-textarea-height: 50px;
   --field-error-height: 14px;
@@ -213,26 +212,6 @@ select:focus, input:focus, textarea:focus, button:focus-visible {
 }
 
 .repo-path .placeholder { color: var(--text-faint); }
-
-.conn-status {
-  margin-left: auto;
-  font-size: var(--fs-xs);
-  color: var(--text-faint);
-  display: flex;
-  align-items: center;
-  gap: var(--space-6);
-}
-
-.conn-status .dot {
-  width: var(--dot-size);
-  height: var(--dot-size);
-  border-radius: var(--radius-circle);
-  background: var(--green);
-  flex: none;
-}
-
-.conn-status[data-state="failing"] { color: var(--red); }
-.conn-status[data-state="failing"] .dot { background: var(--red); }
 
 /* ---------- layout ---------- */
 

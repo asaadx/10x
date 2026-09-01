@@ -67,11 +67,10 @@ async function loadTickets() {
   if (ok && body && Array.isArray(body.tickets)) {
     state.ticketsData = { tickets: body.tickets, unowned: Array.isArray(body.unowned) ? body.unowned : [] };
     state.boardErrorMsg = null;
-    state.live = true;
   } else {
     // Keep the last-known board on screen; a transient poll failure shouldn't blank it.
+    // The board-error banner is the only surface for this now.
     state.boardErrorMsg = messageFor(body, status);
-    state.live = false;
   }
   renderBoard(handlers);
 }
