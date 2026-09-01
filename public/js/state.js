@@ -35,6 +35,22 @@ export const pendingActions = new Set();
  */
 const copyConfirms = new Map();
 
+/**
+ * Ticket ids whose diagnostics block is expanded. Held here rather than in the DOM because
+ * `renderCard` rebuilds the card's innerHTML on every 1s poll, which recreates the <details>
+ * element and loses its own `open` state — so an expanded block collapsed a second later.
+ */
+const diagOpen = new Set();
+
+export function setDiag(id, open) {
+  if (open) diagOpen.add(id);
+  else diagOpen.delete(id);
+}
+
+export function diagIsOpen(id) {
+  return diagOpen.has(id);
+}
+
 export function findTicket(id) {
   return state.ticketsData.tickets.find((t) => t.id === id);
 }

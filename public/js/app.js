@@ -26,6 +26,7 @@ import {
 import {
   attachCommandFor,
   findTicket,
+  setDiag,
   markCopied,
   pendingActions,
   setActionError,
@@ -53,6 +54,7 @@ const handlers = {
   onComposerClose,
   onCardAction,
   onEditInput,
+  onDiagToggle,
 };
 
 /* ---------------------------------------------------------------------
@@ -263,6 +265,11 @@ function onCardAction(act, ticket) {
 
 function onEditInput(field, value) {
   state.editBuffer[field] = value;
+}
+
+/** The <details> element already moved; we only record it so the next render can restore it. */
+function onDiagToggle(id, open) {
+  setDiag(id, open);
 }
 
 /* ---------------------------------------------------------------------
