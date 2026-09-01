@@ -131,6 +131,38 @@ export const openPullRequest = async (
   throw new Error(redact(`GitHub API error (${response.status}): ${message}`, token));
 };
 
+/**
+ * `merged` and `closed` are terminal: a PR cannot leave them, so a stored terminal state is
+ * as good as a fresh read and needs no API call. Anything else — including `null`, which
+ * only ever means "no webhook has told us" — has to be asked about.
+ */
+export const needsLiveCheck = (state: PullRequestState | null): boolean =>
+  state !== "merged" && state !== "closed";
+
+/** Reads a PR's current state. Throws on any non-200, with the token redacted. */
+export const fetchPullRequestState = async (
+  repoPath: string,
+  prNumber: number,
+  token: string,
+): Promise<PullRequestState> => {
+  const { owner, repo } = await originOwnerRepo(repoPath);
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+  };
+  const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`, { headers });
+  const parsed: unknown = await response.json();
+
+  if (response.status !== 200) {
+    const message = stringField(parsed, "message") ?? JSON.stringify(parsed);
+    throw new Error(redact(`GitHub API error (${response.status}): ${message}`, token));
+  }
+
+  const merged = field(parsed, "merged", (v): v is boolean => typeof v === "boolean");
+  const rawState = stringField(parsed, "state");
+  return merged === true ? "merged" : rawState === "closed" ? "closed" : "open";
+};
+
 export type PullRequestUpdate = {
   url: string;
   state: PullRequestState;

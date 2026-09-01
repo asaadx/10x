@@ -25,7 +25,7 @@ forgotten new spec merely runs slower under `e2e:full` and never spawns unexpect
 
 **The glob matters and so do the quotes.** `node --test src` does not pick up `.ts` files —
 verified: it reports `✖ src (40ms) 'test failed'`. Quote the glob so the shell hands it to Node
-rather than expanding it. Current state: **105 tests, 24 suites, 0 failures**, `duration_ms` ≈ 400.
+rather than expanding it. Current state: **109 tests, 25 suites, 0 failures**, `duration_ms` ≈ 400.
 
 | Target | Why it is tested |
 | --- | --- |

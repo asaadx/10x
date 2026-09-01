@@ -45,7 +45,7 @@ Line counts are `wc -l`, current as of this node.
 
 | File | Lines | Responsibility | I/O |
 | --- | --- | --- | --- |
-| `src/server.ts` | 614 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
+| `src/server.ts` | 656 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
 | `src/runner.ts` | 528 | `spawn` / `teardown` / `retireAgent` for one ticket; the readiness guard; event-stream reopen | Herdr socket, fs, `git` via `execFile` |
 | `src/db.ts` | 361 | Schema + in-place migration, connection, row types, the status and PR-state parse boundaries, `claimTicket` CAS, port-slot reserve/release, `setPullRequest`, `setPullRequestState` | SQLite (opens DB at import) |
 | `src/ticket-store.ts` | 294 | Ticket persistence + `/tickets` handler bodies, input narrowing | SQLite |
@@ -54,7 +54,7 @@ Line counts are `wc -l`, current as of this node.
 | `src/lifecycle.test.ts` | 182 | Tests for the pure helpers | none |
 | `src/reconcile.ts` | 167 | Read-only divergence + orphan reporting | Herdr socket (reads only) |
 | `src/herdr.ts` | 174 | Newline-JSON unix-socket client: `request`, `subscribe` with far-end close detection | `node:net` |
-| `src/github.ts` | 160 | `pushTicketBranch`, `openPullRequest`, `pullRequestUpdate`; token redaction on every error path | `git` via `execFile`, `fetch` |
+| `src/github.ts` | 192 | `pushTicketBranch`, `openPullRequest`, `pullRequestUpdate`, `fetchPullRequestState`, `needsLiveCheck`; token redaction on every error path | `git` via `execFile`, `fetch` |
 | `src/port-slots.test.ts` | 130 | Tests for reserve / release / reclaim, against a temp DB | SQLite (temp dir) |
 | `src/ports.ts` | 98 | **Pure.** Port-slot pool: cap, block arithmetic, `.env` body | none |
 | `src/ports.test.ts` | 78 | Tests for the pure allocator | none |
@@ -209,7 +209,7 @@ return json({ error: "not_found", path, method }, 404);
 | 5 | GET | `/tickets[?project=<id>]` | `{tickets: LiveTicket[], unowned: Orphan[]}`; a `LiveTicket` is the stored row plus the live join `branch`, `agentName`, `agentStatus`, `hasWorktree`, `worktreePath`, `paneId`, `workspaceId`, `busy`, `diagnostics` |
 | 6 | POST | `/tickets` | `201` the created `Ticket` |
 | 7 | PATCH | `/tickets/:id` | the updated `Ticket` (title/description only) |
-| 8 | DELETE | `/tickets/:id` | `{ok}` after a full destructive teardown |
+| 8 | DELETE | `/tickets/:id` | `{ok}` after a full destructive teardown. **Guarded**: a ticket with a `pr_number` needs its PR merged or closed first — `409 pr_open` / `409 pr_state_unknown` ([teardown](./teardown.md)) |
 | 9 | POST | `/tickets/:id/spawn` | `{ok, workspaceId, paneId, worktreePath, branch, diagnostics}` |
 | 10 | POST | `/tickets/:id/cancel` | `{ok:true}` after teardown + branch delete |
 | 11 | DELETE | `/tickets/:id/worktree` | `{ok:true, branchKept}` — disk reclaimed, branch kept |

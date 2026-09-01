@@ -5,7 +5,7 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { redact, parseRemote, pullRequestBody, pullRequestUpdate } from "./github.ts";
+import { redact, parseRemote, pullRequestBody, pullRequestUpdate, needsLiveCheck } from "./github.ts";
 
 describe("redact", () => {
   test("removes a token embedded in a plain string", () => {
@@ -91,5 +91,23 @@ describe("pullRequestUpdate", () => {
   test("returns null for a non-object body", () => {
     assert.equal(pullRequestUpdate(null), null);
     assert.equal(pullRequestUpdate("not a payload"), null);
+  });
+});
+
+describe("needsLiveCheck", () => {
+  test("merged needs no API call — merged is terminal, a PR cannot leave it", () => {
+    assert.equal(needsLiveCheck("merged"), false);
+  });
+
+  test("closed needs no API call — closed is terminal, a PR cannot leave it", () => {
+    assert.equal(needsLiveCheck("closed"), false);
+  });
+
+  test("open needs a live check", () => {
+    assert.equal(needsLiveCheck("open"), true);
+  });
+
+  test("null needs a live check — null means no webhook told us, not that there is no PR, so treating it as safe-to-delete is the exact bug this guard exists to prevent", () => {
+    assert.equal(needsLiveCheck(null), true);
   });
 });

@@ -70,12 +70,29 @@ would destroy work the open PR still points at. `retireAgent` resolves the sessi
 the pane and `rm -rf`s the transcript. No `worktree.remove`, no branch delete. An agent that is
 already gone is not an error — there is simply nothing left to close.
 
-**Delete has no guard, and that is a known gap.** `DELETE /tickets/:id` runs the full destructive
-teardown from **any** column, including Done — force-removed worktree, `git branch -D`, transcript
-`rm -rf`, row dropped, **no audit trail** — with the only residue being unreachable git objects for
-`gc.pruneExpire`. The intended guard is to refuse deleting a ticket whose PR is neither merged nor
-closed and to tell the user to resolve it on GitHub first, which needs PR state from the webhook
-receiver ([github](./github.md)). Until it lands, treat Delete on a Done ticket as unsafe.
+**Delete refuses to orphan an open PR.** `DELETE /tickets/:id` still runs the full destructive
+teardown from any column — force-removed worktree, `git branch -D`, transcript `rm -rf`, row
+dropped, **no audit trail** — but a ticket with a `pr_number` must first be shown to have a PR that
+is merged or closed.
+
+**The guard reads GitHub live, and that is the whole point.** Trusting the stored `pr_state` would
+fail open exactly when it matters: the column is `null` whenever no webhook arrived, which is the
+common case, since `gh webhook forward` only runs when someone starts it and missed events are lost
+([github](./github.md)). So `needsLiveCheck` short-circuits only on a **terminal** stored state —
+`merged` and `closed` cannot regress, so a stored one is as good as a fresh read — and anything
+else, `null` included, triggers `fetchPullRequestState`.
+
+| Outcome | Response |
+|---|---|
+| stored state already `merged` / `closed` | proceed, no network call |
+| live read says `open` | `409 pr_open`, with the number and URL |
+| no `GITHUB_TOKEN` | `409 pr_state_unknown` |
+| the read throws | `409 pr_state_unknown` — **fail closed**, because the teardown is irreversible |
+| live read is terminal | persist it, then proceed |
+
+That write-back is deliberate: it is also the recovery path for a merge event missed while webhook
+forwarding was down. A ticket that never reached Accept has no `pr_number` and deletes exactly as
+it always did.
 
 **Re-dispatch means spawning a ticket whose worktree — and possibly whose live agent — already
 exists.** Herdr owns the panes and agents, so both survive a 10x backend restart untouched.
