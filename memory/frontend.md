@@ -13,14 +13,21 @@ this node.
 | Layer | File | Lines | Rule |
 | --- | --- | --- | --- |
 | transport | `js/api.js` | 88 | one `api()` wrapper — it never throws and never swallows, so a network failure and a 500 arrive in the same `{ok, status, body}` shape — plus a named function per endpoint the UI uses. **No DOM.** |
-| state | `js/state.js` | 87 | the `state` object, `actionErrors`, `pendingActions`, `copyConfirms`, and the derivations (`isBusy`, `cardIsProtected`, `attachCommandFor`). **No DOM, no `fetch`.** |
-| rendering | `js/render.js` | 433 | **every `document` reference in the frontend.** Reads state, writes markup, decides nothing. |
+| state | `js/state.js` | 103 | the `state` object, `actionErrors`, `pendingActions`, `copyConfirms`, and the derivations (`isBusy`, `cardIsProtected`, `attachCommandFor`, `prMetaFor`). **No DOM, no `fetch`.** |
+| rendering | `js/render.js` | 447 | **every `document` reference in the frontend.** Reads state, writes markup, decides nothing. |
 | wiring | `js/app.js` | 254 | what a click means, and the poll loop. **Touches no DOM.** |
 
-Three files sit outside the layering. `js/icons.js` (34) is a table, not a layer: the five icons JS
-renders — steer, finished, died, worktree, busy — in one map. `index.html` (81) is markup only: the
-landmarks, the composer, the unowned panel and the four columns. `styles.css` (653) is all styling
-and is read by nothing.
+Three files sit outside the layering. `js/icons.js` (50) is a table, not a layer: the eight icons JS
+renders — steer, finished, died, worktree, busy, and the three PR states — in one map.
+`index.html` (81) is markup only: the landmarks, the composer, the unowned panel and the four
+columns. `styles.css` (665) is all styling and is read by nothing.
+
+**The Done card's PR meta is the worked example of the layering.** `prMetaFor(ticket)` in
+`state.js` decides *whether* there is anything to show and returns `{url, number, state, additions,
+deletions}` or `null`; `render.js` only draws it. The state travels as `data-pr-state` on the
+container, never as a class, and is **absent when `prState` is `null`** — null means "no webhook has
+told us", which is not the same as `open`, so the card shows no icon rather than guessing one. The
+±LOC pair renders only when both halves are non-null, with a real U+2212 minus.
 
 The split exists so that **a redesign is layout, colours and icons only** — a change to
 `styles.css` and to the templates in `render.js` cannot alter what the board does.
@@ -85,13 +92,20 @@ status, never an `else`**, so a new status renders no action rather than the wro
 
 ## 4. Design tokens
 
-`styles.css` declares **77 custom properties, all of them on `:root`** — every colour, space,
+`styles.css` declares **78 custom properties, all of them on `:root`** — every colour, space,
 radius and type value in the design. The spacing scale is **named by its current pixel value**
 (`--space-9: 9px`): the design uses fourteen distinct spacings, enumerating them is the finding, and
 a name that lied about its value would make collapsing the list harder rather than easier. Two icons
 live in `:root` rather than in `icons.js` — `--icon-disclosure-closed` and
 `--icon-disclosure-open`, the diagnostics disclosure triangles — because they are CSS `content` and
 JS never renders them.
+
+**Adding a token means adding a line, never rewriting the block.** A missing custom property fails
+**silently** — `var(--gone)` resolves to nothing and the element quietly inherits, with no console
+error and no visual clue at the definition site. `--green` and `--green-bg` are referenced by four
+rules hundreds of lines below `:root` (the connection pill, the idle/done badge, the completion
+checkmark), so dropping them while adding `--purple` broke three unrelated surfaces and the only
+symptom was a green `+412` rendering purple. Verified in the browser, not by review.
 
 ## 5. It polls
 

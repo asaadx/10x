@@ -85,3 +85,19 @@ export function attachCommandFor(ticket) {
   const prefix = LOOPBACK.has(host) ? "herdr" : `herdr --remote ${host}`;
   return `${prefix} agent attach ${ticket.agentName}`;
 }
+
+/**
+ * What a Done card should show about its PR, or `null` when there is nothing to show — not
+ * done, or done without a PR yet. `state` stays whatever the last webhook reported (`null` if
+ * none ever arrived — see memory/frontend.md: that is "we have not heard", not "open").
+ */
+export function prMetaFor(ticket) {
+  if (ticket.status !== "done" || !ticket.prUrl) return null;
+  return {
+    url: ticket.prUrl,
+    number: ticket.prNumber,
+    state: ticket.prState ?? null,
+    additions: ticket.prAdditions ?? null,
+    deletions: ticket.prDeletions ?? null,
+  };
+}
