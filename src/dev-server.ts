@@ -39,8 +39,11 @@ export function parseListeners(output: string): Listener[] {
   const seen = new Set<string>();
   const listeners: Listener[] = [];
   for (const line of output.split("\n")) {
-    const pidMatch = line.match(/pid=(\d+)/);
-    if (!pidMatch) continue; // no pid — nothing to act on (also skips the header, if any)
+    // EVERY pid on the line, not just the first: one listening socket can be shared across
+    // worker processes (SO_REUSEPORT, a clustered dev server), and killing only the first
+    // sibling leaves the port held by the rest.
+    const pids = [...line.matchAll(/pid=(\d+)/g)];
+    if (pids.length === 0) continue; // no pid — nothing to act on (also skips the header, if any)
 
     const fields = line.trim().split(/\s+/);
     // Local address is the 4th column: State Recv-Q Send-Q Local-Address:Port ...
@@ -48,13 +51,17 @@ export function parseListeners(output: string): Listener[] {
     if (!localAddress) continue;
     // Port is everything after the LAST colon, so `[::]:4137` and `127.0.0.1:4137` both work.
     const port = Number(localAddress.slice(localAddress.lastIndexOf(":") + 1));
-    if (!Number.isInteger(port)) continue;
+    // `> 0` and not just `isInteger`: a bare trailing colon gives Number("") === 0, which is
+    // an integer, so the looser guard would accept a malformed line.
+    if (!Number.isInteger(port) || port <= 0) continue;
 
-    const pid = Number(pidMatch[1]);
-    const key = `${port}:${pid}`;
-    if (seen.has(key)) continue; // ss can list the same socket twice
-    seen.add(key);
-    listeners.push({ port, pid });
+    for (const match of pids) {
+      const pid = Number(match[1]);
+      const key = `${port}:${pid}`;
+      if (seen.has(key)) continue; // ss can list the same socket twice
+      seen.add(key);
+      listeners.push({ port, pid });
+    }
   }
   return listeners;
 }
@@ -67,6 +74,25 @@ async function isGone(pid: number): Promise<boolean> {
   } catch {
     return true; // ESRCH (or EPERM, which also means it's not ours to worry about further)
   }
+}
+
+/**
+ * True when `pid`'s working directory is inside `root`.
+ *
+ * Deliberately re-run immediately before escalating to SIGKILL rather than cached from the
+ * first check: SIGTERM may already have worked, and Linux may have recycled the pid during the
+ * grace. The likeliest recycler is one of the agent's OWN short-lived processes — `git`, a
+ * package manager, a build step — which run in this very worktree, so they would pass a stale
+ * containment proof. `isGone` cannot tell a recycled pid from a surviving one.
+ */
+async function containedIn(pid: number, root: string): Promise<boolean> {
+  let cwd: string;
+  try {
+    cwd = await realpath(`/proc/${pid}/cwd`);
+  } catch {
+    return false; // gone already, or unreadable — either way not provably ours
+  }
+  return cwd === root || cwd.startsWith(root + sep);
 }
 
 /**
@@ -95,31 +121,30 @@ export async function killDevServers(
     for (const pid of pids) {
       if (pid === process.pid || pid <= 1) continue; // never ourselves, never init
 
-      let cwd: string;
-      try {
-        cwd = await realpath(`/proc/${pid}/cwd`);
-      } catch {
-        // Gone already, or a permission error — either way not provably contained, so leave
-        // it alone rather than guess.
-        continue;
-      }
-
-      if (cwd !== root && !cwd.startsWith(root + sep)) {
+      if (!(await containedIn(pid, root))) {
         // Something else holding a port in our range is a collision to report, never
-        // something to shoot.
+        // something to shoot. Also covers a pid that vanished between `ss` and this check.
         skipped.push(pid);
-        console.warn(`[dev-server] pid ${pid} listens in block ${block.start}-${block.end} but cwd ${cwd} is outside worktree ${root}; not killing`);
+        console.warn(`[dev-server] pid ${pid} listens in block ${block.start}-${block.end} but is not inside worktree ${root}; not killing`);
         continue;
       }
 
       try {
         process.kill(pid, "SIGTERM");
-      } catch {
-        killed.push(pid); // already gone — that's success, not an error
+      } catch (err) {
+        // ESRCH means it exited between the listing and the signal — that is success. Anything
+        // else (EPERM) means it is alive and not ours to signal, so report it rather than
+        // claim a kill that did not happen.
+        if ((err as NodeJS.ErrnoException).code === "ESRCH") {
+          killed.push(pid);
+        } else {
+          skipped.push(pid);
+          console.warn(`[dev-server] pid ${pid} could not be signalled:`, err);
+        }
         continue;
       }
       await delay(KILL_GRACE_MS);
-      if (!(await isGone(pid))) {
+      if (!(await isGone(pid)) && (await containedIn(pid, root))) {
         try {
           process.kill(pid, "SIGKILL");
         } catch {

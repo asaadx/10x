@@ -379,10 +379,13 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
                   })
                   .catch((err) => console.warn(`[${id}] dev-server reap failed:`, err));
               } else {
-                // Happens after a 10x restart: `worktreePath` is a per-process cache, not
-                // persisted (memory/architecture.md, stored-vs-derived), so a re-attached run
-                // never had the chance to set it.
-                console.warn(`[${id}] cannot reap dev server: worktree path unknown (process restarted since spawn)`);
+                // Unreachable in practice, and kept only because `worktreePath` is optional on
+                // `RunState`: `spawn` sets it before it subscribes, and this closure cannot
+                // outlive the process that made that subscription, so any event able to reach
+                // here was delivered to a state that already has the path. It is NOT the
+                // restart case — after a restart no subscription exists at all, so this
+                // callback never runs and the ticket stays In Progress (gotchas.md G2).
+                console.warn(`[${id}] cannot reap dev server: worktree path unknown`);
               }
             }
           }

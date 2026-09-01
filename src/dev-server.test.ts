@@ -50,6 +50,23 @@ describe("parseListeners", () => {
     const line = [CAPTURED, CAPTURED].join("\n");
     assert.deepEqual(parseListeners(line), [{ port: 4137, pid: 768072 }]);
   });
+
+  // Both fixes came out of review. A shared listening socket (SO_REUSEPORT, a clustered dev
+  // server) lists every worker on one line, and taking only the first leaves the port held.
+  test("every pid on a shared-socket line is returned, not just the first", () => {
+    const line = 'LISTEN 0 511 127.0.0.1:4137 0.0.0.0:* users:(("node",pid=100,fd=20),("node",pid=101,fd=21))';
+    assert.deepEqual(parseListeners(line), [
+      { port: 4137, pid: 100 },
+      { port: 4137, pid: 101 },
+    ]);
+  });
+
+  // `Number("")` is 0 and `Number.isInteger(0)` is true, so an `isInteger`-only guard would
+  // have accepted a malformed address as port 0.
+  test("an address ending in a bare colon is rejected, not read as port 0", () => {
+    const line = 'LISTEN 0 511 127.0.0.1: 0.0.0.0:* users:(("x",pid=9,fd=3))';
+    assert.deepEqual(parseListeners(line), []);
+  });
 });
 
 describe("killDevServers", () => {
