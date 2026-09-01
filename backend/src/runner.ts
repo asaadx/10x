@@ -15,7 +15,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { HerdrError, request, subscribe } from "./herdr.ts";
 import { agentNameFor, branchFor, isAgentReady, normalizeEvent } from "./lifecycle.ts";
-import type { Diagnostics } from "./diagnostics.ts";
+import type { Diagnostics } from "./types.ts";
 import { ENV_FILE, envFileFor, type PortBlock } from "./ports.ts";
 
 /**

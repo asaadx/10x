@@ -1,57 +1,38 @@
 /**
- * Mirrors the backend's `Ticket` for the UI-only phase.
+ * The frontend's view of the shared vocabulary.
  *
- * Deliberately a copy, and deliberately temporary: `@10x/backend` is a workspace sibling, so
- * the wiring phase replaces this file with a type-only import from it. Duplication is exactly
- * the drift this monorepo was split to prevent — the frontend already once rendered
- * `prState`/`prAdditions`/`prDeletions` as `undefined` because its idea of a ticket lagged the
- * schema. Keep this file empty of anything but the shape.
+ * Not a copy any more: every shape below comes from `@10x/backend/types`, the single file both
+ * packages define these in. That file is import-free by design, and these are `import type`
+ * only, so `verbatimModuleSyntax` erases the whole thing at build — no backend code, and in
+ * particular no `node:sqlite`, reaches the bundle.
+ *
+ * The duplication this replaces is exactly the drift the monorepo was split to prevent: the
+ * frontend once rendered `prState`/`prAdditions`/`prDeletions` as `undefined` because its idea
+ * of a ticket lagged the schema, and it was missing `worktreePath`, `paneId`, `workspaceId` and
+ * `busy` entirely. Adding a field to the response is now a compile error here.
+ *
+ * Keep this file free of anything but the re-exports and what is genuinely frontend-local.
  */
 
-export type Status = "backlog" | "in_progress" | "in_review" | "done";
+// `Status` is also imported, not just re-exported: `COLUMNS` below needs it in local scope.
+import type { Status } from "@10x/backend/types";
 
-export type AgentStatus = "working" | "idle" | "done" | "died" | "blocked";
+export type {
+  BoardResponse,
+  Diagnostics,
+  Orphan,
+  Project,
+  PullRequestState,
+  Status,
+} from "@10x/backend/types";
 
-export type PullRequestState = "open" | "merged" | "closed";
-
-export type Diagnostics = {
-  paneBusyRetries: number;
-  neededReadinessPoll: boolean;
-  promptNotReadyRetries: number;
-  spawnMs: number;
-  readinessPolls: number;
-};
-
-export type Ticket = {
-  id: string;
-  number: number;
-  projectId: string;
-  title: string;
-  description: string;
-  status: Status;
-  branch: string | null;
-  agentName: string | null;
-  agentStatus: AgentStatus | null;
-  finished: boolean;
-  died: boolean;
-  hasWorktree: boolean;
-  prNumber: number | null;
-  prUrl: string | null;
-  prState: PullRequestState | null;
-  prAdditions: number | null;
-  prDeletions: number | null;
-  diagnostics: Diagnostics | null;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type Project = {
-  id: string;
-  name: string;
-  slug: string;
-  repoPath: string;
-  baseBranch: string;
-};
+/**
+ * The board renders the RESPONSE ticket, never the stored row, so `Ticket` here is
+ * `BoardTicket`. The backend's `Ticket` deliberately lacks `agentStatus`, `hasWorktree`,
+ * `diagnostics` and the rest — a component typed against it would compile and then render
+ * nothing for them, which is the bug this whole arrangement exists to make impossible.
+ */
+export type { BoardTicket as Ticket } from "@10x/backend/types";
 
 export type SortOrder = "newest" | "oldest";
 

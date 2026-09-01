@@ -16,7 +16,7 @@ import { createServer } from "node:http";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { request, HerdrError } from "./herdr.ts";
 import { extname, join, sep } from "node:path";
-import { freshDiagnostics, type Diagnostics } from "./diagnostics.ts";
+import { freshDiagnostics } from "./diagnostics.ts";
 import { agentNameFor, branchFor, isSettled } from "./lifecycle.ts";
 import { focusAgent } from "./panes.ts";
 import { createProject, deleteProject, listProjects, getProject, updateProject } from "./projects.ts";
@@ -37,10 +37,15 @@ import {
   reservePortSlot,
   setPullRequest,
   setPullRequestState,
-  type Project,
-  type PullRequestState,
-  type Ticket,
 } from "./db.ts";
+import type {
+  BoardResponse,
+  BoardTicket,
+  Diagnostics,
+  Project,
+  PullRequestState,
+  Ticket,
+} from "./types.ts";
 import { fetchPullRequestState, needsLiveCheck, openPullRequest, pullRequestUpdate, pushTicketBranch } from "./github.ts";
 import { blockFor } from "./ports.ts";
 import { killDevServers } from "./dev-server.ts";
@@ -146,7 +151,9 @@ async function board(projectFilter: string | undefined): Promise<Reply> {
     worktreeLists.flat().flatMap((w) => (w.branch ? [[w.branch, w]] : [])),
   );
 
-  const live = tickets.map((t) => {
+  // The `: BoardTicket` annotation is the point of types.ts: this object literal is the wire
+  // format, and without it a field added or dropped here diverged from the frontend silently.
+  const live = tickets.map((t): BoardTicket => {
     const branch = t.branch ?? branchFor(t.projectId, t.number);
     const agentName = t.agentName ?? agentNameFor(t.projectId, t.number);
     const agent = byAgentName.get(agentName);
@@ -165,7 +172,8 @@ async function board(projectFilter: string | undefined): Promise<Reply> {
     };
   });
 
-  return json({ tickets: live, unowned: orphanLists.flat() });
+  const payload: BoardResponse = { tickets: live, unowned: orphanLists.flat() };
+  return json(payload);
 }
 
 async function readBody(req: { on: (e: string, f: (c?: unknown) => void) => void }) {
