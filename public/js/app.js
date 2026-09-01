@@ -26,6 +26,7 @@ import {
 import {
   attachCommandFor,
   findTicket,
+  setDiag,
   markCopied,
   pendingActions,
   setActionError,
@@ -39,6 +40,7 @@ import {
   readComposerDraft,
   renderBoard,
   renderCard,
+  renderComposer,
   renderProjectSelectors,
   setComposerSubmitting,
   showComposerError,
@@ -48,8 +50,11 @@ import {
 const handlers = {
   onProjectChange,
   onComposerSubmit,
+  onComposerOpen,
+  onComposerClose,
   onCardAction,
   onEditInput,
+  onDiagToggle,
 };
 
 /* ---------------------------------------------------------------------
@@ -67,11 +72,10 @@ async function loadTickets() {
   if (ok && body && Array.isArray(body.tickets)) {
     state.ticketsData = { tickets: body.tickets, unowned: Array.isArray(body.unowned) ? body.unowned : [] };
     state.boardErrorMsg = null;
-    state.live = true;
   } else {
     // Keep the last-known board on screen; a transient poll failure shouldn't blank it.
+    // The board-error banner is the only surface for this now.
     state.boardErrorMsg = messageFor(body, status);
-    state.live = false;
   }
   renderBoard(handlers);
 }
@@ -84,6 +88,24 @@ function onProjectChange(value) {
   state.currentProjectId = value || null;
   renderProjectSelectors();
   loadTickets();
+}
+
+function onComposerOpen() {
+  clearComposerErrors();
+  state.composerOpen = true;
+  renderComposer();
+}
+
+/**
+ * Also runs for Escape and the backdrop, via the dialog's own `close` event, so this is
+ * the single place the drawer's closed state is recorded. Text is cleared on the way out:
+ * reopening should be a fresh ticket, not a half-typed one.
+ */
+function onComposerClose() {
+  state.composerOpen = false;
+  clearComposerText();
+  clearComposerErrors();
+  renderComposer();
 }
 
 async function onComposerSubmit() {
@@ -104,6 +126,8 @@ async function onComposerSubmit() {
     const { ok, status, body } = await postTicket({ projectId, title, description });
     if (ok) {
       clearComposerText();
+      state.composerOpen = false;
+      renderComposer();
       await loadTickets();
       return;
     }
@@ -241,6 +265,11 @@ function onCardAction(act, ticket) {
 
 function onEditInput(field, value) {
   state.editBuffer[field] = value;
+}
+
+/** The <details> element already moved; we only record it so the next render can restore it. */
+function onDiagToggle(id, open) {
+  setDiag(id, open);
 }
 
 /* ---------------------------------------------------------------------

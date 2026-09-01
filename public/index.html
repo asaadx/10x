@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="color-scheme" content="dark" />
+<meta name="color-scheme" content="light" />
 <title>10x — Backlog → In Progress → In Review</title>
 <link rel="stylesheet" href="./styles.css" />
 </head>
@@ -15,33 +15,38 @@
     <select id="project-select"></select>
   </div>
   <div class="repo-path" id="repo-path"></div>
-  <div class="conn-status" id="conn-status" data-state="live"><span class="dot"></span><span id="conn-status-text">live</span></div>
 </header>
 
-<section class="composer">
-  <h2>New ticket</h2>
-  <form class="composer-form" id="composer-form">
+<!--
+  The composer is a right-hand drawer, opened only from the Backlog column. A native
+  <dialog> rather than a toggled <aside>: Escape-to-close and focus containment come from
+  the platform instead of from hand-written JS that would have to live in render.js.
+-->
+<dialog class="sidebar" id="composer-dialog" aria-labelledby="composer-heading">
+  <form class="composer-form" id="composer-form" method="dialog">
+    <h2 id="composer-heading">New ticket</h2>
     <div class="field">
       <label for="c-title">Title</label>
       <input id="c-title" type="text" autocomplete="off" placeholder="Short summary" />
       <span class="field-error" id="c-title-error"></span>
     </div>
     <div class="field">
+      <label for="c-desc">Description</label>
+      <textarea id="c-desc" rows="6" placeholder="What should the agent do?"></textarea>
+      <span class="field-error" id="c-desc-error"></span>
+    </div>
+    <div class="field">
       <label for="c-project">Project</label>
       <select id="c-project"></select>
       <span class="field-error" id="c-project-error"></span>
     </div>
-    <div class="field">
-      <label for="c-desc">Description</label>
-      <textarea id="c-desc" rows="1" placeholder="What should the agent do?"></textarea>
-      <span class="field-error" id="c-desc-error"></span>
+    <div class="sidebar-actions">
+      <button type="button" class="ghost" id="c-cancel">Cancel</button>
+      <button type="submit" class="primary" id="c-submit">Add</button>
     </div>
-    <div class="field field-submit">
-      <button type="submit" class="primary" id="c-submit">Add ticket</button>
-      <span class="field-error" id="c-form-error"></span>
-    </div>
+    <span class="field-error" id="c-form-error"></span>
   </form>
-</section>
+</dialog>
 
 <div class="board-error" id="board-error" hidden></div>
 
@@ -56,10 +61,17 @@
   name carries the live count ("Backlog 1") without duplicating it. That name is
   the stable handle for assistive tech and for the e2e suite; a redesign may move,
   restyle or re-order these columns and the semantics do not move with it.
+
+  The New ticket button is a SIBLING of the heading, never inside it: `aria-labelledby`
+  points at the h2, so a button nested in it would append its label to the region's
+  accessible name ("Backlog 1 New ticket").
 -->
 <main class="board">
   <div class="column" role="region" aria-labelledby="backlog-heading" data-status="backlog">
-    <h2 id="backlog-heading">Backlog <span class="count" id="backlog-count">0</span></h2>
+    <div class="column-head">
+      <h2 id="backlog-heading">Backlog <span class="count" id="backlog-count">0</span></h2>
+      <button type="button" class="ghost" id="new-ticket">New ticket</button>
+    </div>
     <div class="cards" id="backlog-cards"></div>
   </div>
   <div class="column" role="region" aria-labelledby="in-progress-heading" data-status="in_progress">

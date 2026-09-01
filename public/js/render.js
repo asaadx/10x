@@ -20,6 +20,7 @@ import {
   actionErrors,
   cardIsProtected,
   copyConfirmActive,
+  diagIsOpen,
   isBusy,
   prMetaFor,
   state,
@@ -42,16 +43,8 @@ function truncate(text, n) {
 }
 
 /* ---------------------------------------------------------------------
- * Header: connection pill, repo path, both project selectors
+ * Header: repo path, both project selectors
  * ------------------------------------------------------------------- */
-
-function renderConnStatus() {
-  const el = document.getElementById("conn-status");
-  // `data-state`, not a class: the pill can be restyled or replaced outright and this
-  // assignment still means the same thing.
-  el.dataset.state = state.live ? "live" : "failing";
-  document.getElementById("conn-status-text").textContent = state.live ? "live" : "poll failing";
-}
 
 export function renderProjectSelectors() {
   fillSelect(document.getElementById("project-select"), [
@@ -130,6 +123,16 @@ export function setComposerSubmitting(submitting) {
   document.getElementById("c-submit").disabled = submitting;
 }
 
+/**
+ * Drive the drawer from `state.composerOpen`. `showModal` is what gives Escape and focus
+ * containment; calling it on an already-open dialog throws, hence the `open` guard.
+ */
+export function renderComposer() {
+  const dialog = document.getElementById("composer-dialog");
+  if (state.composerOpen && !dialog.open) dialog.showModal();
+  if (!state.composerOpen && dialog.open) dialog.close();
+}
+
 /* ---------------------------------------------------------------------
  * Panels
  * ------------------------------------------------------------------- */
@@ -177,7 +180,8 @@ function fmtDiagValue(v) {
   return String(v);
 }
 
-function diagBlock(diagnostics) {
+function diagBlock(ticket) {
+  const diagnostics = ticket.diagnostics;
   if (!diagnostics) return "";
   const rows = DIAG_FIELDS.map(([key, label, flagFn]) => {
     const raw = diagnostics[key];
@@ -188,7 +192,7 @@ function diagBlock(diagnostics) {
   }).join("");
   const raced = Boolean(diagnostics.paneBusyRetries > 0 || diagnostics.neededReadinessPoll || diagnostics.promptNotReadyRetries > 0);
   return `
-      <details class="diag">
+      <details class="diag"${diagIsOpen(ticket.id) ? " open" : ""}>
         <summary>diagnostics ${raced ? '<span data-race-tag>· spawn race fired (guard worked, this is normal)</span>' : ""}</summary>
         <table>${rows}</table>
         <div class="diag-note">Highlighted values mean a retry guard caught a transient race (e.g. a freshly created pane not yet at its prompt) and recovered on its own — not a failure.</div>
@@ -310,7 +314,7 @@ function buildCardBody(ticket) {
       <div class="card-actions">${actions.join("")}</div>
       ${copyConfirmActive(ticket.id) ? `<div class="copy-confirm">copied — command ready to paste</div>` : ""}
       ${err ? `<div class="card-error">${escapeHtml(err)}</div>` : ""}
-      ${diagBlock(ticket.diagnostics)}
+      ${diagBlock(ticket)}
     `;
 }
 
@@ -334,6 +338,13 @@ function attachCardHandlers(el, ticket, handlers) {
     const act = btn.getAttribute("data-act");
     btn.addEventListener("click", () => handlers.onCardAction(act, ticket));
   });
+
+  // Let <details> own the interaction and just record the outcome: the element's own `open`
+  // dies with the next innerHTML rebuild, so state has to remember it. Listening for `toggle`
+  // rather than clicking the summary avoids racing the browser's own default behaviour.
+  const diag = el.querySelector("details.diag");
+  if (diag) diag.addEventListener("toggle", () => handlers.onDiagToggle(ticket.id, diag.open));
+
   if (state.editingId === ticket.id) {
     el.querySelector('[data-field="title"]')
       .addEventListener("input", (e) => handlers.onEditInput("title", e.target.value));
@@ -422,7 +433,6 @@ function renderColumn(containerId, countId, status, handlers) {
 }
 
 export function renderBoard(handlers) {
-  renderConnStatus();
   renderBoardError();
   renderUnowned();
   renderColumn("backlog-cards", "backlog-count", "backlog", handlers);
@@ -439,6 +449,17 @@ export function renderBoard(handlers) {
 export function bindControls(handlers) {
   document.getElementById("project-select").addEventListener("change", (e) => {
     handlers.onProjectChange(e.target.value);
+  });
+  document.getElementById("new-ticket").addEventListener("click", () => {
+    handlers.onComposerOpen();
+  });
+  document.getElementById("c-cancel").addEventListener("click", () => {
+    handlers.onComposerClose();
+  });
+  // Fires for Escape and for any close we did not initiate, so state cannot drift out of
+  // sync with what is on screen.
+  document.getElementById("composer-dialog").addEventListener("close", () => {
+    handlers.onComposerClose();
   });
   document.getElementById("composer-form").addEventListener("submit", (e) => {
     e.preventDefault();
