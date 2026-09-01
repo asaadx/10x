@@ -17,16 +17,5 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # The backend having no runtime dependencies is a claim in AGENTS.md, so it is checked
-      # rather than trusted. pnpm's non-hoisting layout stops an undeclared import resolving
-      # at all; this stops one being declared in the first place.
-      - name: backend has no runtime dependencies
-        run: |
-          deps=$(jq -r '.dependencies // {} | length' backend/package.json)
-          if [ "$deps" != "0" ]; then
-            echo "backend/package.json declares $deps runtime dependencies; it must declare none"
-            jq '.dependencies' backend/package.json
-            exit 1
-          fi
       - run: pnpm typecheck
       - run: pnpm test

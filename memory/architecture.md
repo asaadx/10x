@@ -15,7 +15,7 @@ which one spawns real agents). The Herdr/OMP behaviour this code is written agai
 | --- | --- |
 | Runtime | Node **24** (`engines.node: ">=24"`); verified on `v24.19.0` |
 | Language | TypeScript executed directly — `node backend/src/server.ts`, no build step |
-| Runtime dependencies | **zero**; `backend/package.json` has no `dependencies` key at all, and CI fails the build if one appears |
+| Runtime dependencies | **zero**; `backend/package.json` has no `dependencies` key at all |
 | devDependencies | `typescript`, `@types/node` for `tsc --noEmit`, plus `@playwright/test` for the e2e suite — all at the workspace root, none in `backend/`. No runtime dependency, ever. |
 | Built-ins used | `node:sqlite`, `node:http`, `node:net`, `node:test`, `node:fs`, `node:child_process`, `node:timers/promises` |
 | tsconfig | `module`/`moduleResolution: nodenext`, `allowImportingTsExtensions`, `noEmit`, `strict`, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`, `erasableSyntaxOnly`, `target ES2023`; `include` covers `backend/src/`, `e2e/` and `playwright.config.ts` |
@@ -37,8 +37,9 @@ belongs to neither and sits at the root with the tooling that runs it.
 Two reasons the split exists, both load-bearing:
 
 - **The zero-dependency claim stays checkable.** A single manifest would have put React, Vite and
-  Tailwind in the same tree as the server. Now the backend's manifest can be asserted empty, and CI
-  does assert it.
+  Tailwind in the same tree as the server. Separating them keeps `backend/package.json` a manifest
+  you can read and see is empty. Nothing enforces that in CI — it rests on pnpm's resolution and on
+  not adding one.
 - **pnpm, not npm, because 10x spawns agents into git worktrees.** Every worktree is a full
   checkout, so npm would materialise `node_modules` once per agent; pnpm hard-links from one
   content-addressable store, so N worktrees cost one copy on disk and every install after the first
