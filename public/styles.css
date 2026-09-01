@@ -44,6 +44,8 @@
   --green-bg: rgba(87, 176, 107, 0.12);
   --grey: #7d828c;
   --grey-bg: rgba(125, 130, 140, 0.1);
+  /* GitHub's merged-PR purple — nothing else in the palette fits a merge state. */
+  --purple: #a371f7;
 
   /* ---------- typography ---------- */
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
@@ -540,6 +542,16 @@ button.icon-btn svg { width: var(--icon-size); height: var(--icon-size); display
 }
 
 .card-meta a { color: var(--accent); }
+
+/* PR state: GitHub's own convention — merged purple, closed red, open green. `data-pr-state`
+ * is absent (not "open") when no webhook has told us anything — see memory/frontend.md. */
+.card-meta[data-pr-state="merged"] { color: var(--purple); }
+.card-meta[data-pr-state="closed"] { color: var(--red); }
+.card-meta[data-pr-state="open"] { color: var(--green); }
+.card-meta[data-pr-state] svg { width: var(--fs-xs); height: var(--fs-xs); vertical-align: -1px; }
+
+.pr-add { color: var(--green); }
+.pr-del { color: var(--red); }
 
 .died-note {
   background: var(--red-bg);

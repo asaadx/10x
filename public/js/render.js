@@ -21,6 +21,7 @@ import {
   cardIsProtected,
   copyConfirmActive,
   isBusy,
+  prMetaFor,
   state,
 } from "./state.js";
 
@@ -218,6 +219,23 @@ function badgeIcon(kind, title) {
   return `<span class="badge-icon" data-icon="${kind}" title="${escapeAttr(title)}">${icons[kind]}</span>`;
 }
 
+/** kind -> icon key, matching the state names `prMetaFor` returns exactly. */
+const PR_STATE_ICONS = { merged: "prMerged", closed: "prClosed", open: "prOpen" };
+
+/**
+ * `state === null` means no webhook has landed for this PR yet — not "open". We draw no icon
+ * rather than guess a state we were never told (memory/frontend.md).
+ */
+function prMetaBlock(pr) {
+  if (!pr) return "";
+  const icon = pr.state ? `<span data-icon="${escapeAttr(PR_STATE_ICONS[pr.state])}">${icons[PR_STATE_ICONS[pr.state]]}</span>` : "";
+  const loc = pr.additions !== null && pr.deletions !== null
+    ? ` <span class="pr-add">+${escapeHtml(String(pr.additions))}</span> <span class="pr-del">\u2212${escapeHtml(String(pr.deletions))}</span>`
+    : "";
+  const link = `<a href="${escapeAttr(pr.url)}" target="_blank" rel="noopener noreferrer">PR #${escapeHtml(String(pr.number))}</a>`;
+  return `<div class="card-meta"${pr.state ? ` data-pr-state="${escapeAttr(pr.state)}"` : ""}>${icon}${link}${loc}</div>`;
+}
+
 function buildCardBody(ticket) {
   const busy = isBusy(ticket);
   const badges = [statusBadge(ticket.agentStatus ?? null)];
@@ -282,11 +300,7 @@ function buildCardBody(ticket) {
       <div class="card-title">${escapeHtml(ticket.title)}</div>
       <div class="card-desc" title="${escapeAttr(ticket.description || "")}">${escapeHtml(truncate(ticket.description, 140))}</div>
       ${ticket.branch ? `<div class="card-meta"><span>branch: ${escapeHtml(ticket.branch)}</span></div>` : ""}
-      ${
-        ticket.status === "done" && ticket.prUrl
-          ? `<div class="card-meta"><a href="${escapeAttr(ticket.prUrl)}" target="_blank" rel="noopener noreferrer">PR #${escapeHtml(String(ticket.prNumber))}</a></div>`
-          : ""
-      }
+      ${prMetaBlock(prMetaFor(ticket))}
       ${
         ticket.died && !ticket.finished
           ? `<div class="died-note">Run died — the pane exited unexpectedly. This is NOT a finished ticket. The worktree was deliberately kept so you can inspect it before deciding what to do.</div>`
