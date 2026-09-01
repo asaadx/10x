@@ -9,7 +9,9 @@
   },
   "scripts": {
     "dev": "pnpm --filter @10x/backend dev",
-    "typecheck": "tsc --noEmit",
+    "dev:web": "pnpm --filter @10x/frontend dev",
+    "build": "pnpm --filter @10x/frontend build",
+    "typecheck": "tsc --noEmit && pnpm --filter @10x/frontend typecheck",
     "test": "pnpm -r test",
     "e2e": "playwright test --project=fast",
     "e2e:full": "playwright test --project=full"
