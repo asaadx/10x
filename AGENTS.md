@@ -1,5 +1,13 @@
 # AGENTS.md
 
+**Applies to anyone changing this code** — a human at the keyboard, an assistant, or a ticket agent
+spawned by 10x into its own worktree.
+
+> **Landing work** — branching, pull requests, merging, releases — is
+> [`WORKFLOW.md`](./WORKFLOW.md). **If you were spawned to implement a single ticket, that file is
+> not yours**: you are already on your branch, you commit there, and you stop. Do not push, do not
+> open a pull request, do not switch branches.
+
 ## Memory
 
 **Before any broad investigation — repo-wide greps, reading files to build a mental model, tracing
@@ -26,21 +34,7 @@ normalise (`event.replaceAll(".", "_")`) and never match a literal event name �
 [`memory/socket.md`](./memory/socket.md). A wrong name fails **silently**: no error, just events
 that never arrive.
 
-## Git
-
-**Never commit to `master` or `dev`.** `master` is the release branch and the remote default; `dev`
-is integration. Both are reached only by merged PR.
-
-```bash
-git switch dev && git pull && git switch -c feat/<slug>    # always branch first
-```
-
-**Never push to `master`.** Never `git push --force`; `--force-with-lease` is allowed only on your
-own open PR branch. **Never force a merge** — no `gh pr merge --admin`, no bypassing a failing or
-pending check, no merging your own PR to dodge review. Every one of these needs **explicit user
-approval, per instance.** Approval for one force-push is not standing permission.
-
-### Commits
+## Commits
 
 **Small and surgical: one logical change per commit.** A reviewer should be able to reconstruct the
 reasoning from the log, and a bad commit should be revertable without taking unrelated work with it.
@@ -56,24 +50,20 @@ Scope is the touched area when it clarifies (`feat(spawn):`, `fix(db):`). Body e
 the diff already shows what. Breaking change → `!` after the type (`feat(api)!:`) **and** a
 `BREAKING CHANGE:` footer.
 
-### Before opening a PR
+## Finish green
 
-**Run CI locally and get it green first — a failing remote run burns GitHub runner minutes for
-information you could have had in two seconds.**
+Before you call anything done:
 
 ```bash
 npm run typecheck && npm test
 ```
 
-Then open the PR — never merge in its place:
+Both are free and take seconds. A commit that does not typecheck, or that reddens the suite, is not
+finished work.
 
-```bash
-gh pr create --base dev --fill
-```
+**Never run `npm run e2e:full`.** It spawns **sixteen real coding agents** and costs real money.
+It needs explicit human permission, per run — being asked to "test your change" is not that
+permission.
 
-### Versioning
-
-[Semver](https://semver.org) on `package.json` `version`, tagged `v<version>` on `master` at
-release. Pre-`1.0.0`, so the API is unstable by declaration: `fix` → patch, `feat` → minor,
-breaking → minor (not major) until `1.0.0`. Bump only when the user calls a release; a bump is never
-a side effect of a feature PR.
+`npm run e2e` is agent-free but needs a live Herdr socket and binds port **4310**, so two tickets
+running it at once collide. Run it only if your ticket actually touches the e2e suite.
