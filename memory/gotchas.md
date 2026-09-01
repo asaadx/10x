@@ -116,17 +116,20 @@ Recorded so nobody assumes these are proven.
   the only dead-pane detection for that window. Covered by `src/herdr.test.ts` against a real unix
   socket; falsifiable (neuter the handler and two of its three tests time out).
 
-  Four options were considered and **none chosen**: **A** subscribe at boot for every
-  `in_progress` ticket; **B** = A plus persisting `sawWorking`, so a restart mid-turn cannot
-  mistake the first settle for completion; **C** drop subscriptions entirely and poll `agent.get`;
-  **D** derive the transition from status alone — **unsound**, because the first `idle` arrives
-  before the prompt ([agent-status](./agent-status.md)). A plain boot catch-up
-  (`in_progress AND finished → in_review`) was designed and **deliberately dropped**: it makes
-  steering worse, since restarting while you are talking to an agent jumps the ticket immediately.
+  **The mechanism that closes the restart half needs no subscription at all:** a
+  `state_change_seq` recorded at prompt time and persisted beside the ticket turns completion into
+  one point-in-time `agent.get`
+  ([agent-status](./agent-status.md)) — verified against a live Herdr, not yet built. That is what
+  makes "derive the transition from the agent's current state" sound: status *alone* is not enough,
+  because the first `idle` arrives before the prompt, but status paired with a counter that has
+  moved since the prompt is. A plain boot catch-up (`in_progress AND finished → in_review`) was
+  designed and **deliberately dropped**, and still should be: it makes steering worse, since
+  restarting while you are talking to an agent jumps the ticket immediately.
 
-  **Operational consequence: do not restart the board while an agent is working.** If Herdr
-  restarts, restart the board *after* it. A Herdr server restart is still unaddressed: panes and
-  agents die with it.
+  **Until it is built: do not restart the board while an agent is working.** If Herdr restarts,
+  restart the board *after* it. A Herdr server restart is still unaddressed: panes and agents die
+  with it, and it is also the one thing that resets `state_change_seq` — which fails closed,
+  stalling a ticket rather than falsely completing one.
 - **G3 — concurrency, proven at two agents (verified).** Two tickets spawned with `Promise.all`
   both reached ready in 3.2-3.9 s, ran their turns simultaneously, and each committed its own
   file: distinct branches, worktrees, agent names and panes, with a third unrelated agent live in

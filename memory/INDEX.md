@@ -53,8 +53,11 @@ strace evidence, the 6-trial race table, the required guard, and measured timing
 
 **[agent-status](./agent-status.md)** — `idle` and `done` are the **same** state; the first `idle`
 arrives *before* the prompt; a turn ending is not the ticket succeeding; a prose question is
-indistinguishable from success. A multi-step prompt is **one** turn (verified).
-`idle · done · working · blocked · unknown · completion · ask tool · agent_blocked`
+indistinguishable from success. A multi-step prompt is **one** turn. And the one that removes a
+whole class of restart bugs: **`state_change_seq` turns completion into a single point-in-time
+read**, no event subscription — while `revision` is pane output noise and must never be used for
+it (all verified).
+`idle · done · working · blocked · unknown · completion · ask tool · agent_blocked · state_change_seq · revision · point-in-time`
 
 **[naming](./naming.md)** — **a ticket's worktree is identified by its branch, never by a folder
 path.** Herdr derives the directory from the branch, lowercased. The three identifiers and their
@@ -115,8 +118,9 @@ gaps **G2–G6** (restart resilience, concurrency, pnpm, attention-aware transit
 
 **[verification](./verification.md)** — how to reproduce every claim from scratch, and **how to
 verify a Herdr name against the schema before writing code against it**. The schema proves a name
-exists but *not* its wire separator.
-`probe · repro · herdr api schema · EventKind · falsifiable`
+exists but *not* its wire separator. Includes the `state_change_seq` probe recipe and the
+five-dial residue check a probe owes afterwards.
+`probe · repro · herdr api schema · EventKind · falsifiable · state_change_seq · residue`
 
 **[parking-lot](./parking-lot.md)** — deliberately deferred, each with research attached. **Check
 here before designing anything that feels out of scope.** Accept/Reject/Preview and Done, merge
