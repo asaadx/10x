@@ -34,8 +34,11 @@ read-then-write. Three consequences worth knowing:
 
 **The agent stays alive through In Review, and the ticket keeps its port slot.** Both are
 deliberate: a Reject has to re-prompt the same agent with its full context, and a Preview started
-from review binds the same port range. Killing the dev server that agent may have started is
-separate mechanics and is not built.
+from review binds the same port range. **The agent's dev server is killed at that moment**, though
+— the reserved block is the only handle 10x has on a process it never spawned, so `dev-server.ts`
+finds what listens in the block and kills it **only** after proving the process's cwd is inside
+this ticket's worktree. A port alone is not proof of ownership. The reap is fire-and-forget with
+an attached catch: a kill that fails must never fail the column transition that already happened.
 
 **A ticket in review has two routes out, both by hand: Accept and Reject.** Cancel claims
 `in_progress → backlog` and answers 409 from review, so an In Review card renders Accept and
