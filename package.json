@@ -8,7 +8,8 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev": "pnpm --filter @10x/backend dev",
+    "dev": "pnpm -r --parallel dev",
+    "dev:api": "pnpm --filter @10x/backend dev",
     "dev:web": "pnpm --filter @10x/frontend dev",
     "build": "pnpm --filter @10x/frontend build",
     "typecheck": "tsc --noEmit && pnpm --filter @10x/frontend typecheck",
