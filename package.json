@@ -14,8 +14,8 @@
     "build": "pnpm --filter @10x/frontend build",
     "typecheck": "tsc --noEmit && pnpm --filter @10x/frontend typecheck",
     "test": "pnpm -r test",
-    "e2e": "playwright test --project=fast",
-    "e2e:full": "playwright test --project=full"
+    "e2e": "pnpm build && playwright test --project=fast",
+    "e2e:full": "pnpm build && playwright test --project=full"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
