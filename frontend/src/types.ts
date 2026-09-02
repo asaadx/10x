@@ -2,10 +2,11 @@
  * The frontend's view of the shared vocabulary.
  *
  * Not a copy any more: every shape below comes from `@10x/backend/types`, the single file both
- * packages define these in. All but one of them are `import type`, which `verbatimModuleSyntax`
- * erases at build; the exception is `PLAYBOOKS`, a seven-string array. That file is import-free
- * by design, so even the value export pulls in nothing but itself — no backend code, and in
- * particular no `node:sqlite`, reaches the bundle.
+ * packages define these in. The backend is the source of truth for that vocabulary, and a
+ * vocabulary is data, so one value — `PLAYBOOKS` — crosses alongside the types rather than
+ * being re-stated here. The rest are `import type`, which `verbatimModuleSyntax` erases at
+ * build. That file is import-free by design, so even the value export pulls in nothing but
+ * itself — no backend code, and in particular no `node:sqlite`, reaches the bundle.
  *
  * The duplication this replaces is exactly the drift the monorepo was split to prevent: the
  * frontend once rendered `prState`/`prAdditions`/`prDeletions` as `undefined` because its idea
@@ -19,7 +20,8 @@
 import type { Status } from "@10x/backend/types";
 
 // `PLAYBOOKS` is a value, not a type, so it needs its own re-export line: it is the runtime
-// list the backend validates against, and the picker builds its options from the same array.
+// list the backend validates against, and the picker builds its options — slug and display
+// name both — from the same array.
 export { PLAYBOOKS } from "@10x/backend/types";
 
 export type {

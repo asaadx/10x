@@ -148,28 +148,13 @@ function AttachmentDropZone() {
   );
 }
 
-// Display names for each playbook live here once, so the picker below labels its options from
-// this map instead of repeating a name per profile. Named `PLAYBOOK_LABELS`, not `PLAYBOOKS`:
-// that name belongs to the shared slug array this file imports, and labels are presentation,
-// which is why the map lives here and the vocabulary does not. `Record<Playbook, string>`
-// makes a missing label a compile error the moment the shared array grows a slug.
-const PLAYBOOK_LABELS: Record<Playbook, string> = {
-  fullstack: "Full-stack",
-  frontend: "Frontend",
-  backend: "Backend",
-  database: "Database",
-  devops: "DevOps",
-  docs: "Docs",
-  research: "Research",
-};
-
 // A `<select>` hands back a bare string, so this is the boundary where that string becomes a
 // `Playbook`. A membership test against the shared array rather than a cast: the state is
 // typed against exactly the list the API validates against, so nothing but a real playbook
 // can reach it, and an option that ever drifted out of `PLAYBOOKS` would be ignored here
 // instead of being sent as a write the backend then rejects.
 const isPlaybook = (value: string): value is Playbook =>
-  PLAYBOOKS.some((slug) => slug === value);
+  PLAYBOOKS.some((playbook) => playbook.slug === value);
 
 /**
  * Opened either from the Backlog column's New ticket button, with `ticket` null, or from a
@@ -292,9 +277,9 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
               }}
               className="w-full"
             >
-              {PLAYBOOKS.map((slug) => (
+              {PLAYBOOKS.map(({ slug, name }) => (
                 <NativeSelectOption key={slug} value={slug}>
-                  {PLAYBOOK_LABELS[slug]}
+                  {name}
                 </NativeSelectOption>
               ))}
             </NativeSelect>

@@ -32,23 +32,28 @@ export type PullRequestState = "open" | "merged" | "closed";
  * as a bare `string` because Herdr owns that vocabulary, 10x owns this one, so a closed union
  * is safe and gives the board an exhaustive option list.
  *
- * The array is the declaration and the type is derived from it, never the other way around:
- * the list is needed at runtime as well as at compile time, because the PATCH validator in
- * ticket-store.ts tests membership against exactly these values. A hand-written union beside
- * a hand-written validation list is two copies of one fact, and they drift silently — the
- * only symptom is the board offering a value the API then refuses to write.
+ * The array is the whole vocabulary — slug plus display name — and the type is derived from
+ * it, never the other way around: the list is needed at runtime as well as at compile time,
+ * because the PATCH validator in ticket-store.ts tests membership against exactly these
+ * slugs. A hand-written union beside a hand-written validation list is two copies of one
+ * fact, and they drift silently — the only symptom is the board offering a value the API then
+ * refuses to write.
+ *
+ * The name lives here rather than in a frontend lookup table because a playbook is a named
+ * thing: splitting the name off made two places to edit and two places to drift. Array order
+ * is the order the picker offers, so that is one fact in one place too.
  */
 export const PLAYBOOKS = [
-  "fullstack",
-  "frontend",
-  "backend",
-  "database",
-  "devops",
-  "docs",
-  "research",
+  { slug: "fullstack", name: "Full-stack" },
+  { slug: "frontend", name: "Frontend" },
+  { slug: "backend", name: "Backend" },
+  { slug: "database", name: "Database" },
+  { slug: "devops", name: "DevOps" },
+  { slug: "docs", name: "Docs" },
+  { slug: "research", name: "Research" },
 ] as const;
 
-export type Playbook = (typeof PLAYBOOKS)[number];
+export type Playbook = (typeof PLAYBOOKS)[number]["slug"];
 
 /**
  * One line of a task breakdown or an acceptance criteria list. Stored as JSON text inside the

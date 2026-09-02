@@ -246,7 +246,7 @@ const isChecklist = (value: unknown): value is ChecklistItem[] =>
  * to, and the error message can name the allowed values without repeating them.
  */
 const isPlaybook = (value: unknown): value is Playbook =>
-  PLAYBOOKS.some((slug) => slug === value);
+  PLAYBOOKS.some((playbook) => playbook.slug === value);
 
 /** Owned by the lifecycle, so naming one in a PATCH is a mistake worth reporting. */
 const IMMUTABLE = [
@@ -357,7 +357,7 @@ export function updateTicket(id: string, input: unknown): TicketResult {
     // Nothing to clear: the column is NOT NULL, so there is no "no profile" to write and null
     // is a non-member like any other. Absent still means "leave the column alone".
     if (!isPlaybook(playbook)) {
-      return invalid("playbook", `must be one of: ${PLAYBOOKS.join(", ")}`);
+      return invalid("playbook", `must be one of: ${PLAYBOOKS.map((p) => p.slug).join(", ")}`);
     }
     columns.push(["playbook", playbook]);
   }
