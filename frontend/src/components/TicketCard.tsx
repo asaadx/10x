@@ -1,10 +1,10 @@
+import { IconChristmasTreeFilled } from "@tabler/icons-react";
 import {
   Archive,
   Ban,
   Bot,
   Check,
   ExternalLink,
-  TreePineIcon,
   GitBranch,
   GitMerge,
   GitPullRequest,
@@ -18,7 +18,6 @@ import {
   TriangleAlert,
   Undo2,
   Unplug,
-  type LucideIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -123,7 +122,9 @@ function CopyButton({
 }: {
   value: string;
   label: string;
-  icon: LucideIcon;
+  // lucide-react and @tabler/icons-react export incompatible component types, so this only
+  // names the props CopyButton actually passes through, which both packages satisfy structurally.
+  icon: React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
   tone?: "default" | "git" | "agent";
   children?: React.ReactNode;
 }) {
@@ -388,7 +389,7 @@ export function TicketCard({ ticket, onOpen }: { ticket: Ticket; onOpen: () => v
               <CopyButton
                 value={ticket.worktreePath}
                 label={`Worktree ${ticket.worktreePath}`}
-                icon={TreePineIcon}
+                icon={IconChristmasTreeFilled}
                 tone="git"
               />
             )}
@@ -419,7 +420,7 @@ export function TicketCard({ ticket, onOpen }: { ticket: Ticket; onOpen: () => v
               */}
               {ticket.hasWorktree && (
                 <DropdownMenuItem onSelect={() => setConfirmWorktree(true)}>
-                  <TreePineIcon aria-hidden />
+                  <IconChristmasTreeFilled aria-hidden />
                   Delete worktree
                 </DropdownMenuItem>
               )}

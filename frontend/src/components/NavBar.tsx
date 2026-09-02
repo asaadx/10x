@@ -1,4 +1,5 @@
-import { BookOpen, Columns3, LayoutDashboard, Moon, Sun } from "lucide-react";
+import { IconMoonFilled, IconSunFilled } from "@tabler/icons-react";
+import { BookOpen, Columns3, LayoutDashboard } from "lucide-react";
 
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select.tsx";
 import { ALL_PROJECTS } from "@/lib/board.ts";
@@ -71,7 +72,11 @@ export function NavBar({ projects, projectId, onProjectChange, theme, onThemeTog
             aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
             onClick={onThemeToggle}
           >
-            {theme === "dark" ? <Sun aria-hidden className="size-3" /> : <Moon aria-hidden className="size-3" />}
+            {theme === "dark" ? (
+              <IconSunFilled aria-hidden className="size-3" />
+            ) : (
+              <IconMoonFilled aria-hidden className="size-3" />
+            )}
           </button>
         </div>
       </div>
