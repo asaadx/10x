@@ -21,6 +21,7 @@ export type {
   BoardResponse,
   Diagnostics,
   Orphan,
+  Playbook,
   Project,
   PullRequestState,
   Status,

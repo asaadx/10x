@@ -180,6 +180,8 @@ async function board(projectFilter: string | undefined): Promise<Reply> {
       startedAt: null,
       // Always null: no capture path yet (see the field's doc comment in types.ts).
       screenshots: null,
+      // Always null: no persistence yet (see the field's doc comment in types.ts).
+      playbook: null,
       diagnostics: runs.get(t.id)?.diagnostics ?? freshDiagnostics(),
     };
   });

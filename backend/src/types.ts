@@ -27,6 +27,20 @@ export type Status = "backlog" | "todo" | "in_progress" | "in_review" | "done";
 /** The three states a PR can be in from the board's point of view, mirroring `Status`. */
 export type PullRequestState = "open" | "merged" | "closed";
 
+/**
+ * Which configured profile a ticket is dispatched with. Unlike `agentStatus`, which is left
+ * as a bare `string` because Herdr owns that vocabulary, 10x owns this one, so a closed union
+ * is safe and gives the board an exhaustive option list.
+ */
+export type Playbook =
+  | "fullstack"
+  | "frontend"
+  | "backend"
+  | "database"
+  | "devops"
+  | "docs"
+  | "research";
+
 export type Project = {
   /** Immutable slug used in branch and agent names. Renaming would orphan worktrees. */
   id: string;
@@ -133,6 +147,12 @@ export type BoardTicket = Ticket & {
    * taken, and the UI falls back to a placeholder pane for whichever one is missing.
    */
   screenshots: { before: string | null; after: string | null } | null;
+  /**
+   * The configured profile the ticket is dispatched with, or `null` when unset. NOT
+   * persisted — there is no column and no write path — so the server always sends `null`
+   * here today. `null` means the ticket predates the field, not that it has no playbook.
+   */
+  playbook: Playbook | null;
   diagnostics: Diagnostics;
 };
 

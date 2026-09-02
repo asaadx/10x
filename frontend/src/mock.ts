@@ -10,7 +10,8 @@ import type { Project, Ticket } from "@/types.ts";
  * truncate, a description long enough for the single-line clamp to matter, a second project
  * with tickets of its own so the project filter has something to prove, an empty column, an
  * in-review ticket with a screenshot pair whose shots never got taken (the sheet's placeholder
- * pane) next to one with no pair at all.
+ * pane) next to one with no pair at all, and a ticket left at the inherited `null` playbook
+ * next to others with a real one so the empty case is visible too.
  *
  * These are checked against the real `GET /tickets` shape now, not a local copy of it, so the
  * resolved fields have to be internally consistent: `branch` and `agentName` are always present
@@ -72,6 +73,8 @@ const base: Ticket = {
   startedAt: null,
   // Fixture-only: the server does not populate this field yet (see BoardTicket's doc comment).
   screenshots: null,
+  // Fixture-only: the server does not populate this field yet (see BoardTicket's doc comment).
+  playbook: null,
   prNumber: null,
   prUrl: null,
   prState: null,
@@ -111,6 +114,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "backlog",
     branch: "ticket/10x/8",
     agentName: "ticket-10x-8",
+    playbook: "frontend",
     createdAt: iso(0, 11),
     updatedAt: iso(0, 11),
   },
@@ -123,6 +127,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "backlog",
     branch: "ticket/10x/7",
     agentName: "ticket-10x-7",
+    playbook: "frontend",
     createdAt: iso(0),
     updatedAt: iso(0),
   },
@@ -136,6 +141,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "todo",
     branch: "ticket/10x/6",
     agentName: "ticket-10x-6",
+    playbook: "frontend",
     createdAt: iso(3),
     updatedAt: iso(3),
   },
@@ -148,6 +154,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "in_progress",
     branch: "ticket/10x/5",
     agentName: "ticket-10x-5",
+    playbook: "backend",
     agentStatus: "working",
     sessionDir: "/home/asaad/.omp/sessions/ticket-10x-5",
     hasWorktree: true,
@@ -181,6 +188,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "in_progress",
     branch: "ticket/10x/9",
     agentName: "ticket-10x-9",
+    playbook: "backend",
     // Herdr saw a real question UI. `agent.prompt` refuses a blocked agent outright, so this
     // ticket cannot move until a human answers (memory/agent-status.md).
     agentStatus: "blocked",
@@ -211,6 +219,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "in_progress",
     branch: "ticket/10x/4",
     agentName: "ticket-10x-4",
+    playbook: "frontend",
     // The pane exited, so Herdr no longer lists the agent: no status, no pane, no workspace.
     // `died` is the persisted fact; `agentStatus` only ever carries what Herdr reports.
     died: true,
@@ -238,6 +247,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "in_review",
     branch: "ticket/10x/3",
     agentName: "ticket-10x-3",
+    playbook: "frontend",
     agentStatus: "idle",
     finished: true,
     sessionDir: "/home/asaad/.omp/sessions/ticket-10x-3",
@@ -272,6 +282,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "done",
     branch: "ticket/10x/2",
     agentName: "ticket-10x-2",
+    playbook: "backend",
     finished: true,
     // Retired agent, worktree not yet reclaimed — the state "Remove worktree" exists for. The
     // transcript outlives the worktree, and diagnostics are per-run so they are gone.
@@ -313,6 +324,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "done",
     branch: "ticket/10x/10",
     agentName: "ticket-10x-10",
+    playbook: "frontend",
     finished: true,
     sessionDir: "/home/asaad/.omp/sessions/ticket-10x-10",
     hasWorktree: true,
@@ -334,6 +346,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "in_progress",
     branch: "ticket/10x/11",
     agentName: "ticket-10x-11",
+    playbook: "devops",
     // Herdr reports a status the board has never seen before. `unknown` is deliberately not
     // one of the values `isSettled`/`isAgentReady` recognize, so it never proves completion.
     agentStatus: "unknown",
@@ -365,6 +378,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "todo",
     branch: "ticket/10x/12",
     agentName: "ticket-10x-12",
+    playbook: "frontend",
     createdAt: iso(2, 15),
     updatedAt: iso(2, 15),
   },
@@ -378,6 +392,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "backlog",
     branch: "ticket/10x/13",
     agentName: "ticket-10x-13",
+    playbook: "frontend",
     createdAt: iso(0, 16),
     updatedAt: iso(0, 16),
   },
@@ -391,6 +406,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "backlog",
     branch: "ticket/10x-test/1",
     agentName: "ticket-10x-test-1",
+    playbook: "backend",
     createdAt: iso(5),
     updatedAt: iso(5),
   },
@@ -404,6 +420,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "in_progress",
     branch: "ticket/10x-test/2",
     agentName: "ticket-10x-test-2",
+    playbook: "backend",
     agentStatus: "working",
     sessionDir: "/home/asaad/.omp/sessions/ticket-10x-test-2",
     hasWorktree: true,
@@ -433,6 +450,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "done",
     branch: "ticket/10x-test/3",
     agentName: "ticket-10x-test-3",
+    playbook: "devops",
     finished: true,
     sessionDir: "/home/asaad/.omp/sessions/ticket-10x-test-3",
     hasWorktree: true,
@@ -455,6 +473,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "in_review",
     branch: "ticket/10x/14",
     agentName: "ticket-10x-14",
+    playbook: "backend",
     agentStatus: "idle",
     finished: true,
     sessionDir: "/home/asaad/.omp/sessions/ticket-10x-14",

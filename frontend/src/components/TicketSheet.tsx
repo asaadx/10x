@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/sheet.tsx";
 import { runFailed } from "@/lib/board.ts";
 import { cn } from "@/lib/utils.ts";
-import type { Project, Ticket } from "@/types.ts";
+import type { Playbook, Project, Ticket } from "@/types.ts";
 
 type Props = {
   open: boolean;
@@ -148,6 +148,18 @@ function AttachmentDropZone() {
   );
 }
 
+// Display names for each playbook live here once, so the picker below builds its options from
+// this map instead of repeating a NativeSelectOption per profile.
+const PLAYBOOKS: Record<Playbook, string> = {
+  fullstack: "Full-stack",
+  frontend: "Frontend",
+  backend: "Backend",
+  database: "Database",
+  devops: "DevOps",
+  docs: "Docs",
+  research: "Research",
+};
+
 /**
  * Opened either from the Backlog column's New ticket button, with `ticket` null, or from a
  * card's title/overflow menu, with `ticket` set — the one detail surface for both creating and
@@ -160,12 +172,15 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
   const [title, setTitle] = useState(ticket?.title ?? "");
   const [description, setDescription] = useState(ticket?.description ?? "");
   const [projectId, setProjectId] = useState(ticket?.projectId ?? defaultProjectId);
-  // Agent is chosen at create time because it decides which agent profile gets spawned for the
-  // ticket, and it is local state only — nothing persists this yet, same as the rest of the
-  // composer's fields before Add is wired up.
-  const [agent, setAgent] = useState("fullstack");
+  // Playbook decides which agent profile a spawn uses. It is editable at any point, unlike
+  // Project, because it is a choice rather than something derived — and changing it after a run
+  // has started cannot affect the agent already running, only the next dispatch. The sheet
+  // already has a row called Agent for the running Herdr agent's name, so this control is named
+  // Playbook rather than colliding with it. It is local state only — nothing persists this yet,
+  // same as the rest of the composer's fields before Add is wired up.
+  const [playbook, setPlaybook] = useState<Playbook>(ticket?.playbook ?? "fullstack");
   // Task Breakdown and Acceptance Criteria are the plan a Plan agent is meant to produce; there
-  // is no wire field for either yet, so both live only as local state, same as Agent above.
+  // is no wire field for either yet, so both live only as local state, same as Playbook above.
   const [taskBreakdown, setTaskBreakdown] = useState<ChecklistRow[]>([{ text: "", done: false }]);
   const [acceptanceCriteria, setAcceptanceCriteria] = useState<ChecklistRow[]>([{ text: "", done: false }]);
 
@@ -178,6 +193,7 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
       setTitle(ticket?.title ?? "");
       setDescription(ticket?.description ?? "");
       setProjectId(ticket?.projectId ?? defaultProjectId);
+      setPlaybook(ticket?.playbook ?? "fullstack");
       setTaskBreakdown([{ text: "", done: false }]);
       setAcceptanceCriteria([{ text: "", done: false }]);
     }
@@ -237,28 +253,24 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
             </NativeSelect>
           </div>
 
-          {creating && (
-            <div className="grid gap-1.5">
-              <label htmlFor="c-agent" className="text-xs text-muted-foreground">
-                Agent
-              </label>
-              <NativeSelect
-                id="c-agent"
-                aria-label="Agent"
-                value={agent}
-                onChange={(e) => setAgent(e.target.value)}
-                className="w-full"
-              >
-                <NativeSelectOption value="fullstack">Full-stack</NativeSelectOption>
-                <NativeSelectOption value="frontend">Frontend</NativeSelectOption>
-                <NativeSelectOption value="backend">Backend</NativeSelectOption>
-                <NativeSelectOption value="database">Database</NativeSelectOption>
-                <NativeSelectOption value="devops">DevOps</NativeSelectOption>
-                <NativeSelectOption value="docs">Docs</NativeSelectOption>
-                <NativeSelectOption value="research">Research</NativeSelectOption>
-              </NativeSelect>
-            </div>
-          )}
+          <div className="grid gap-1.5">
+            <label htmlFor="c-playbook" className="text-xs text-muted-foreground">
+              Playbook
+            </label>
+            <NativeSelect
+              id="c-playbook"
+              aria-label="Playbook"
+              value={playbook}
+              onChange={(e) => setPlaybook(e.target.value as Playbook)}
+              className="w-full"
+            >
+              {Object.entries(PLAYBOOKS).map(([value, label]) => (
+                <NativeSelectOption key={value} value={value}>
+                  {label}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+          </div>
 
           <div className="grid gap-1.5">
             <label htmlFor="c-title" className="text-xs text-muted-foreground">
