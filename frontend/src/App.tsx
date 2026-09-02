@@ -46,7 +46,7 @@ export function App() {
         viewport and the PAGE scrolls instead of each column scrolling inside itself. `min-h-0`
         does the same job one level up, letting the grid shrink below its content.
       */}
-      <main className="mx-auto grid min-h-0 w-full max-w-[1600px] flex-1 grid-cols-4 grid-rows-[minmax(0,1fr)] gap-3 p-3">
+      <main className="mx-auto grid min-h-0 w-full max-w-[1600px] flex-1 grid-cols-5 grid-rows-[minmax(0,1fr)] gap-3 p-3">
         {COLUMNS.map(({ status, label }) => (
           <Column
             key={status}

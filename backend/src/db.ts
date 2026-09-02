@@ -151,7 +151,7 @@ export const toProject = (r: ProjectRow): Project => ({
  * wrong column rather than failing.
  */
 export const toStatus = (raw: string): Status =>
-  raw === "in_progress" || raw === "in_review" || raw === "done" ? raw : "backlog";
+  raw === "todo" || raw === "in_progress" || raw === "in_review" || raw === "done" ? raw : "backlog";
 
 /**
  * Unlike toStatus, an unrecognised value decodes to null rather than a default: "we have

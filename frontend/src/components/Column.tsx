@@ -6,9 +6,13 @@ import { Spinner } from "@/components/ui/spinner.tsx";
 import { columnIsWorking } from "@/lib/board.ts";
 import type { Status, Ticket } from "@/types.ts";
 
-/** Grey, blue, yellow, green — one per column, in state-machine order. */
+/**
+ * One per column, in state-machine order. Colour starts where work does: the two pre-start
+ * columns are neutral and violet, and blue/amber/green then track a live agent.
+ */
 const DOT: Record<Status, string> = {
   backlog: "bg-neutral-400",
+  todo: "bg-violet-500",
   in_progress: "bg-blue-500",
   in_review: "bg-amber-500",
   done: "bg-emerald-500",

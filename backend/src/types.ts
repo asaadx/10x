@@ -14,11 +14,15 @@
  */
 
 /**
+ * `backlog` holds raw ideas and `todo` holds work that is ready to start; the only move
+ * between them is a Plan. Splitting them is what keeps guesswork out of `in_progress` — an
+ * implementation agent inherits a plan rather than deriving one.
+ *
  * `in_review` is reached automatically when the agent's turn completes, and the ticket keeps
  * both its live agent and its port block while it sits there — a Reject has to be able to
  * re-prompt the same agent with its full context, and a Preview binds the same range.
  */
-export type Status = "backlog" | "in_progress" | "in_review" | "done";
+export type Status = "backlog" | "todo" | "in_progress" | "in_review" | "done";
 
 /** The three states a PR can be in from the board's point of view, mirroring `Status`. */
 export type PullRequestState = "open" | "merged" | "closed";

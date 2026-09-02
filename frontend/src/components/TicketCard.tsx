@@ -18,13 +18,20 @@ const PR_TONE = {
 } as const;
 
 /**
- * One branch per status and never an `else`. Cancel is scoped to `in_progress`, Accept and
- * Reject to `in_review`, and the server answers 409 from anywhere else — so an `else` would
- * put a button on a card whose status cannot take it. Done is terminal and draws no run
- * action; Edit and Delete are status-independent.
+ * One branch per status and never an `else`. Plan is scoped to `backlog`, Start to `todo`,
+ * Cancel to `in_progress`, Accept and Reject to `in_review`, and the server answers 409 from
+ * anywhere else — so an `else` would put a button on a card whose status cannot take it. Done
+ * is terminal and draws no run action; Edit and Delete are status-independent.
  */
 function RunActions({ ticket }: { ticket: Ticket }) {
   if (ticket.status === "backlog") {
+    return (
+      <Button size="sm" title="Talks the idea through with a planning agent until it is ready to start.">
+        Plan
+      </Button>
+    );
+  }
+  if (ticket.status === "todo") {
     return <Button size="sm">Start</Button>;
   }
   if (ticket.status === "in_progress") {

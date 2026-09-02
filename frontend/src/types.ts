@@ -39,6 +39,7 @@ export type SortOrder = "newest" | "oldest";
 /** Column order is the state machine's order, and is not configurable. */
 export const COLUMNS = [
   { status: "backlog", label: "Backlog" },
+  { status: "todo", label: "To Do" },
   { status: "in_progress", label: "In Progress" },
   { status: "in_review", label: "In Review" },
   { status: "done", label: "Done" },
