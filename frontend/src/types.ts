@@ -17,6 +17,11 @@
 // `Status` is also imported, not just re-exported: `COLUMNS` below needs it in local scope.
 import type { Status } from "@10x/backend/types";
 
+// `Playbook` here is the closed set of options the picker offers, not the wire contract: a
+// ticket's `playbook` field is `string | null` on the wire, because playbooks are becoming
+// user-authored YAML files and a closed union would be wrong for anything the write path
+// actually accepts. Use `Playbook` to render/type the option list; keep ticket-derived state
+// as `string`.
 export type {
   BoardResponse,
   Diagnostics,

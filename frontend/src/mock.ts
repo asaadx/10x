@@ -9,9 +9,9 @@ import type { Project, Ticket } from "@/types.ts";
  * run whose worktree is already gone, an empty description next to a title long enough to
  * truncate, a description long enough for the single-line clamp to matter, a second project
  * with tickets of its own so the project filter has something to prove, an empty column, an
- * in-review ticket with a screenshot pair whose shots never got taken (the sheet's placeholder
- * pane) next to one with no pair at all, and a ticket left at the inherited `null` playbook
- * next to others with a real one so the empty case is visible too.
+ * in-review ticket with a before screenshot captured and no after yet (the sheet's placeholder
+ * pane for the missing side), and a ticket left at the inherited `null` playbook next to
+ * others with a real one so the empty case is visible too.
  *
  * These are checked against the real `GET /tickets` shape now, not a local copy of it, so the
  * resolved fields have to be internally consistent: `branch` and `agentName` are always present
@@ -69,12 +69,16 @@ const base: Ticket = {
   paneId: null,
   workspaceId: null,
   busy: false,
-  // Fixture-only: the server does not populate this field yet (see BoardTicket's doc comment).
+  // Null until the first spawn; written by the spawn lifecycle, never by an edit.
   startedAt: null,
-  // Fixture-only: the server does not populate this field yet (see BoardTicket's doc comment).
-  screenshots: null,
-  // Fixture-only: the server does not populate this field yet (see BoardTicket's doc comment).
+  // The object is always present now; only its sides are nullable until a shot is captured.
+  screenshots: { before: null, after: null },
+  // Null until a ticket is given a profile.
   playbook: null,
+  // Empty until a Plan agent (or a human) fills them in; the columns default to '[]', never null.
+  taskBreakdown: [],
+  acceptanceCriteria: [],
+  attachments: [],
   prNumber: null,
   prUrl: null,
   prState: null,
@@ -161,6 +165,18 @@ export const MOCK_TICKETS: Ticket[] = [
     worktreePath: worktree("10x", 5),
     paneId: "w15:p1",
     workspaceId: "w15",
+    taskBreakdown: [
+      { text: "Find what listens in the ticket's port block", done: true },
+      { text: "Confirm the listener belongs to this worktree before touching it", done: true },
+      { text: "Kill it before the review agent spawns", done: false },
+    ],
+    acceptanceCriteria: [
+      { text: "No stray dev server survives past Accept", done: false },
+      { text: "Killing never reaches outside the ticket's port range", done: false },
+    ],
+    attachments: [
+      { name: "port-scan.png", size: 84213, mime: "image/png", path: "/home/asaad/.10x/attachments/10x-5-1.png" },
+    ],
     // The pane was busy twice and readiness had to be polled — the spawn guard firing, which
     // is normal rather than a fault (memory/spawn.md).
     diagnostics: {
@@ -197,6 +213,10 @@ export const MOCK_TICKETS: Ticket[] = [
     worktreePath: worktree("10x", 9),
     paneId: "w17:p1",
     workspaceId: "w17",
+    taskBreakdown: [
+      { text: "Reject a slug that cannot become a valid branch name", done: true },
+      { text: "Surface the rejection in the New Project form", done: false },
+    ],
     diagnostics: {
       ...noDiagnostics,
       startAttempts: 1,
@@ -255,9 +275,14 @@ export const MOCK_TICKETS: Ticket[] = [
     worktreePath: worktree("10x", 3),
     paneId: "w9:p1",
     workspaceId: "w9",
-    // A pair exists but neither shot was captured yet, which is what exercises the sheet's
-    // placeholder pane instead of a real image.
-    screenshots: { before: null, after: null },
+    // The before shot was captured before the run finished; the after shot has not been taken
+    // yet, which is what exercises the sheet's placeholder pane for the missing side.
+    screenshots: { before: "https://cdn.10x.dev/screenshots/10x-3-before.png", after: null },
+    taskBreakdown: [
+      { text: "Stop the poll from recreating the details element", done: true },
+      { text: "Keep the open state across a refresh", done: true },
+    ],
+    acceptanceCriteria: [{ text: "Expanding Diagnostics survives the next poll", done: true }],
     diagnostics: {
       ...noDiagnostics,
       startAttempts: 1,
@@ -492,6 +517,7 @@ export const MOCK_TICKETS: Ticket[] = [
     },
     createdAt: iso(2, 10),
     updatedAt: iso(0, 8),
-    // Screenshots stay inherited `null`: this ticket has no before/after pair, unlike 10x-3.
+    // Screenshots stay inherited `{ before: null, after: null }`: no shot was ever captured
+    // for this ticket, unlike 10x-3's partial pair.
   },
 ];
