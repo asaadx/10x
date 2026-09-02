@@ -61,9 +61,9 @@ pnpm typecheck && pnpm test
 Both are free and take seconds. A commit that does not typecheck, or that reddens the suite, is not
 finished work.
 
-**Never run `npm run e2e:full`.** It spawns **sixteen real coding agents** and costs real money.
+**Never run `pnpm e2e:full`.** It spawns **sixteen real coding agents** and costs real money.
 It needs explicit human permission, per run — being asked to "test your change" is not that
 permission.
 
-`npm run e2e` is agent-free but needs a live Herdr socket and binds port **4310**, so two tickets
+`pnpm e2e` is agent-free but needs a live Herdr socket and binds port **4310**, so two tickets
 running it at once collide. Run it only if your ticket actually touches the e2e suite.

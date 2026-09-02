@@ -26,7 +26,7 @@ approval, per instance.** Approval for one force-push is not standing permission
 information you could have had in two seconds.**
 
 ```bash
-npm run typecheck && npm test
+pnpm typecheck && pnpm test
 ```
 
 Then open the PR — never merge in its place:
