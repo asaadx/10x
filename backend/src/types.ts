@@ -31,15 +31,42 @@ export type PullRequestState = "open" | "merged" | "closed";
  * Which configured profile a ticket is dispatched with. Unlike `agentStatus`, which is left
  * as a bare `string` because Herdr owns that vocabulary, 10x owns this one, so a closed union
  * is safe and gives the board an exhaustive option list.
+ *
+ * The array is the whole vocabulary and the type is derived from it, never the other way
+ * around: the list is needed at runtime as well as at compile time, because the PATCH
+ * validator in ticket-store.ts tests membership against exactly these values. A hand-written
+ * union beside a hand-written validation list is two copies of one fact, and they drift
+ * silently — the only symptom is the board offering a value the API then refuses to write.
+ *
+ * The displayed name IS the stored value, so a playbook has no second identity to keep in
+ * sync — nothing to map, nothing to drift. Array order is the order the picker offers, so
+ * that is one fact in one place too.
  */
-export type Playbook =
-  | "fullstack"
-  | "frontend"
-  | "backend"
-  | "database"
-  | "devops"
-  | "docs"
-  | "research";
+export const PLAYBOOKS = [
+  "Fullstack",
+  "Frontend",
+  "Backend",
+  "Database",
+  "DevOps",
+  "Docs",
+  "Research",
+] as const;
+
+export type Playbook = (typeof PLAYBOOKS)[number];
+
+/**
+ * One line of a task breakdown or an acceptance criteria list. Stored as JSON text inside the
+ * ticket row rather than as a child table (see db.ts): a list is only ever read and written
+ * whole with its ticket, and the board derives its own ticked/total counts from the array.
+ */
+export type ChecklistItem = { text: string; done: boolean };
+
+/**
+ * A file attached to a ticket for the agent's prompt to reference. `path` is server-side, not
+ * a URL: the file lives under STATE_DIR and the server decides how it is served. `size` and
+ * `mime` are recorded at upload time so listing attachments never has to stat them.
+ */
+export type Attachment = { name: string; size: number; mime: string; path: string };
 
 export type Project = {
   /** Immutable slug used in branch and agent names. Renaming would orphan worktrees. */
@@ -76,6 +103,33 @@ export type Ticket = {
   prState: PullRequestState | null;
   prAdditions: number | null;
   prDeletions: number | null;
+  /**
+   * The dispatch profile. Never null: the column is NOT NULL with a 'Fullstack' default (see
+   * db.ts), because every ticket is dispatched with some profile and the picker offers no way
+   * to choose none — a nullable field would model a state the product does not have.
+   */
+  playbook: Playbook;
+  /**
+   * The plan and its attachments, each one JSON text in a single column (see db.ts). Empty
+   * arrays, never null: the columns default to '[]', so "no items yet" and "never migrated"
+   * decode identically and no consumer has to guard.
+   */
+  taskBreakdown: ChecklistItem[];
+  acceptanceCriteria: ChecklistItem[];
+  attachments: Attachment[];
+  /**
+   * The before/after pair for a ticket that changed the UI. Two nullable columns underneath,
+   * nested here because each side stands alone — a ticket has a before for the whole length of
+   * its run before the after exists — and the board renders a placeholder for whichever is
+   * missing. The object itself is always present; only its sides are nullable.
+   */
+  screenshots: { before: string | null; after: string | null };
+  /**
+   * When the AGENT began work, distinct from `createdAt`: null on a ticket that has never been
+   * spawned, and what the card's run timer counts from. Written by the spawn lifecycle through
+   * `setRunFields`, never by an edit.
+   */
+  startedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -115,7 +169,7 @@ export type Orphan = { branch: string; path: string };
 
 /**
  * What `GET /tickets` actually returns for each ticket: the stored row plus everything the
- * board resolves at read time. Distinct from `Ticket` on purpose — four of these fields exist
+ * board resolves at read time. Distinct from `Ticket` on purpose — most of these fields exist
  * only in the response, and a frontend typed against `Ticket` would be quietly wrong.
  */
 export type BoardTicket = Ticket & {
@@ -133,26 +187,6 @@ export type BoardTicket = Ticket & {
   paneId: string | null;
   workspaceId: string | null;
   busy: boolean;
-  /**
-   * ISO timestamp of when the agent was spawned, or `null` when unknown. NOT persisted yet —
-   * there is no `started_at` column — so the server always sends `null` here today. A real
-   * value requires a `started_at` write, once, at the point the spawn compare-and-swap wins.
-   */
-  startedAt: string | null;
-  /**
-   * A before/after screenshot pair for a ticket that changed the UI, or `null` when the
-   * ticket has none. NOT persisted — there is no table and no capture path — so the server
-   * always sends `null` here today. Populating it means having the agent capture the two
-   * images. Each URL is independently nullable: a pair can exist before both shots are
-   * taken, and the UI falls back to a placeholder pane for whichever one is missing.
-   */
-  screenshots: { before: string | null; after: string | null } | null;
-  /**
-   * The configured profile the ticket is dispatched with, or `null` when unset. NOT
-   * persisted — there is no column and no write path — so the server always sends `null`
-   * here today. `null` means the ticket predates the field, not that it has no playbook.
-   */
-  playbook: Playbook | null;
   diagnostics: Diagnostics;
 };
 

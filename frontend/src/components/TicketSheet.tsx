@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/sheet.tsx";
 import { runFailed } from "@/lib/board.ts";
 import { cn } from "@/lib/utils.ts";
-import type { Playbook, Project, Ticket } from "@/types.ts";
+import { PLAYBOOKS, type Playbook, type Project, type Ticket } from "@/types.ts";
 
 type Props = {
   open: boolean;
@@ -148,17 +148,13 @@ function AttachmentDropZone() {
   );
 }
 
-// Display names for each playbook live here once, so the picker below builds its options from
-// this map instead of repeating a NativeSelectOption per profile.
-const PLAYBOOKS: Record<Playbook, string> = {
-  fullstack: "Full-stack",
-  frontend: "Frontend",
-  backend: "Backend",
-  database: "Database",
-  devops: "DevOps",
-  docs: "Docs",
-  research: "Research",
-};
+// A `<select>` hands back a bare string, so this is the boundary where that string becomes a
+// `Playbook`. A membership test against the shared array rather than a cast: the state is
+// typed against exactly the list the API validates against, so nothing but a real playbook
+// can reach it, and an option that ever drifted out of `PLAYBOOKS` would be ignored here
+// instead of being sent as a write the backend then rejects.
+const isPlaybook = (value: string): value is Playbook =>
+  PLAYBOOKS.some((playbook) => playbook === value);
 
 /**
  * Opened either from the Backlog column's New ticket button, with `ticket` null, or from a
@@ -178,11 +174,23 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
   // already has a row called Agent for the running Herdr agent's name, so this control is named
   // Playbook rather than colliding with it. It is local state only — nothing persists this yet,
   // same as the rest of the composer's fields before Add is wired up.
-  const [playbook, setPlaybook] = useState<Playbook>(ticket?.playbook ?? "fullstack");
+  // Every ticket has one: the column is NOT NULL, and its default is the first entry of
+  // `PLAYBOOKS`, which is also what the picker shows first — so seeding a create with it
+  // matches what the API would store anyway, without naming a playbook value here.
+  const [playbook, setPlaybook] = useState<Playbook>(ticket?.playbook ?? PLAYBOOKS[0]);
   // Task Breakdown and Acceptance Criteria are the plan a Plan agent is meant to produce; there
   // is no wire field for either yet, so both live only as local state, same as Playbook above.
-  const [taskBreakdown, setTaskBreakdown] = useState<ChecklistRow[]>([{ text: "", done: false }]);
-  const [acceptanceCriteria, setAcceptanceCriteria] = useState<ChecklistRow[]>([{ text: "", done: false }]);
+  // Seeded from `ticket` via a `useState` initializer rather than an effect: `App.tsx` keys this
+  // component by ticket id, so React remounts (and re-runs this initializer) whenever a
+  // different ticket opens — no sync needed. The `.length` check (not `??`) matters too: a
+  // persisted-but-empty array must still become one blank row, or the checklist has no input
+  // and can never be started.
+  const [taskBreakdown, setTaskBreakdown] = useState<ChecklistRow[]>(
+    ticket?.taskBreakdown.length ? ticket.taskBreakdown : [{ text: "", done: false }],
+  );
+  const [acceptanceCriteria, setAcceptanceCriteria] = useState<ChecklistRow[]>(
+    ticket?.acceptanceCriteria.length ? ticket.acceptanceCriteria : [{ text: "", done: false }],
+  );
 
   // The callsite's `key` re-seeds this component when a *different* ticket is opened, but the
   // create key is the constant "new", so the composer never remounts between one creation
@@ -193,7 +201,7 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
       setTitle(ticket?.title ?? "");
       setDescription(ticket?.description ?? "");
       setProjectId(ticket?.projectId ?? defaultProjectId);
-      setPlaybook(ticket?.playbook ?? "fullstack");
+      setPlaybook(ticket?.playbook ?? PLAYBOOKS[0]);
       setTaskBreakdown([{ text: "", done: false }]);
       setAcceptanceCriteria([{ text: "", done: false }]);
     }
@@ -261,12 +269,17 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
               id="c-playbook"
               aria-label="Playbook"
               value={playbook}
-              onChange={(e) => setPlaybook(e.target.value as Playbook)}
+              onChange={(e) => {
+                const next = e.target.value;
+                // Every option below is a `PLAYBOOKS` member, so the guard never rejects a
+                // real change; it is what keeps an unvalidated string out of typed state.
+                if (isPlaybook(next)) setPlaybook(next);
+              }}
               className="w-full"
             >
-              {Object.entries(PLAYBOOKS).map(([value, label]) => (
-                <NativeSelectOption key={value} value={value}>
-                  {label}
+              {PLAYBOOKS.map((name) => (
+                <NativeSelectOption key={name} value={name}>
+                  {name}
                 </NativeSelectOption>
               ))}
             </NativeSelect>
@@ -301,11 +314,12 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
 
           {/* A before/after pair is evidence for the change the description above just
               described, so it reads with the description rather than after the plan below —
-              shown only when the pair exists, so no ticket needs to be classified as a UI
-              change (most tickets simply have `screenshots: null` and render nothing here).
-              Both urls are null today because nothing captures them yet, which is what
-              `ScreenshotPane`'s placeholder is for. */}
-          {!creating && ticket.screenshots && (
+              shown only when at least one side has been captured. The `screenshots` object is
+              always present on a ticket now (only its sides are nullable), so testing the
+              object itself would show this block on every ticket; testing the sides is what
+              actually means "a shot exists". `ScreenshotPane`'s placeholder covers whichever
+              side is still null. */}
+          {!creating && (ticket.screenshots.before !== null || ticket.screenshots.after !== null) && (
             <div className="grid gap-4">
               <ScreenshotPane label="Before" url={ticket.screenshots.before} />
               <ScreenshotPane label="After" url={ticket.screenshots.after} />
