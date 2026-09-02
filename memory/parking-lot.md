@@ -253,3 +253,43 @@ the same folder-path-versus-GitHub-repo conflation flagged in [Projects](#projec
 above. Deriving it would need owner/repo resolved and exposed through the projects API first.
 Preferred direction: an owner in `.env` plus the repo name from the project. Design smell with a
 direction, not a bug. Deferred, low priority.
+
+## A Backlog of ideas, ahead of To Do — with a planning agent
+
+**Scheduled: before the demo video.** Not deferred indefinitely like the rest of this file.
+
+Today's `backlog` is a queue of work that is ready to start. The change splits that in two:
+
+- **`backlog` is renamed `To Do`.** Functionally unchanged — same transitions, same Start button,
+  same everything. A rename of the label, not of the state.
+- **A new `Backlog` column is inserted BEFORE it**, and becomes where raw ideas are dumped. It is
+  the new head of the board.
+
+The only transition out of the new Backlog is **Backlog → To Do**, and the only action on a card
+there is **Plan**.
+
+**Plan spawns a planning agent** — Opus — that the user can talk to, to turn an idea into an
+implementable ticket: the approach, the blast radius, every file that will be touched, or the
+findings if the ticket is an investigation. The point is that **a ticket arriving in In Progress
+has no guesswork left in it** — the implementation agent inherits a plan rather than deriving one.
+
+Design questions to settle before building, none of them answered yet:
+
+- **Where does the plan go?** It has to be persisted on the ticket and fed to the implementation
+  agent's prompt later, or the whole point is lost. A new column, or appended to `description`?
+- **Does a planning agent need a worktree?** It reads the repo but writes no code. A worktree gives
+  it something to read; a branch may be pointless.
+- **Does it need a port block?** It runs no dev server. If not, planning agents do not consume
+  slots from the pool, which matters given the cap.
+- **Model selection per spawn.** `spawn()` has one shape today and no notion of which model to
+  run. Opus-for-planning is the first case that needs one.
+- **What ends a planning turn?** The `in_progress → in_review` move rides the agent's turn end. A
+  planning conversation is meant to be interactive, so the same rule would advance the card the
+  moment the agent first stops talking.
+
+**An Archive column was considered and is NOT recommended.** Every other column is a stage with
+actions; Archive is storage, and nothing happens in it. The real need — Done accumulating — is a
+filtering problem, not a pipeline one, and is better served by an `archived` flag and a toggle than
+by permanent board real estate. Six columns also squeeze card width at this density, and an empty
+sixth column is dead space on camera. Revisit only when Done actually becomes unusable, and then as
+a filter first.
