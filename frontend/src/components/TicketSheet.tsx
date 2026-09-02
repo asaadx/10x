@@ -114,6 +114,41 @@ function Checklist({
 }
 
 /**
+ * Real drag target: dragging over it flips it to the primary accent, dropping resets that. It
+ * takes no files — an attachment is only worth storing once it can be fed into the agent's
+ * spawn prompt, which isn't wired up yet — so drop is deliberately inert.
+ */
+function AttachmentDropZone() {
+  const [dragging, setDragging] = useState(false);
+
+  return (
+    <div className="grid gap-1.5">
+      <label className="text-xs text-muted-foreground">Attachments</label>
+      <div
+        // preventDefault on dragover is what makes this element a drop target at all; without
+        // it the browser rejects the drop and the cursor never changes to reflect one.
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragging(false);
+        }}
+        className={cn(
+          "flex h-24 flex-col items-center justify-center gap-1.5 rounded-md border border-dashed text-xs text-muted-foreground",
+          dragging && "border-primary bg-primary/5 text-primary"
+        )}
+      >
+        <Upload aria-hidden className="size-5" />
+        Drag files here, or click to browse
+      </div>
+    </div>
+  );
+}
+
+/**
  * Opened either from the Backlog column's New ticket button, with `ticket` null, or from a
  * card's title/overflow menu, with `ticket` set — the one detail surface for both creating and
  * viewing/editing. `Sheet` is Radix Dialog underneath, so Escape, the backdrop and focus
@@ -256,48 +291,55 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
 
           <Checklist label="Acceptance Criteria" rows={acceptanceCriteria} onRowsChange={setAcceptanceCriteria} />
 
-          {/* Presentational until there is somewhere to put a file: no input, no drag handlers,
-              no upload. An attachment is only worth having once it can be fed into the agent's
-              spawn prompt, which isn't wired up yet. */}
-          {creating && (
-            <div className="grid gap-1.5">
-              <label className="text-xs text-muted-foreground">Attachments</label>
-              <div className="flex h-24 flex-col items-center justify-center gap-1.5 rounded-md border border-dashed text-xs text-muted-foreground">
-                <Upload aria-hidden className="size-5" />
-                Drag files here, or click to browse
-              </div>
-            </div>
-          )}
+          <AttachmentDropZone />
 
           {!creating && (
             <>
               <Separator />
 
-              {/* Branch is derived, never entered, and — like Agent — is a formula that names
-                  something that may not exist yet, so it requires dispatch too. */}
+              {/* These three rows always render, disabled, so the sheet does not change shape
+                  between tickets. A branch name and an agent name are formulas over the project
+                  slug and ticket number (memory/naming.md), so both are non-empty strings on
+                  every ticket whether or not a run was ever spawned — filling the field with
+                  that name would claim something exists that does not, so it is left empty with
+                  a placeholder instead. */}
               <div className="grid gap-4">
-                {dispatched && (
-                  <div className="grid gap-1.5">
-                    <label className="text-xs text-muted-foreground">Branch</label>
-                    <Input readOnly disabled value={ticket.branch} />
-                  </div>
-                )}
+                <div className="grid gap-1.5">
+                  <label className="text-xs text-muted-foreground">Branch</label>
+                  <Input
+                    readOnly
+                    disabled
+                    value={dispatched ? ticket.branch : ""}
+                    placeholder="Created when the run starts"
+                  />
+                </div>
 
                 <div className="grid gap-1.5">
                   <label className="text-xs text-muted-foreground">Worktree</label>
-                  <Input readOnly disabled value={ticket.worktreePath ?? "—"} />
+                  <Input
+                    readOnly
+                    disabled
+                    value={ticket.worktreePath ?? ""}
+                    placeholder="No worktree on disk"
+                  />
                 </div>
 
-                {/* Agent is derived the same way as Branch, so it proves nothing about whether
-                    an agent exists — and Accept is `retireAgent`, which closes the pane and
-                    deletes the transcript (memory/teardown.md), so a Done ticket's agent is
-                    gone. Require both dispatch and not-done. */}
-                {dispatched && ticket.status !== "done" && (
-                  <div className="grid gap-1.5">
-                    <label className="text-xs text-muted-foreground">Agent</label>
-                    <Input readOnly disabled value={ticket.agentName ?? "—"} />
-                  </div>
-                )}
+                {/* Accept is `retireAgent`, which closes the pane and deletes the transcript
+                    (memory/teardown.md), so a Done ticket's agent is genuinely gone rather than
+                    never created — its placeholder says so instead of the generic one. */}
+                <div className="grid gap-1.5">
+                  <label className="text-xs text-muted-foreground">Agent</label>
+                  <Input
+                    readOnly
+                    disabled
+                    value={dispatched && ticket.status !== "done" ? ticket.agentName : ""}
+                    placeholder={
+                      ticket.status === "done"
+                        ? "Retired when the pull request opened"
+                        : "Spawned when the run starts"
+                    }
+                  />
+                </div>
 
                 {ticket.prUrl && (
                   <div className="grid gap-1.5">
