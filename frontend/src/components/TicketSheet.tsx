@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/sheet.tsx";
 import { runFailed } from "@/lib/board.ts";
 import { cn } from "@/lib/utils.ts";
-import type { Playbook, Project, Ticket } from "@/types.ts";
+import { PLAYBOOKS, type Playbook, type Project, type Ticket } from "@/types.ts";
 
 type Props = {
   open: boolean;
@@ -148,9 +148,12 @@ function AttachmentDropZone() {
   );
 }
 
-// Display names for each playbook live here once, so the picker below builds its options from
-// this map instead of repeating a NativeSelectOption per profile.
-const PLAYBOOKS: Record<Playbook, string> = {
+// Display names for each playbook live here once, so the picker below labels its options from
+// this map instead of repeating a name per profile. Named `PLAYBOOK_LABELS`, not `PLAYBOOKS`:
+// that name belongs to the shared slug array this file imports, and labels are presentation,
+// which is why the map lives here and the vocabulary does not. `Record<Playbook, string>`
+// makes a missing label a compile error the moment the shared array grows a slug.
+const PLAYBOOK_LABELS: Record<Playbook, string> = {
   fullstack: "Full-stack",
   frontend: "Frontend",
   backend: "Backend",
@@ -159,6 +162,14 @@ const PLAYBOOKS: Record<Playbook, string> = {
   docs: "Docs",
   research: "Research",
 };
+
+// A `<select>` hands back a bare string, so this is the boundary where that string becomes a
+// `Playbook`. A membership test against the shared array rather than a cast: the state is
+// typed against exactly the list the API validates against, so nothing but a real playbook
+// can reach it, and an option that ever drifted out of `PLAYBOOKS` would be ignored here
+// instead of being sent as a write the backend then rejects.
+const isPlaybook = (value: string): value is Playbook =>
+  PLAYBOOKS.some((slug) => slug === value);
 
 /**
  * Opened either from the Backlog column's New ticket button, with `ticket` null, or from a
@@ -178,7 +189,10 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
   // already has a row called Agent for the running Herdr agent's name, so this control is named
   // Playbook rather than colliding with it. It is local state only — nothing persists this yet,
   // same as the rest of the composer's fields before Add is wired up.
-  const [playbook, setPlaybook] = useState<string>(ticket?.playbook ?? "fullstack");
+  // Every ticket has one: the column is NOT NULL, defaulting to 'fullstack', which is also
+  // what the picker shows first — so seeding a create with it matches what the API would
+  // store anyway.
+  const [playbook, setPlaybook] = useState<Playbook>(ticket?.playbook ?? "fullstack");
   // Task Breakdown and Acceptance Criteria are the plan a Plan agent is meant to produce; there
   // is no wire field for either yet, so both live only as local state, same as Playbook above.
   // Seeded from `ticket` via a `useState` initializer rather than an effect: `App.tsx` keys this
@@ -270,12 +284,17 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
               id="c-playbook"
               aria-label="Playbook"
               value={playbook}
-              onChange={(e) => setPlaybook(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                // Every option below is a `PLAYBOOKS` member, so the guard never rejects a
+                // real change; it is what keeps an unvalidated string out of typed state.
+                if (isPlaybook(next)) setPlaybook(next);
+              }}
               className="w-full"
             >
-              {Object.entries(PLAYBOOKS).map(([value, label]) => (
-                <NativeSelectOption key={value} value={value}>
-                  {label}
+              {PLAYBOOKS.map((slug) => (
+                <NativeSelectOption key={slug} value={slug}>
+                  {PLAYBOOK_LABELS[slug]}
                 </NativeSelectOption>
               ))}
             </NativeSelect>

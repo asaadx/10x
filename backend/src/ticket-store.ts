@@ -22,7 +22,13 @@
  */
 import type { SQLInputValue, SQLOutputValue } from "node:sqlite";
 import { db, nowIso, toTicket } from "./db.ts";
-import type { Attachment, ChecklistItem, Ticket } from "./types.ts";
+import {
+  PLAYBOOKS,
+  type Attachment,
+  type ChecklistItem,
+  type Playbook,
+  type Ticket,
+} from "./types.ts";
 
 /** `{ error: "<code>", ...context }` — the uniform error envelope the whole API uses. */
 export type ErrorBody = { error: string; field?: string; message?: string; [key: string]: unknown };
@@ -130,7 +136,10 @@ const decode = (row: Row): Ticket =>
     pr_state: maybeText(row, "pr_state"),
     pr_additions: intOrNull(row, "pr_additions"),
     pr_deletions: intOrNull(row, "pr_deletions"),
-    playbook: maybeText(row, "playbook"),
+    // Total, not `maybeText`: the column is NOT NULL with a default (db.ts), so a NULL here is
+    // a corrupt row and belongs in `bad()` rather than being smuggled through as a value.
+    // `toTicket` casts it to `Playbook`; why that is a cast and not a check is noted there.
+    playbook: text(row, "playbook"),
     task_breakdown: jsonList<ChecklistItem>(row, "task_breakdown"),
     acceptance_criteria: jsonList<ChecklistItem>(row, "acceptance_criteria"),
     attachments: jsonList<Attachment>(row, "attachments"),
@@ -230,6 +239,14 @@ const isChecklist = (value: unknown): value is ChecklistItem[] =>
       "done" in item &&
       typeof item.done === "boolean",
   );
+
+/**
+ * The same asymmetry, for the one closed vocabulary a request can set. `PLAYBOOKS` is the
+ * only list of slugs in the codebase, so this guard cannot fall behind the union it narrows
+ * to, and the error message can name the allowed values without repeating them.
+ */
+const isPlaybook = (value: unknown): value is Playbook =>
+  PLAYBOOKS.some((slug) => slug === value);
 
 /** Owned by the lifecycle, so naming one in a PATCH is a mistake worth reporting. */
 const IMMUTABLE = [
@@ -337,9 +354,10 @@ export function updateTicket(id: string, input: unknown): TicketResult {
     columns.push(["description", description]);
   }
   if (playbook !== undefined) {
-    // Null is a real value here rather than "absent": it is how the picker clears a profile.
-    if (playbook !== null && typeof playbook !== "string") {
-      return invalid("playbook", "must be a string or null");
+    // Nothing to clear: the column is NOT NULL, so there is no "no profile" to write and null
+    // is a non-member like any other. Absent still means "leave the column alone".
+    if (!isPlaybook(playbook)) {
+      return invalid("playbook", `must be one of: ${PLAYBOOKS.join(", ")}`);
     }
     columns.push(["playbook", playbook]);
   }

@@ -82,10 +82,12 @@ describe("setRunFields", () => {
 });
 
 describe("plan column decoding", () => {
-  test("a row inserted with only the original columns decodes to empty plan fields", () => {
+  test("a row inserted with only the original columns decodes to the plan-field defaults", () => {
     seed("t-decode-defaults", 0, 0);
     const ticket = loaded("t-decode-defaults");
-    assert.equal(ticket.playbook, null);
+    // Not null: the column is NOT NULL DEFAULT 'fullstack', so a row created without a
+    // playbook still has one, which is what the type promises every consumer.
+    assert.equal(ticket.playbook, "fullstack");
     assert.deepEqual(ticket.taskBreakdown, []);
     assert.deepEqual(ticket.acceptanceCriteria, []);
     assert.deepEqual(ticket.attachments, []);
@@ -156,15 +158,36 @@ describe("updateTicket plan fields", () => {
     );
   });
 
-  test("playbook: null clears the column", () => {
-    seed("t-playbook-clear", 0, 0);
-    updateTicket("t-playbook-clear", { playbook: "backend" });
-    assert.equal(loaded("t-playbook-clear").playbook, "backend");
+  test("an unrecognised playbook is rejected, naming the field and writing nothing", () => {
+    seed("t-playbook-unknown", 0, 0);
+    updateTicket("t-playbook-unknown", { playbook: "backend" });
+    assert.equal(loaded("t-playbook-unknown").playbook, "backend");
 
-    const result = updateTicket("t-playbook-clear", { playbook: null });
-    if (!result.ok) assert.fail(`clear rejected: ${JSON.stringify(result.body)}`);
-    assert.equal(result.ticket.playbook, null);
-    assert.equal(loaded("t-playbook-clear").playbook, null);
+    const body = rejected("t-playbook-unknown", { playbook: "kubernetes" });
+    assert.equal(body["error"], "invalid_input");
+    assert.equal(body.field, "playbook");
+    // The frontend shows this message, so it has to name what is allowed.
+    assert.match(String(body.message), /fullstack/);
+    // Rejected means nothing was written: the slug that was there survives.
+    assert.equal(loaded("t-playbook-unknown").playbook, "backend");
+  });
+
+  test("null is rejected too — a NOT NULL column has nothing to clear", () => {
+    seed("t-playbook-null", 0, 0);
+    updateTicket("t-playbook-null", { playbook: "devops" });
+
+    const body = rejected("t-playbook-null", { playbook: null });
+    assert.equal(body["error"], "invalid_input");
+    assert.equal(body.field, "playbook");
+    assert.equal(loaded("t-playbook-null").playbook, "devops");
+  });
+
+  test("a playbook that is not a string at all is rejected the same way", () => {
+    seed("t-playbook-nonstring", 0, 0);
+    const body = rejected("t-playbook-nonstring", { playbook: 3 });
+    assert.equal(body["error"], "invalid_input");
+    assert.equal(body.field, "playbook");
+    assert.equal(loaded("t-playbook-nonstring").playbook, "fullstack");
   });
 
   test("a checklist that is not an array is rejected, naming that checklist", () => {

@@ -20,6 +20,7 @@ import { allocateSlot, type SlotAllocation } from "./ports.ts";
 import type {
   Attachment,
   ChecklistItem,
+  Playbook,
   Project,
   PullRequestState,
   Status,
@@ -74,9 +75,11 @@ CREATE TABLE IF NOT EXISTS tickets (
   pr_state     TEXT,
   pr_additions INTEGER,
   pr_deletions INTEGER,
-  -- The ticket's dispatch profile, one of the values in the Playbook union. Nullable:
-  -- null means the ticket predates the field or was never given one, not a default profile.
-  playbook    TEXT,
+  -- The ticket's dispatch profile, one of the values in the Playbook union. NOT NULL with a
+  -- default rather than nullable: every ticket is dispatched with some profile, the picker
+  -- offers no "none", and 'fullstack' is the option it shows first — so a row's data agrees
+  -- with what the board renders for it instead of a null that reads as fullstack anyway.
+  playbook    TEXT NOT NULL DEFAULT 'fullstack',
   -- The plan a ticket carries: its task breakdown, its acceptance criteria, and the files
   -- attached to it. JSON text rather than child tables because all three are only ever read
   -- and written whole with their ticket — there is no query that wants one item, and no join
@@ -131,16 +134,22 @@ addColumnIfMissing("tickets", "pr_state", "TEXT");
 addColumnIfMissing("tickets", "pr_additions", "INTEGER");
 addColumnIfMissing("tickets", "pr_deletions", "INTEGER");
 
-// ADD COLUMN accepts NOT NULL only alongside a non-null constant default, which '[]' is —
-// and SQLite hands that default back for every row that predates the column, so a migrated
-// row reads as an empty list rather than as NULL.
-addColumnIfMissing("tickets", "playbook", "TEXT");
+// ADD COLUMN accepts NOT NULL only alongside a non-null constant default, which '[]' and
+// 'fullstack' both are — and SQLite hands that default back for every row that predates the
+// column, so a migrated row reads as an empty list, or as the default playbook, never as NULL.
+addColumnIfMissing("tickets", "playbook", "TEXT NOT NULL DEFAULT 'fullstack'");
 addColumnIfMissing("tickets", "task_breakdown", "TEXT NOT NULL DEFAULT '[]'");
 addColumnIfMissing("tickets", "acceptance_criteria", "TEXT NOT NULL DEFAULT '[]'");
 addColumnIfMissing("tickets", "attachments", "TEXT NOT NULL DEFAULT '[]'");
 addColumnIfMissing("tickets", "screenshot_before", "TEXT");
 addColumnIfMissing("tickets", "screenshot_after", "TEXT");
 addColumnIfMissing("tickets", "started_at", "TEXT");
+
+// A database migrated while `playbook` was briefly nullable already has the column, so
+// `addColumnIfMissing` above will not revisit it and its NOT NULL default never applies to
+// those rows. One idempotent backfill covers them: without it, every such row's decode hits
+// a NULL in a column typed `Playbook` and throws.
+db.exec("UPDATE tickets SET playbook = 'fullstack' WHERE playbook IS NULL");
 
 export const nowIso = () => new Date().toISOString();
 
@@ -170,7 +179,7 @@ export type TicketRow = {
   pr_state: string | null;
   pr_additions: number | null;
   pr_deletions: number | null;
-  playbook: string | null;
+  playbook: string;
   // Already parsed. The JSON lives in one TEXT column each, and the parse happens at the
   // decode boundary in ticket-store.ts, where a corrupt column can be reported by name.
   task_breakdown: ChecklistItem[];
@@ -226,7 +235,13 @@ export const toTicket = (r: TicketRow): Ticket => ({
   prState: toPullRequestState(r.pr_state),
   prAdditions: r.pr_additions,
   prDeletions: r.pr_deletions,
-  playbook: r.playbook,
+  // A cast, not a check, for the same reason `jsonList` in ticket-store.ts does not validate
+  // the items it parses: only this API writes the column, and `updateTicket` tests every
+  // incoming value against `PLAYBOOKS` before it goes in, so what comes back out is what we
+  // put there. Unlike `toStatus`, which must decode a value Herdr-era rows could disagree
+  // about, there is nothing here to decide. This is the seam to tighten if anything other
+  // than this API ever gains write access to `tickets.playbook`.
+  playbook: r.playbook as Playbook,
   taskBreakdown: r.task_breakdown,
   acceptanceCriteria: r.acceptance_criteria,
   attachments: r.attachments,

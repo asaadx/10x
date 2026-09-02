@@ -10,8 +10,8 @@ import type { Project, Ticket } from "@/types.ts";
  * truncate, a description long enough for the single-line clamp to matter, a second project
  * with tickets of its own so the project filter has something to prove, an empty column, an
  * in-review ticket with a before screenshot captured and no after yet (the sheet's placeholder
- * pane for the missing side), and a ticket left at the inherited `null` playbook next to
- * others with a real one so the empty case is visible too.
+ * pane for the missing side), and tickets spread across several playbooks so the picker is not
+ * only ever seen on one value.
  *
  * These are checked against the real `GET /tickets` shape now, not a local copy of it, so the
  * resolved fields have to be internally consistent: `branch` and `agentName` are always present
@@ -73,8 +73,9 @@ const base: Ticket = {
   startedAt: null,
   // The object is always present now; only its sides are nullable until a shot is captured.
   screenshots: { before: null, after: null },
-  // Null until a ticket is given a profile.
-  playbook: null,
+  // Never null: the column is NOT NULL with this exact default (see the backend's db.ts), and
+  // it is the option the sheet's picker shows first.
+  playbook: "fullstack",
   // Empty until a Plan agent (or a human) fills them in; the columns default to '[]', never null.
   taskBreakdown: [],
   acceptanceCriteria: [],

@@ -31,15 +31,24 @@ export type PullRequestState = "open" | "merged" | "closed";
  * Which configured profile a ticket is dispatched with. Unlike `agentStatus`, which is left
  * as a bare `string` because Herdr owns that vocabulary, 10x owns this one, so a closed union
  * is safe and gives the board an exhaustive option list.
+ *
+ * The array is the declaration and the type is derived from it, never the other way around:
+ * the list is needed at runtime as well as at compile time, because the PATCH validator in
+ * ticket-store.ts tests membership against exactly these values. A hand-written union beside
+ * a hand-written validation list is two copies of one fact, and they drift silently — the
+ * only symptom is the board offering a value the API then refuses to write.
  */
-export type Playbook =
-  | "fullstack"
-  | "frontend"
-  | "backend"
-  | "database"
-  | "devops"
-  | "docs"
-  | "research";
+export const PLAYBOOKS = [
+  "fullstack",
+  "frontend",
+  "backend",
+  "database",
+  "devops",
+  "docs",
+  "research",
+] as const;
+
+export type Playbook = (typeof PLAYBOOKS)[number];
 
 /**
  * One line of a task breakdown or an acceptance criteria list. Stored as JSON text inside the
@@ -91,12 +100,11 @@ export type Ticket = {
   prAdditions: number | null;
   prDeletions: number | null;
   /**
-   * The dispatch profile, or null when the ticket has never been given one. Typed as a bare
-   * string rather than `Playbook` because nothing narrows it: the column is TEXT and the PATCH
-   * handler accepts any string, so claiming the union here would be a promise the write path
-   * does not keep. Narrowing it means adding a decode boundary like `toStatus`.
+   * The dispatch profile. Never null: the column is NOT NULL with a 'fullstack' default (see
+   * db.ts), because every ticket is dispatched with some profile and the picker offers no way
+   * to choose none — a nullable field would model a state the product does not have.
    */
-  playbook: string | null;
+  playbook: Playbook;
   /**
    * The plan and its attachments, each one JSON text in a single column (see db.ts). Empty
    * arrays, never null: the columns default to '[]', so "no items yet" and "never migrated"

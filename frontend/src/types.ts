@@ -2,8 +2,9 @@
  * The frontend's view of the shared vocabulary.
  *
  * Not a copy any more: every shape below comes from `@10x/backend/types`, the single file both
- * packages define these in. That file is import-free by design, and these are `import type`
- * only, so `verbatimModuleSyntax` erases the whole thing at build — no backend code, and in
+ * packages define these in. All but one of them are `import type`, which `verbatimModuleSyntax`
+ * erases at build; the exception is `PLAYBOOKS`, a seven-string array. That file is import-free
+ * by design, so even the value export pulls in nothing but itself — no backend code, and in
  * particular no `node:sqlite`, reaches the bundle.
  *
  * The duplication this replaces is exactly the drift the monorepo was split to prevent: the
@@ -17,11 +18,10 @@
 // `Status` is also imported, not just re-exported: `COLUMNS` below needs it in local scope.
 import type { Status } from "@10x/backend/types";
 
-// `Playbook` here is the closed set of options the picker offers, not the wire contract: a
-// ticket's `playbook` field is `string | null` on the wire, because playbooks are becoming
-// user-authored YAML files and a closed union would be wrong for anything the write path
-// actually accepts. Use `Playbook` to render/type the option list; keep ticket-derived state
-// as `string`.
+// `PLAYBOOKS` is a value, not a type, so it needs its own re-export line: it is the runtime
+// list the backend validates against, and the picker builds its options from the same array.
+export { PLAYBOOKS } from "@10x/backend/types";
+
 export type {
   BoardResponse,
   Diagnostics,
