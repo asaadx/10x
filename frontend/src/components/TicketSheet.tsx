@@ -154,7 +154,7 @@ function AttachmentDropZone() {
 // can reach it, and an option that ever drifted out of `PLAYBOOKS` would be ignored here
 // instead of being sent as a write the backend then rejects.
 const isPlaybook = (value: string): value is Playbook =>
-  PLAYBOOKS.some((playbook) => playbook.slug === value);
+  PLAYBOOKS.some((playbook) => playbook === value);
 
 /**
  * Opened either from the Backlog column's New ticket button, with `ticket` null, or from a
@@ -174,10 +174,10 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
   // already has a row called Agent for the running Herdr agent's name, so this control is named
   // Playbook rather than colliding with it. It is local state only — nothing persists this yet,
   // same as the rest of the composer's fields before Add is wired up.
-  // Every ticket has one: the column is NOT NULL, defaulting to 'fullstack', which is also
-  // what the picker shows first — so seeding a create with it matches what the API would
-  // store anyway.
-  const [playbook, setPlaybook] = useState<Playbook>(ticket?.playbook ?? "fullstack");
+  // Every ticket has one: the column is NOT NULL, and its default is the first entry of
+  // `PLAYBOOKS`, which is also what the picker shows first — so seeding a create with it
+  // matches what the API would store anyway, without naming a playbook value here.
+  const [playbook, setPlaybook] = useState<Playbook>(ticket?.playbook ?? PLAYBOOKS[0]);
   // Task Breakdown and Acceptance Criteria are the plan a Plan agent is meant to produce; there
   // is no wire field for either yet, so both live only as local state, same as Playbook above.
   // Seeded from `ticket` via a `useState` initializer rather than an effect: `App.tsx` keys this
@@ -201,7 +201,7 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
       setTitle(ticket?.title ?? "");
       setDescription(ticket?.description ?? "");
       setProjectId(ticket?.projectId ?? defaultProjectId);
-      setPlaybook(ticket?.playbook ?? "fullstack");
+      setPlaybook(ticket?.playbook ?? PLAYBOOKS[0]);
       setTaskBreakdown([{ text: "", done: false }]);
       setAcceptanceCriteria([{ text: "", done: false }]);
     }
@@ -277,8 +277,8 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
               }}
               className="w-full"
             >
-              {PLAYBOOKS.map(({ slug, name }) => (
-                <NativeSelectOption key={slug} value={slug}>
+              {PLAYBOOKS.map((name) => (
+                <NativeSelectOption key={name} value={name}>
                   {name}
                 </NativeSelectOption>
               ))}

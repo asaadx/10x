@@ -242,11 +242,11 @@ const isChecklist = (value: unknown): value is ChecklistItem[] =>
 
 /**
  * The same asymmetry, for the one closed vocabulary a request can set. `PLAYBOOKS` is the
- * only list of slugs in the codebase, so this guard cannot fall behind the union it narrows
- * to, and the error message can name the allowed values without repeating them.
+ * only list of playbook values in the codebase, so this guard cannot fall behind the union
+ * it narrows to, and the error message can name the allowed values without repeating them.
  */
 const isPlaybook = (value: unknown): value is Playbook =>
-  PLAYBOOKS.some((playbook) => playbook.slug === value);
+  PLAYBOOKS.some((playbook) => playbook === value);
 
 /** Owned by the lifecycle, so naming one in a PATCH is a mistake worth reporting. */
 const IMMUTABLE = [
@@ -357,7 +357,7 @@ export function updateTicket(id: string, input: unknown): TicketResult {
     // Nothing to clear: the column is NOT NULL, so there is no "no profile" to write and null
     // is a non-member like any other. Absent still means "leave the column alone".
     if (!isPlaybook(playbook)) {
-      return invalid("playbook", `must be one of: ${PLAYBOOKS.map((p) => p.slug).join(", ")}`);
+      return invalid("playbook", `must be one of: ${PLAYBOOKS.join(", ")}`);
     }
     columns.push(["playbook", playbook]);
   }

@@ -20,8 +20,8 @@
 import type { Status } from "@10x/backend/types";
 
 // `PLAYBOOKS` is a value, not a type, so it needs its own re-export line: it is the runtime
-// list the backend validates against, and the picker builds its options — slug and display
-// name both — from the same array.
+// list the backend validates against, and each entry is both the option the picker shows and
+// the value it sends.
 export { PLAYBOOKS } from "@10x/backend/types";
 
 export type {

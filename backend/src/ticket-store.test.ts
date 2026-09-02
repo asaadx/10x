@@ -85,9 +85,9 @@ describe("plan column decoding", () => {
   test("a row inserted with only the original columns decodes to the plan-field defaults", () => {
     seed("t-decode-defaults", 0, 0);
     const ticket = loaded("t-decode-defaults");
-    // Not null: the column is NOT NULL DEFAULT 'fullstack', so a row created without a
+    // Not null: the column is NOT NULL DEFAULT 'Fullstack', so a row created without a
     // playbook still has one, which is what the type promises every consumer.
-    assert.equal(ticket.playbook, "fullstack");
+    assert.equal(ticket.playbook, "Fullstack");
     assert.deepEqual(ticket.taskBreakdown, []);
     assert.deepEqual(ticket.acceptanceCriteria, []);
     assert.deepEqual(ticket.attachments, []);
@@ -139,12 +139,12 @@ describe("updateTicket plan fields", () => {
       { text: "no implementation changed", done: true },
     ];
     const result = updateTicket("t-round-trip", {
-      playbook: "frontend",
+      playbook: "Frontend",
       taskBreakdown,
       acceptanceCriteria,
     });
     if (!result.ok) assert.fail(`update rejected: ${JSON.stringify(result.body)}`);
-    assert.equal(result.ticket.playbook, "frontend");
+    assert.equal(result.ticket.playbook, "Frontend");
     assert.deepEqual(result.ticket.taskBreakdown, taskBreakdown);
     assert.deepEqual(result.ticket.acceptanceCriteria, acceptanceCriteria);
 
@@ -160,26 +160,28 @@ describe("updateTicket plan fields", () => {
 
   test("an unrecognised playbook is rejected, naming the field and writing nothing", () => {
     seed("t-playbook-unknown", 0, 0);
-    updateTicket("t-playbook-unknown", { playbook: "backend" });
-    assert.equal(loaded("t-playbook-unknown").playbook, "backend");
+    updateTicket("t-playbook-unknown", { playbook: "Backend" });
+    assert.equal(loaded("t-playbook-unknown").playbook, "Backend");
 
-    const body = rejected("t-playbook-unknown", { playbook: "kubernetes" });
+    // Lowercase "frontend" is the near-miss worth rejecting: it is exactly what this branch
+    // used to store, and the stored value is now the displayed name, case and all.
+    const body = rejected("t-playbook-unknown", { playbook: "frontend" });
     assert.equal(body["error"], "invalid_input");
     assert.equal(body.field, "playbook");
     // The frontend shows this message, so it has to name what is allowed.
-    assert.match(String(body.message), /fullstack/);
-    // Rejected means nothing was written: the slug that was there survives.
-    assert.equal(loaded("t-playbook-unknown").playbook, "backend");
+    assert.match(String(body.message), /Fullstack/);
+    // Rejected means nothing was written: the value that was there survives.
+    assert.equal(loaded("t-playbook-unknown").playbook, "Backend");
   });
 
   test("null is rejected too — a NOT NULL column has nothing to clear", () => {
     seed("t-playbook-null", 0, 0);
-    updateTicket("t-playbook-null", { playbook: "devops" });
+    updateTicket("t-playbook-null", { playbook: "DevOps" });
 
     const body = rejected("t-playbook-null", { playbook: null });
     assert.equal(body["error"], "invalid_input");
     assert.equal(body.field, "playbook");
-    assert.equal(loaded("t-playbook-null").playbook, "devops");
+    assert.equal(loaded("t-playbook-null").playbook, "DevOps");
   });
 
   test("a playbook that is not a string at all is rejected the same way", () => {
@@ -187,7 +189,7 @@ describe("updateTicket plan fields", () => {
     const body = rejected("t-playbook-nonstring", { playbook: 3 });
     assert.equal(body["error"], "invalid_input");
     assert.equal(body.field, "playbook");
-    assert.equal(loaded("t-playbook-nonstring").playbook, "fullstack");
+    assert.equal(loaded("t-playbook-nonstring").playbook, "Fullstack");
   });
 
   test("a checklist that is not an array is rejected, naming that checklist", () => {

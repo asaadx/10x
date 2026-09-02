@@ -17,14 +17,15 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { allocateSlot, type SlotAllocation } from "./ports.ts";
-import type {
-  Attachment,
-  ChecklistItem,
-  Playbook,
-  Project,
-  PullRequestState,
-  Status,
-  Ticket,
+import {
+  PLAYBOOKS,
+  type Attachment,
+  type ChecklistItem,
+  type Playbook,
+  type Project,
+  type PullRequestState,
+  type Status,
+  type Ticket,
 } from "./types.ts";
 
 export const STATE_DIR = process.env.STATE_DIR ?? join(homedir(), ".10x");
@@ -77,9 +78,9 @@ CREATE TABLE IF NOT EXISTS tickets (
   pr_deletions INTEGER,
   -- The ticket's dispatch profile, one of the values in the Playbook union. NOT NULL with a
   -- default rather than nullable: every ticket is dispatched with some profile, the picker
-  -- offers no "none", and 'fullstack' is the option it shows first — so a row's data agrees
-  -- with what the board renders for it instead of a null that reads as fullstack anyway.
-  playbook    TEXT NOT NULL DEFAULT 'fullstack',
+  -- offers no "none", and 'Fullstack' is the option it shows first — so a row's data agrees
+  -- with what the board renders for it instead of a null that reads as Fullstack anyway.
+  playbook    TEXT NOT NULL DEFAULT 'Fullstack',
   -- The plan a ticket carries: its task breakdown, its acceptance criteria, and the files
   -- attached to it. JSON text rather than child tables because all three are only ever read
   -- and written whole with their ticket — there is no query that wants one item, and no join
@@ -135,9 +136,9 @@ addColumnIfMissing("tickets", "pr_additions", "INTEGER");
 addColumnIfMissing("tickets", "pr_deletions", "INTEGER");
 
 // ADD COLUMN accepts NOT NULL only alongside a non-null constant default, which '[]' and
-// 'fullstack' both are — and SQLite hands that default back for every row that predates the
+// 'Fullstack' both are — and SQLite hands that default back for every row that predates the
 // column, so a migrated row reads as an empty list, or as the default playbook, never as NULL.
-addColumnIfMissing("tickets", "playbook", "TEXT NOT NULL DEFAULT 'fullstack'");
+addColumnIfMissing("tickets", "playbook", "TEXT NOT NULL DEFAULT 'Fullstack'");
 addColumnIfMissing("tickets", "task_breakdown", "TEXT NOT NULL DEFAULT '[]'");
 addColumnIfMissing("tickets", "acceptance_criteria", "TEXT NOT NULL DEFAULT '[]'");
 addColumnIfMissing("tickets", "attachments", "TEXT NOT NULL DEFAULT '[]'");
@@ -149,7 +150,17 @@ addColumnIfMissing("tickets", "started_at", "TEXT");
 // `addColumnIfMissing` above will not revisit it and its NOT NULL default never applies to
 // those rows. One idempotent backfill covers them: without it, every such row's decode hits
 // a NULL in a column typed `Playbook` and throws.
-db.exec("UPDATE tickets SET playbook = 'fullstack' WHERE playbook IS NULL");
+db.exec("UPDATE tickets SET playbook = 'Fullstack' WHERE playbook IS NULL");
+
+// And a database written while this branch stored lowercase slugs ('fullstack', 'devops')
+// holds values the union no longer contains. Lowercasing a name yields exactly the slug it
+// replaced, so the remap is derived from `PLAYBOOKS` itself rather than hand-listed — there
+// is no second list to fall behind the first. Idempotent: a row already holding the exact
+// name matches itself and is rewritten to the same value.
+const remapPlaybook = db.prepare(
+  "UPDATE tickets SET playbook = ? WHERE lower(playbook) = lower(?)",
+);
+for (const playbook of PLAYBOOKS) remapPlaybook.run(playbook, playbook);
 
 export const nowIso = () => new Date().toISOString();
 
