@@ -3,6 +3,7 @@ import { BookOpen, Columns3, LayoutDashboard } from "lucide-react";
 
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select.tsx";
 import { ALL_PROJECTS } from "@/lib/board.ts";
+import type { SteerMode } from "@/lib/steer-mode.ts";
 import type { Theme } from "@/lib/theme.ts";
 import type { Project } from "@/types.ts";
 
@@ -10,6 +11,8 @@ type Props = {
   projects: Project[];
   projectId: string;
   onProjectChange: (id: string) => void;
+  steerMode: SteerMode;
+  onSteerModeChange: (mode: SteerMode) => void;
   theme: Theme;
   onThemeToggle: () => void;
 };
@@ -22,7 +25,20 @@ const DESTINATIONS = [
   { label: "Playbooks", icon: BookOpen, active: false },
 ];
 
-export function NavBar({ projects, projectId, onProjectChange, theme, onThemeToggle }: Props) {
+export function NavBar({
+  projects,
+  projectId,
+  onProjectChange,
+  steerMode,
+  onSteerModeChange,
+  theme,
+  onThemeToggle,
+}: Props) {
+  // steerMode is the persisted lowercase SteerMode union member; capitalizing it for
+  // display/aria text is purely presentational, so both derive from this one lowercase
+  // value instead of a second hardcoded capitalized literal that can drift out of sync.
+  const otherSteerMode: SteerMode = steerMode === "local" ? "remote" : "local";
+
   return (
     <header className="shrink-0 border-b">
       <div className="mx-auto grid h-12 w-full max-w-[1600px] grid-cols-[1fr_auto_1fr] items-center gap-4 px-4">
@@ -46,6 +62,38 @@ export function NavBar({ projects, projectId, onProjectChange, theme, onThemeTog
         </nav>
 
         <div className="flex items-center gap-3 justify-self-end">
+          {/*
+            One button, not a segmented pair: the control only ever shows the mode that's
+            active, so there is nothing for a second segment to add — the label already names
+            the alternative it will switch to. Amber marks remote because amber already means
+            "a human has to go do something in Herdr" on the card's `blocked` chip, and remote
+            steering is exactly that meaning again, not a new colour code; local is the direct,
+            nothing-else-needed state, so it gets emerald like a `done` column dot.
+          */}
+          <button
+            type="button"
+            onClick={() => onSteerModeChange(otherSteerMode)}
+            aria-label={`Steer mode: ${steerMode.charAt(0).toUpperCase() + steerMode.slice(1)}. Switch to ${
+              otherSteerMode.charAt(0).toUpperCase() + otherSteerMode.slice(1)
+            }.`}
+            title={
+              steerMode === "local"
+                ? "Local steering focuses the agent's pane on this machine."
+                : "Remote steering also copies the herdr --remote attach command."
+            }
+            className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs transition-colors ${
+              steerMode === "local"
+                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                : "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+            }`}
+          >
+            <span
+              aria-hidden
+              className={`size-1.5 rounded-full ${steerMode === "local" ? "bg-emerald-500" : "bg-amber-500"}`}
+            />
+            <span className="capitalize">{steerMode}</span>
+          </button>
+
           {/*
             A real <select>, not the Radix listbox: the e2e suite asserts
             getByRole("option", { name }) without opening anything, and Radix only renders its

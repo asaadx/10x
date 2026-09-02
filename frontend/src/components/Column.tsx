@@ -4,6 +4,7 @@ import { TicketCard } from "@/components/TicketCard.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Spinner } from "@/components/ui/spinner.tsx";
 import { columnIsWorking } from "@/lib/board.ts";
+import type { SteerMode } from "@/lib/steer-mode.ts";
 import type { Status, Ticket } from "@/types.ts";
 
 /**
@@ -29,11 +30,12 @@ type Props = {
   status: Status;
   label: string;
   tickets: Ticket[];
+  steerMode: SteerMode;
   onNewTicket?: () => void;
   onOpenTicket: (ticket: Ticket) => void;
 };
 
-export function Column({ status, label, tickets, onNewTicket, onOpenTicket }: Props) {
+export function Column({ status, label, tickets, steerMode, onNewTicket, onOpenTicket }: Props) {
   const headingId = `${status}-heading`;
   // columnIsWorking already means "an agent in this column is generating": a planning agent
   // in Backlog and an In Review agent steered by hand in Herdr (a second working cycle; see
@@ -85,7 +87,7 @@ export function Column({ status, label, tickets, onNewTicket, onOpenTicket }: Pr
           </p>
         )}
         {tickets.map((t) => (
-          <TicketCard key={t.id} ticket={t} onOpen={() => onOpenTicket(t)} />
+          <TicketCard key={t.id} ticket={t} steerMode={steerMode} onOpen={() => onOpenTicket(t)} />
         ))}
       </div>
 
