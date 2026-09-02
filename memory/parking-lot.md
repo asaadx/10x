@@ -296,3 +296,47 @@ filtering problem, not a pipeline one, and is better served by an `archived` fla
 by permanent board real estate. Six columns also squeeze card width at this density, and an empty
 sixth column is dead space on camera. Revisit only when Done actually becomes unusable, and then as
 a filter first.
+
+---
+
+## Open question: steering across machines
+
+Steering is `agent.focus` on the local host today, wired behind a Local/Remote toggle in the top
+bar. Local mode calls `agent.focus` directly. Remote mode instead copies `herdr --remote
+<ssh-target>` to the clipboard for the user to paste into their own terminal. This is a stopgap: it
+works, and it leaves two problems unsolved.
+
+### Problem one: focus mutates agent state
+
+**Verified, from `herdr --skill`:** focusing a tab, or targeting a pane or agent with a focus
+command, marks it seen, and `done` is the same underlying idle state as `idle` but with work
+unseen. So clicking Steer flips a `done` agent to `idle`.
+
+**Inferred consequence for the board:** any automatic transition the board keys off `done` can be
+defeated by a human focusing the pane, and the board must not treat `done` as a durable fact once a
+focus command has been issued against that pane.
+
+### Problem two: the UI/UX cost
+
+Neither mode is one click from the board. Local mode still requires tabbing into the terminal.
+Remote mode requires pasting a command and then SSHing in by hand.
+
+### Options explored
+
+- **Render the pane in the board.** `pane.read` takes `pane_id`, `lines`, `format`, `source`, and
+  `strip_ansi`, and returns `text` with a `revision`; `format` is `text` or `ansi`; `source` is
+  `visible`, `recent`, `recent_unwrapped`, or `detection`. `pane.send_text` takes `pane_id` and
+  `text`, and `pane.send_keys` takes `pane_id` and `keys`. Together these are a complete read/write
+  loop, so a browser terminal is buildable with no new backend capability. Capability is preserved
+  because the text goes to the real pane running the real agent, so skills, slash commands, and
+  shell access are untouched. What is lost is fidelity: snapshots rather than a live stream, and a
+  real terminal emulator would be needed to render `ansi` correctly. Safety point: approval prompts
+  read through a lossy view risk approving something unread.
+- **Local/remote detection.** Two code paths, and a web page cannot drive the user's terminal
+  without the same locally installed helper a deeplink would need.
+- **Deeplinking.** Needs a registered URI scheme plus a per-OS helper install.
+- **omp's `/collab`.** Couples steering to the `omp` agent kind rather than to Herdr, so it does
+  not generalise to other agent kinds. Unverified.
+
+**Open question: whether to build the in-board terminal.** Judged too large for the current
+budget, not rejected on merit.
