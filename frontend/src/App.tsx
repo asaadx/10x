@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { Column } from "@/components/Column.tsx";
-import { ComposerSheet } from "@/components/ComposerSheet.tsx";
+import { TicketSheet } from "@/components/TicketSheet.tsx";
 import { TopBar } from "@/components/TopBar.tsx";
 import { ALL_PROJECTS, matchesProject, ticketsForColumn } from "@/lib/board.ts";
 import { applyTheme, initialTheme, type Theme } from "@/lib/theme.ts";
 import { MOCK_PROJECTS, MOCK_TICKETS } from "@/mock.ts";
-import { COLUMNS, type SortOrder } from "@/types.ts";
+import { COLUMNS, type SortOrder, type Ticket } from "@/types.ts";
 
 /**
  * UI-only phase: everything renders from `mock.ts` and no button does anything yet. Wiring is
@@ -18,7 +18,8 @@ export function App() {
   const [projectId, setProjectId] = useState(MOCK_PROJECTS[0]!.id);
   const [query, setQuery] = useState("");
   const [order, setOrder] = useState<SortOrder>("newest");
-  const [composerOpen, setComposerOpen] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [sheetTicket, setSheetTicket] = useState<Ticket | null>(null);
 
   useEffect(() => applyTheme(theme), [theme]);
 
@@ -54,17 +55,29 @@ export function App() {
             label={label}
             tickets={ticketsForColumn(visible, status, query, order)}
             onNewTicket={
-              status === "backlog" || status === "todo" ? () => setComposerOpen(true) : undefined
+              status === "backlog" || status === "todo"
+                ? () => {
+                    setSheetTicket(null);
+                    setSheetOpen(true);
+                  }
+                : undefined
             }
+            onOpenTicket={(ticket) => {
+              setSheetTicket(ticket);
+              setSheetOpen(true);
+            }}
           />
         ))}
       </main>
 
-      <ComposerSheet
-        open={composerOpen}
-        onOpenChange={setComposerOpen}
+      {/* `key` re-seeds the form's local state when a different ticket is opened. */}
+      <TicketSheet
+        key={sheetTicket?.id ?? "new"}
+        open={sheetOpen}
+        onOpenChange={setSheetOpen}
         projects={MOCK_PROJECTS}
         defaultProjectId={projectId === ALL_PROJECTS ? "" : projectId}
+        ticket={sheetTicket}
       />
     </div>
   );

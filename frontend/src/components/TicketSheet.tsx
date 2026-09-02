@@ -1,0 +1,372 @@
+import { ImageIcon, Trash2, Upload } from "lucide-react";
+import { useState } from "react";
+
+import { DeleteTicketDialog } from "@/components/DeleteTicketDialog.tsx";
+import { Button } from "@/components/ui/button.tsx";
+import { Checkbox } from "@/components/ui/checkbox.tsx";
+import { Input } from "@/components/ui/input.tsx";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select.tsx";
+import { Separator } from "@/components/ui/separator.tsx";
+import {
+  Sheet,
+  SheetClose,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet.tsx";
+import { runFailed } from "@/lib/board.ts";
+import { cn } from "@/lib/utils.ts";
+import type { Project, Ticket } from "@/types.ts";
+
+type Props = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  projects: Project[];
+  defaultProjectId: string;
+  /** The ticket being viewed, or null to create a new one. */
+  ticket: Ticket | null;
+};
+
+/**
+ * One labelled Before/After pane: the image when its url is captured, or a placeholder when it
+ * isn't. Extracted so the two panes below share this markup instead of duplicating it.
+ */
+function ScreenshotPane({ label, url }: { label: string; url: string | null }) {
+  return (
+    <div className="grid gap-1.5">
+      <label className="text-xs text-muted-foreground">{label}</label>
+      {url ? (
+        <img src={url} alt={label} className="aspect-video w-full rounded-md border object-cover" />
+      ) : (
+        <div className="flex aspect-video w-full flex-col items-center justify-center gap-1.5 rounded-md border bg-muted text-xs text-muted-foreground">
+          <ImageIcon aria-hidden className="size-5" />
+          No screenshot
+        </div>
+      )}
+    </div>
+  );
+}
+
+type ChecklistRow = { text: string; done: boolean };
+
+// Blank rows are dropped except the trailing one, so the list never accumulates gaps, and a
+// fresh empty row is appended so the list always ends on the row that is still an input.
+function normalizeChecklistRows(rows: ChecklistRow[]): ChecklistRow[] {
+  return [...rows.filter((row) => row.text.trim() !== ""), { text: "", done: false }];
+}
+
+/**
+ * Task Breakdown and Acceptance Criteria are both this same growing checklist: the plan a Plan
+ * agent is meant to produce, held here as local state because there is no field for it yet. The
+ * trailing empty row is always present and is the input line — typing into it grows the list by
+ * one, so there is no separate "add row" affordance — and the `done/total` count this heading
+ * shows is what an In Review card would eventually surface.
+ */
+function Checklist({
+  label,
+  rows,
+  onRowsChange,
+}: {
+  label: string;
+  rows: ChecklistRow[];
+  onRowsChange: (rows: ChecklistRow[]) => void;
+}) {
+  const total = rows.length - 1;
+  const done = rows.slice(0, total).filter((row) => row.done).length;
+
+  return (
+    <div className="grid gap-1.5">
+      <label className="text-xs text-muted-foreground">
+        {label} <span>{done}/{total}</span>
+      </label>
+      <div className="grid gap-1">
+        {rows.map((row, index) => {
+          const trailing = index === rows.length - 1;
+          return (
+            <div key={index} className="flex items-center gap-2">
+              <Checkbox
+                checked={row.done}
+                disabled={trailing}
+                onCheckedChange={(checked) =>
+                  onRowsChange(rows.map((r, i) => (i === index ? { ...r, done: checked === true } : r)))
+                }
+              />
+              <input
+                value={row.text}
+                onChange={(e) => {
+                  const next = rows.map((r, i) => (i === index ? { ...r, text: e.target.value } : r));
+                  onRowsChange(normalizeChecklistRows(next));
+                }}
+                placeholder={trailing ? "Add an item…" : undefined}
+                className={cn(
+                  "h-6 w-full min-w-0 border-0 bg-transparent text-sm outline-none placeholder:text-muted-foreground",
+                  row.done && "line-through text-muted-foreground"
+                )}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Opened either from the Backlog column's New ticket button, with `ticket` null, or from a
+ * card's title/overflow menu, with `ticket` set — the one detail surface for both creating and
+ * viewing/editing. `Sheet` is Radix Dialog underneath, so Escape, the backdrop and focus
+ * containment are the platform's job rather than hand-written focus code — the same reason the
+ * previous implementation used a native `<dialog>`.
+ */
+export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ticket }: Props) {
+  const creating = ticket === null;
+  const [title, setTitle] = useState(ticket?.title ?? "");
+  const [description, setDescription] = useState(ticket?.description ?? "");
+  const [projectId, setProjectId] = useState(ticket?.projectId ?? defaultProjectId);
+  // Agent is chosen at create time because it decides which agent profile gets spawned for the
+  // ticket, and it is local state only — nothing persists this yet, same as the rest of the
+  // composer's fields before Add is wired up.
+  const [agent, setAgent] = useState("fullstack");
+  // Task Breakdown and Acceptance Criteria are the plan a Plan agent is meant to produce; there
+  // is no wire field for either yet, so both live only as local state, same as Agent above.
+  const [taskBreakdown, setTaskBreakdown] = useState<ChecklistRow[]>([{ text: "", done: false }]);
+  const [acceptanceCriteria, setAcceptanceCriteria] = useState<ChecklistRow[]>([{ text: "", done: false }]);
+
+  // The callsite's `key` re-seeds this component when a *different* ticket is opened, but the
+  // create key is the constant "new", so the composer never remounts between one creation
+  // attempt and the next. This reset is what stops a half-typed new ticket from surviving
+  // Cancel, and what discards unsaved edits when backing out of viewing an existing one.
+  const close = (next: boolean) => {
+    if (!next) {
+      setTitle(ticket?.title ?? "");
+      setDescription(ticket?.description ?? "");
+      setProjectId(ticket?.projectId ?? defaultProjectId);
+      setTaskBreakdown([{ text: "", done: false }]);
+      setAcceptanceCriteria([{ text: "", done: false }]);
+    }
+    onOpenChange(next);
+  };
+
+  const failed = !creating && runFailed(ticket);
+  // A branch/agent name is a formula over the project slug and ticket number (memory/naming.md),
+  // so it is non-empty even for a ticket that has never been spawned — dispatched is the actual
+  // existence check for those two rows.
+  const dispatched = ticket !== null && (ticket.sessionDir !== null || ticket.hasWorktree);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  return (
+    <Sheet open={open} onOpenChange={close}>
+      <SheetContent side="right" className="w-full sm:max-w-md">
+        <SheetHeader>
+          <SheetTitle>{creating ? "New ticket" : ticket.id}</SheetTitle>
+          {creating && (
+            <SheetDescription>Describe the work. The agent reads the title and description.</SheetDescription>
+          )}
+        </SheetHeader>
+
+        {/*
+          Project leads: it decides which repo the agent is dispatched into, so choosing it
+          after writing the work is choosing it too late. It has no default when the board is
+          showing every project, because "all" is not somewhere a ticket can be created.
+        */}
+        <div className="grid gap-4 px-4">
+          <div className="grid gap-1.5">
+            <label htmlFor="c-project" className="text-xs text-muted-foreground">
+              Project <span className="text-destructive">*</span>
+            </label>
+            {/* A ticket cannot change project once created: its branch and worktree are already
+                derived from the project slug. */}
+            <NativeSelect
+              id="c-project"
+              required
+              disabled={!creating}
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value)}
+              className="w-full"
+            >
+              <NativeSelectOption value="">Select a project</NativeSelectOption>
+              {projects.map((p) => (
+                <NativeSelectOption key={p.id} value={p.id}>
+                  {p.name}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+          </div>
+
+          {creating && (
+            <div className="grid gap-1.5">
+              <label htmlFor="c-agent" className="text-xs text-muted-foreground">
+                Agent
+              </label>
+              <NativeSelect
+                id="c-agent"
+                aria-label="Agent"
+                value={agent}
+                onChange={(e) => setAgent(e.target.value)}
+                className="w-full"
+              >
+                <NativeSelectOption value="fullstack">Full-stack</NativeSelectOption>
+                <NativeSelectOption value="frontend">Frontend</NativeSelectOption>
+                <NativeSelectOption value="backend">Backend</NativeSelectOption>
+                <NativeSelectOption value="database">Database</NativeSelectOption>
+                <NativeSelectOption value="devops">DevOps</NativeSelectOption>
+                <NativeSelectOption value="docs">Docs</NativeSelectOption>
+                <NativeSelectOption value="research">Research</NativeSelectOption>
+              </NativeSelect>
+            </div>
+          )}
+
+          <div className="grid gap-1.5">
+            <label htmlFor="c-title" className="text-xs text-muted-foreground">
+              Title <span className="text-destructive">*</span>
+            </label>
+            <Input
+              id="c-title"
+              required
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Short summary"
+            />
+          </div>
+
+          <div className="grid gap-1.5">
+            <label htmlFor="c-desc" className="text-xs text-muted-foreground">
+              Description
+            </label>
+            <textarea
+              id="c-desc"
+              rows={creating ? 8 : 12}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="What should the agent do?"
+              className="min-h-24 resize-y rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            />
+          </div>
+
+          <Checklist label="Task Breakdown" rows={taskBreakdown} onRowsChange={setTaskBreakdown} />
+
+          <Checklist label="Acceptance Criteria" rows={acceptanceCriteria} onRowsChange={setAcceptanceCriteria} />
+
+          {/* Presentational until there is somewhere to put a file: no input, no drag handlers,
+              no upload. An attachment is only worth having once it can be fed into the agent's
+              spawn prompt, which isn't wired up yet. */}
+          {creating && (
+            <div className="grid gap-1.5">
+              <label className="text-xs text-muted-foreground">Attachments</label>
+              <div className="flex h-24 flex-col items-center justify-center gap-1.5 rounded-md border border-dashed text-xs text-muted-foreground">
+                <Upload aria-hidden className="size-5" />
+                Drag files here, or click to browse
+              </div>
+            </div>
+          )}
+
+          {!creating && (
+            <>
+              <Separator />
+
+              {/* Branch is derived, never entered, and — like Agent — is a formula that names
+                  something that may not exist yet, so it requires dispatch too. */}
+              <div className="grid gap-4">
+                {dispatched && (
+                  <div className="grid gap-1.5">
+                    <label className="text-xs text-muted-foreground">Branch</label>
+                    <Input readOnly disabled value={ticket.branch} />
+                  </div>
+                )}
+
+                <div className="grid gap-1.5">
+                  <label className="text-xs text-muted-foreground">Worktree</label>
+                  <Input readOnly disabled value={ticket.worktreePath ?? "—"} />
+                </div>
+
+                {/* Agent is derived the same way as Branch, so it proves nothing about whether
+                    an agent exists — and Accept is `retireAgent`, which closes the pane and
+                    deletes the transcript (memory/teardown.md), so a Done ticket's agent is
+                    gone. Require both dispatch and not-done. */}
+                {dispatched && ticket.status !== "done" && (
+                  <div className="grid gap-1.5">
+                    <label className="text-xs text-muted-foreground">Agent</label>
+                    <Input readOnly disabled value={ticket.agentName ?? "—"} />
+                  </div>
+                )}
+
+                {ticket.prUrl && (
+                  <div className="grid gap-1.5">
+                    <label className="text-xs text-muted-foreground">Pull request</label>
+                    <a
+                      href={ticket.prUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-sm underline-offset-2 hover:underline"
+                    >
+                      <span className="font-mono">PR #{ticket.prNumber}</span>
+                      {ticket.prAdditions !== null && ticket.prDeletions !== null && (
+                        <span className="font-mono text-xs">
+                          <span className="text-emerald-600 dark:text-emerald-400">+{ticket.prAdditions}</span>{" "}
+                          <span className="text-red-600 dark:text-red-400">&minus;{ticket.prDeletions}</span>
+                        </span>
+                      )}
+                    </a>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* Shown only when a before/after pair exists, so no ticket needs to be classified as
+              a UI change — most tickets simply have `screenshots: null` and render nothing here.
+              Both urls are null today because nothing captures them yet, which is what
+              `ScreenshotPane`'s placeholder is for. */}
+          {!creating && ticket.screenshots && (
+            <div className="grid gap-4">
+              <ScreenshotPane label="Before" url={ticket.screenshots.before} />
+              <ScreenshotPane label="After" url={ticket.screenshots.after} />
+            </div>
+          )}
+
+          {failed && (
+            <p className="rounded-md bg-destructive/10 p-2 text-xs text-destructive">
+              Run died — the pane exited before finishing. The worktree was kept so you can inspect it.
+            </p>
+          )}
+
+          {/* Off unless VITE_DIAGNOSTICS=true; see frontend/.env.example. */}
+          {!creating && import.meta.env["VITE_DIAGNOSTICS"] === "true" && ticket.diagnostics && (
+            <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 border-t pt-2 font-mono text-[11px] text-muted-foreground">
+              {Object.entries(ticket.diagnostics).map(([k, v]) => (
+                <div key={k} className="contents">
+                  <dt>{k}</dt>
+                  <dd className="text-right">{String(v)}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </div>
+
+        <SheetFooter className="flex-row items-center gap-2">
+          {!creating && (
+            <Button
+              variant="ghost"
+              className="mr-auto text-destructive hover:bg-destructive/10 hover:text-destructive"
+              onClick={() => setConfirmDelete(true)}
+            >
+              <Trash2 aria-hidden />
+              Delete
+            </Button>
+          )}
+          <SheetClose asChild>
+            <Button variant="outline">Cancel</Button>
+          </SheetClose>
+          {creating ? (
+            <Button disabled={title.trim() === "" || projectId === ""}>Add</Button>
+          ) : (
+            <Button disabled={title.trim() === ""}>Save</Button>
+          )}
+        </SheetFooter>
+      </SheetContent>
+      {!creating && <DeleteTicketDialog ticket={ticket} open={confirmDelete} onOpenChange={setConfirmDelete} />}
+    </Sheet>
+  );
+}

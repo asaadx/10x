@@ -36,27 +36,25 @@ export function TopBar({
     <header className="flex shrink-0 flex-wrap items-center gap-3 border-b px-4 py-2">
       <span className="font-semibold tracking-tight">10x</span>
 
-      <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        Project
-        {/*
-          A real <select>, not the Radix listbox: the e2e suite asserts
-          getByRole("option", { name }) without opening anything, and Radix only renders its
-          options into a portal while open.
-        */}
-        <NativeSelect
-          aria-label="Project"
-          value={projectId}
-          onChange={(e) => onProjectChange(e.target.value)}
-          className="h-8 w-40"
-        >
-          <NativeSelectOption value={ALL_PROJECTS}>All projects</NativeSelectOption>
-          {projects.map((p) => (
-            <NativeSelectOption key={p.id} value={p.id}>
-              {p.name}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
-      </label>
+      {/*
+        A real <select>, not the Radix listbox: the e2e suite asserts
+        getByRole("option", { name }) without opening anything, and Radix only renders its
+        options into a portal while open. `aria-label="Project"` is the only thing naming this
+        control now that the "Project" text beside it is gone — the e2e suite locates it that way.
+      */}
+      <NativeSelect
+        aria-label="Project"
+        value={projectId}
+        onChange={(e) => onProjectChange(e.target.value)}
+        className="h-8 w-40"
+      >
+        <NativeSelectOption value={ALL_PROJECTS}>All projects</NativeSelectOption>
+        {projects.map((p) => (
+          <NativeSelectOption key={p.id} value={p.id}>
+            {p.name}
+          </NativeSelectOption>
+        ))}
+      </NativeSelect>
 
       <div className="relative min-w-48 flex-1">
         <Search aria-hidden className="absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
