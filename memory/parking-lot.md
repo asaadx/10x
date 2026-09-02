@@ -8,6 +8,51 @@ mean starting from zero. Nothing here is in scope; nothing here blocks
 
 ---
 
+## e2e model policy: cheap and often
+
+**Decision.** The e2e suite spawns agents on a cheap model at low reasoning effort — Haiku, named
+as the example — not on whatever model a human would pick for real ticket work.
+
+**Why this does not weaken the suite.** The specs assert mechanism, not the quality of the code an
+agent writes. `expectZeroResidue` checks five independent things on teardown: the worktree
+directory is gone (`existsSync(run.worktreePath)`), the branch is absent from both
+`worktree.list` and `git rev-parse --verify`, the agent name is gone from `agent.list`, and the
+OMP transcript directory is gone from disk (verified: `e2e/fixtures.ts:534-540`). `spawnTicket`
+asserts the spawn call itself returns 200 and then reads `branch`, `agentName`, `worktreePath`,
+`paneId`, and `workspaceId` straight back off the API response and the stored ticket row
+(verified: `e2e/fixtures.ts:436-455`) — existence and identity of state, not content. The one place
+a probe agent's own output is checked is `PROBE_DESCRIPTION`, and even that is a fixed
+two-character file write asserted for presence, not a judgment call on code quality (verified:
+`e2e/fixtures.ts:208-213`). None of this cares whether the model reasoned well; it cares whether a
+worktree, a branch, a pane, and an event exist or do not.
+
+**The tradeoff.** A weaker model takes more turns to reach the same file write, so wall-clock time
+per run goes up (inferred — no timing comparison between models exists in this repo; the only
+measurement present is `spawnTicket`'s own `elapsedMs` log line at `e2e/fixtures.ts:442`, which
+records duration but never varies model to compare). Cost per run goes down, because the named
+alternative (Haiku) prices far below the models a human would choose for real ticket work
+(inferred — no pricing figures are recorded in this repo).
+
+**Why the tradeoff is worth taking.** Cost, not correctness, is what decides whether the suite
+gets run at all. `pnpm e2e:full` is the allow-listed run that exercises every real-agent spec
+(verified: `playwright.config.ts:28-31`, matching every `*.spec.ts`), and it spawns real paid
+agents on every run (verified: `e2e/fixtures.ts:198-200`, "Everything below drives REAL agents in
+REAL worktrees"). That cost is treated as prohibitive today, so the suite is not run. A suite too
+expensive to run often is not protecting anything; it is inert. A cheap run is what turns it back
+into something exercised regularly rather than avoided.
+
+**Where the change would go, and its status.** `backend/src/runner.ts:152-158` is the single
+`agent.start` call the e2e fixtures drive indirectly through `POST /tickets/:id/spawn` — `kind:
+"omp"`, with an `args` array currently holding only `["--append-system-prompt", promptFile,
+"--auto-approve"]` (verified: `backend/src/runner.ts:152-158`). A model and effort flag would be
+additional entries in that same `args` array. The exact `omp` flag names for model selection and
+reasoning effort are **unconfirmed** — a repo-wide search turns up no `--model`, no
+`reasoning-effort`, and no existing reference to Haiku or any other model name anywhere in this
+repo (verified: grep across the whole tree found nothing). This is not yet implemented; no file
+under `e2e/` or `backend/src/` has been changed to add it.
+
+---
+
 ## Remote access to the Herdr session from another machine
 
 **Goal:** sit at another machine, enter the live Herdr session on the host, steer a running agent,
