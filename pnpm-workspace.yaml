@@ -1,0 +1,7 @@
+# Two packages, listed explicitly rather than globbed: there are only ever going to be a
+# handful, and naming them makes the boundary obvious. `e2e/` is deliberately NOT a package
+# — it spawns the backend and drives the frontend, so it belongs to neither and lives at the
+# root alongside the tooling that runs it.
+packages:
+  - backend
+  - frontend

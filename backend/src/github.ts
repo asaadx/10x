@@ -5,7 +5,7 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { PullRequestState } from "./db.ts";
+import type { PullRequestState } from "./types.ts";
 
 const run = promisify(execFile);
 

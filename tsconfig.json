@@ -16,5 +16,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "e2e/**/*.ts", "playwright.config.ts"]
+  "include": ["backend/src/**/*.ts", "e2e/**/*.ts", "playwright.config.ts"]
 }

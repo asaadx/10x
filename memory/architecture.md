@@ -4,7 +4,7 @@
 
 How the 10x **server** itself is built: the module map, the storage model, the schema, the HTTP
 surface and the spawn lifecycle. Read this first to orient. Its two siblings are
-[frontend](./frontend.md) (everything under `public/`) and [testing](./testing.md) (both suites, and
+[frontend](./frontend.md) (everything under `frontend/`) and [testing](./testing.md) (both suites, and
 which one spawns real agents). The Herdr/OMP behaviour this code is written against lives in
 [spawn](./spawn.md), [socket](./socket.md), [agent-status](./agent-status.md),
 [teardown](./teardown.md) and [reconciliation](./reconciliation.md).
@@ -14,15 +14,40 @@ which one spawns real agents). The Herdr/OMP behaviour this code is written agai
 | Fact | Value |
 | --- | --- |
 | Runtime | Node **24** (`engines.node: ">=24"`); verified on `v24.19.0` |
-| Language | TypeScript executed directly — `node src/server.ts`, no build step |
-| Runtime dependencies | **zero**; `package.json` has no `dependencies` key at all |
-| devDependencies | `typescript ^5.7.2`, `@types/node ^24.13.3` for `tsc --noEmit`, plus `@playwright/test` for the e2e suite. No runtime dependency, ever. |
+| Language | TypeScript executed directly — `node backend/src/server.ts`, no build step |
+| Runtime dependencies | **zero**; `backend/package.json` has no `dependencies` key at all |
+| devDependencies | `typescript`, `@types/node` for `tsc --noEmit`, plus `@playwright/test` for the e2e suite — all at the workspace root, none in `backend/`. No runtime dependency, ever. |
 | Built-ins used | `node:sqlite`, `node:http`, `node:net`, `node:test`, `node:fs`, `node:child_process`, `node:timers/promises` |
-| tsconfig | `module`/`moduleResolution: nodenext`, `allowImportingTsExtensions`, `noEmit`, `strict`, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`, `erasableSyntaxOnly`, `target ES2023`; `include` covers `src/`, `e2e/` and `playwright.config.ts` |
+| tsconfig | `module`/`moduleResolution: nodenext`, `allowImportingTsExtensions`, `noEmit`, `strict`, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`, `erasableSyntaxOnly`, `target ES2023`; `include` covers `backend/src/`, `e2e/` and `playwright.config.ts` |
 
 Imports carry the `.ts` extension (`./herdr.ts`): Node resolves the real file, and `allowImportingTsExtensions` makes `tsc` agree.
 
 **The zero-dependency property is a constraint, not an accident.** SQLite, the test runner and the HTTP server are all standard library. Adding a runtime dependency is a decision to be argued for, not a detail to be slipped in.
+
+### The repository is two pnpm workspaces
+
+`backend/` and `frontend/` each own a `package.json`; the root one holds no application
+dependencies and exists to list the packages, carry the shared dev tooling and run the scripts CI
+calls. `pnpm-workspace.yaml` names the two explicitly rather than globbing `apps/*` — that
+convention earns its keep beside a `packages/` directory and there is none.
+
+**`e2e/` is deliberately not a workspace.** It spawns the backend *and* drives the frontend, so it
+belongs to neither and sits at the root with the tooling that runs it.
+
+Two reasons the split exists, both load-bearing:
+
+- **The zero-dependency claim stays checkable.** A single manifest would have put React, Vite and
+  Tailwind in the same tree as the server. Separating them keeps `backend/package.json` a manifest
+  you can read and see is empty. Nothing enforces that in CI — it rests on pnpm's resolution and on
+  not adding one.
+- **pnpm, not npm, because 10x spawns agents into git worktrees.** Every worktree is a full
+  checkout, so npm would materialise `node_modules` once per agent; pnpm hard-links from one
+  content-addressable store, so N worktrees cost one copy on disk and every install after the first
+  is near-instant. pnpm also **does not hoist**, so a package cannot import what it has not
+  declared — the isolation is enforced by resolution, not by folder discipline.
+
+`packageManager` in the root manifest pins the pnpm version, so CI and every agent worktree use the
+same one.
 
 ### Type stripping limits how code is written
 
@@ -35,9 +60,9 @@ enum E { A }
   SyntaxError [ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX]: TypeScript enum is not supported in strip-only mode
 ```
 
-So: no constructor parameter properties, no `enum`. `HerdrError` in `src/herdr.ts` is written the long way for exactly this reason — `readonly code: string` declared as a field, then assigned in the constructor body. Status is a **union type** (`"backlog" | "in_progress" | "in_review"`), never an enum.
+So: no constructor parameter properties, no `enum`. `HerdrError` in `backend/src/herdr.ts` is written the long way for exactly this reason — `readonly code: string` declared as a field, then assigned in the constructor body. Status is a **union type** (`"backlog" | "in_progress" | "in_review"`), never an enum.
 
-`tsconfig.json` sets `erasableSyntaxOnly`, so `npm run typecheck` rejects a parameter property or an `enum` instead of letting Node discover it at load time. The typechecker is the guard, not convention.
+`tsconfig.json` sets `erasableSyntaxOnly`, so `pnpm typecheck` rejects a parameter property or an `enum` instead of letting Node discover it at load time. The typechecker is the guard, not convention.
 
 ## 2. Module map
 
@@ -45,28 +70,28 @@ Line counts are `wc -l`, current as of this node.
 
 | File | Lines | Responsibility | I/O |
 | --- | --- | --- | --- |
-| `src/server.ts` | 681 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
-| `src/runner.ts` | 537 | `spawn` / `teardown` / `retireAgent` for one ticket; the readiness guard; event-stream reopen | Herdr socket, fs, `git` via `execFile` |
-| `src/db.ts` | 361 | Schema + in-place migration, connection, row types, the status and PR-state parse boundaries, `claimTicket` CAS, port-slot reserve/release, `setPullRequest`, `setPullRequestState` | SQLite (opens DB at import) |
-| `src/ticket-store.ts` | 294 | Ticket persistence + `/tickets` handler bodies, input narrowing | SQLite |
-| `src/db.test.ts` | 275 | Tests for the CAS, the Accept/Reject hand-backs and `setPullRequestState`, against a temp DB | SQLite (temp dir) |
-| `src/projects.ts` | 214 | Project CRUD, slug / repo / base-branch validation | SQLite, `existsSync` |
-| `src/lifecycle.test.ts` | 182 | Tests for the pure helpers | none |
-| `src/reconcile.ts` | 167 | Read-only divergence + orphan reporting | Herdr socket (reads only) |
-| `src/herdr.ts` | 174 | Newline-JSON unix-socket client: `request`, `subscribe` with far-end close detection | `node:net` |
-| `src/github.ts` | 192 | `pushTicketBranch`, `openPullRequest`, `pullRequestUpdate`, `fetchPullRequestState`, `needsLiveCheck`; token redaction on every error path | `git` via `execFile`, `fetch` |
-| `src/port-slots.test.ts` | 130 | Tests for reserve / release / reclaim, against a temp DB | SQLite (temp dir) |
-| `src/dev-server.ts` | 135 | Reap the agent's dev server by port block, gated on worktree containment | `ss` via `execFile`, `/proc` |
-| `src/dev-server.test.ts` | 145 | Tests for `ss` parsing and, against real listeners, that a stranger in the block is spared | `node:net`, temp dirs |
-| `src/ports.ts` | 98 | **Pure.** Port-slot pool: cap, block arithmetic, `.env` body | none |
-| `src/ports.test.ts` | 78 | Tests for the pure allocator | none |
-| `src/lifecycle.ts` | 71 | **Pure.** Naming, event normalisation, readiness predicates | none |
-| `src/ticket-store.test.ts` | 63 | Tests for ticket input narrowing | SQLite (temp dir) |
-| `src/github.test.ts` | 95 | Tests for PR body construction, token redaction and webhook payload narrowing | none |
-| `src/herdr.test.ts` | 107 | Tests for `onClose`, against a real unix socket | `node:net` (temp socket) |
-| `src/diagnostics.ts` | 40 | **Pure.** Per-run diagnostics record + `freshDiagnostics()` | none |
-| `src/panes.ts` | 39 | `focusAgent`, `paneLocation`, `attachCommand` | Herdr socket (`attachCommand` is pure) |
-| `public/` | 1630 | The board's browser half: markup, stylesheet, five ES modules — see [frontend](./frontend.md) | `fetch` |
+| `backend/src/server.ts` | 681 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
+| `backend/src/runner.ts` | 537 | `spawn` / `teardown` / `retireAgent` for one ticket; the readiness guard; event-stream reopen | Herdr socket, fs, `git` via `execFile` |
+| `backend/src/db.ts` | 361 | Schema + in-place migration, connection, row types, the status and PR-state parse boundaries, `claimTicket` CAS, port-slot reserve/release, `setPullRequest`, `setPullRequestState` | SQLite (opens DB at import) |
+| `backend/src/ticket-store.ts` | 294 | Ticket persistence + `/tickets` handler bodies, input narrowing | SQLite |
+| `backend/src/db.test.ts` | 275 | Tests for the CAS, the Accept/Reject hand-backs and `setPullRequestState`, against a temp DB | SQLite (temp dir) |
+| `backend/src/projects.ts` | 214 | Project CRUD, slug / repo / base-branch validation | SQLite, `existsSync` |
+| `backend/src/lifecycle.test.ts` | 182 | Tests for the pure helpers | none |
+| `backend/src/reconcile.ts` | 167 | Read-only divergence + orphan reporting | Herdr socket (reads only) |
+| `backend/src/herdr.ts` | 174 | Newline-JSON unix-socket client: `request`, `subscribe` with far-end close detection | `node:net` |
+| `backend/src/github.ts` | 192 | `pushTicketBranch`, `openPullRequest`, `pullRequestUpdate`, `fetchPullRequestState`, `needsLiveCheck`; token redaction on every error path | `git` via `execFile`, `fetch` |
+| `backend/src/port-slots.test.ts` | 130 | Tests for reserve / release / reclaim, against a temp DB | SQLite (temp dir) |
+| `backend/src/dev-server.ts` | 135 | Reap the agent's dev server by port block, gated on worktree containment | `ss` via `execFile`, `/proc` |
+| `backend/src/dev-server.test.ts` | 145 | Tests for `ss` parsing and, against real listeners, that a stranger in the block is spared | `node:net`, temp dirs |
+| `backend/src/ports.ts` | 98 | **Pure.** Port-slot pool: cap, block arithmetic, `.env` body | none |
+| `backend/src/ports.test.ts` | 78 | Tests for the pure allocator | none |
+| `backend/src/lifecycle.ts` | 71 | **Pure.** Naming, event normalisation, readiness predicates | none |
+| `backend/src/ticket-store.test.ts` | 63 | Tests for ticket input narrowing | SQLite (temp dir) |
+| `backend/src/github.test.ts` | 95 | Tests for PR body construction, token redaction and webhook payload narrowing | none |
+| `backend/src/herdr.test.ts` | 107 | Tests for `onClose`, against a real unix socket | `node:net` (temp socket) |
+| `backend/src/diagnostics.ts` | 40 | **Pure.** Per-run diagnostics record + `freshDiagnostics()` | none |
+| `backend/src/panes.ts` | 39 | `focusAgent`, `paneLocation`, `attachCommand` | Herdr socket (`attachCommand` is pure) |
+| `frontend/` | 1630 | The board's browser half: markup, stylesheet, five ES modules — see [frontend](./frontend.md) | `fetch` |
 
 `lifecycle.ts`, `ports.ts` and `diagnostics.ts` are the only import-free modules, deliberately: they hold the logic that has actually broken, or that would break silently, so it must be testable without a Herdr session. A port collision surfaces as an `EADDRINUSE` inside somebody's worktree, never as an error on the board, which is exactly why the allocation policy lives apart from the SQL that stores it. `panes.ts` exports only `focusAgent`: the attach command is built in the frontend instead, because it needs `location.hostname` — which the server cannot know — so a server-side copy would be unreachable duplication ([frontend](./frontend.md)).
 
@@ -87,7 +112,7 @@ second edit.
 | worktree path | **never stored** | Herdr derives it from the branch by lowercasing and `/`→`-`. A predicted path never reliably matches. |
 | `pane_id`, `workspace_id`, `agent_status`, worktree existence | **never stored** | Herdr owns them and they change under us (`pane.move` reissues a pane id). Read live on every request. |
 
-Every read joins on **branch and agent name**, never on a path — in `board()` (`src/server.ts`), in `findOrphans` and in `reconcileTickets` alike. Consequence: the board cannot drift from reality; at worst it is one second stale. See [reconciliation](./reconciliation.md).
+Every read joins on **branch and agent name**, never on a path — in `board()` (`backend/src/server.ts`), in `findOrphans` and in `reconcileTickets` alike. Consequence: the board cannot drift from reality; at worst it is one second stale. See [reconciliation](./reconciliation.md).
 
 `board()` costs **two kinds of call, not one per ticket**: one session-wide `agent.list` plus one `worktree.list` per distinct repo, all under `Promise.all`. A failed `agent.list` is caught and degraded to "statuses read as unknown" rather than failing the render. An `agent.list` row with no `name` (an unnamed pane, e.g. this session's own) is filtered out before the join, or it could match a ticket.
 
@@ -171,7 +196,7 @@ harmless, and what makes a lost claim mean *do nothing* ([operations](./operatio
 
 ## 6. HTTP surface
 
-`PORT` defaults to `4010`. Every JSON route answers `application/json`; a GET that no route claimed then falls through to the `public/` static handler described below, which is how `/`, `/index.html`, `/styles.css` and `/js/*.js` are served. Router excerpt this table is based on (`src/server.ts` `handle()`, lines 183–498):
+`PORT` defaults to `4010`. Every JSON route answers `application/json`; a GET that no route claimed then falls through to the `frontend/` static handler described below, which is how `/`, `/index.html`, `/styles.css` and `/js/*.js` are served. Router excerpt this table is based on (`backend/src/server.ts` `handle()`, lines 183–498):
 
 ```ts
 if (method === "GET"  && path === "/projects") return json(listProjects());
@@ -200,7 +225,7 @@ if (action === "/reject"   && method === "POST")   { … }
 return json({ error: "not_found", path, method }, 404);
 ```
 
-**Fifteen** JSON endpoints, plus one static handler covering everything under `public/`.
+**Fifteen** JSON endpoints, plus one static handler covering everything under `frontend/`.
 
 | # | Method | Path | Returns |
 | --- | --- | --- | --- |
@@ -236,13 +261,13 @@ Two quirks, both readable in the excerpt: `GET` is matched by `path.startsWith("
 
 ### The static asset route
 
-**The server serves `public/` as static files**, and the frontend's split into a stylesheet plus
+**The server serves `frontend/` as static files**, and the frontend's split into a stylesheet plus
 five ES modules made that a prerequisite ([frontend](./frontend.md)). Resolution runs *after* the
 API router has declined and only for a GET, so a wrong path under `/tickets` stays a JSON 404
 instead of becoming a probe of the filesystem. Every step fails closed: an extension outside the
 allow-list (`.html .css .js .svg`) is refused rather than guessed, a malformed `%`-escape or an
 embedded NUL is not treated as a path, containment is checked on the **realpath** so a symlink
-living inside `public/` but pointing outside it is refused, and anything that is not a regular file
+living inside `frontend/` but pointing outside it is refused, and anything that is not a regular file
 — a directory included, because there are no listings — is refused too. Before this the router
 special-cased `/` and `/index.html` against one hardcoded path. *(Verified: traversal,
 percent-encoded traversal, a symlink to `/etc/passwd`, a symlink to `../package.json`, a directory,

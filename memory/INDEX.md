@@ -102,10 +102,10 @@ framework, no build step, and the rule that makes a redesign safe — nothing is
 class and no class ever carries state, so renaming one cannot change behaviour. Also the design
 tokens, the 1 s poll, the client-built attach command, and the accessible semantics a UI spec is
 allowed to locate by.
-`public/ · frontend layers · render.js · handlers · data-* hooks · design tokens · --space-9 · poll · attach command · aria-labelledby`
+`frontend/ · frontend layers · render.js · handlers · data-* hooks · design tokens · --space-9 · poll · attach command · aria-labelledby`
 
-**[testing](./testing.md)** — the two suites, and **which command costs money**: `npm run e2e` is an
-allow-list of the three agent-free specs (18 tests, ~7 s), while `npm run e2e:full` spawns **16 real
+**[testing](./testing.md)** — the two suites, and **which command costs money**: `pnpm e2e` is an
+allow-list of the three agent-free specs (18 tests, ~7 s), while `pnpm e2e:full` spawns **16 real
 agents**. Every unit target and why it is pinned, the `e2e/fixtures.ts` contract, the per-test
 budgets, and what the suite reads outside the HTTP API.
 `node:test · playwright · fast vs full · e2e:full · requireHerdr · startBoard · 4310 · cleanupAll · real agents`
