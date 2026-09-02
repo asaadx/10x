@@ -1,4 +1,4 @@
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, Filter, Moon, Search, Sun } from "lucide-react";
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, Funnel, Moon, Search, Sun } from "lucide-react";
 
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
@@ -30,7 +30,6 @@ export function TopBar({
   theme,
   onThemeToggle,
 }: Props) {
-  const repoPath = projects.find((p) => p.id === projectId)?.repoPath ?? "";
   const newestFirst = order === "newest";
 
   return (
@@ -93,10 +92,9 @@ export function TopBar({
             <ArrowUpNarrowWide aria-hidden className="size-3.5" />
           )}
         </Button>
-
         <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs">
           Filters
-          <Filter aria-hidden className="size-3.5" />
+          <Funnel aria-hidden className="size-3.5" />
         </Button>
 
         <Button
@@ -109,8 +107,6 @@ export function TopBar({
           {theme === "dark" ? <Sun aria-hidden className="size-4" /> : <Moon aria-hidden className="size-4" />}
         </Button>
       </div>
-
-      <span className="hidden truncate font-mono text-[11px] text-muted-foreground lg:inline">{repoPath}</span>
     </header>
   );
 }

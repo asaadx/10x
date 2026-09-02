@@ -1,7 +1,7 @@
 import {
   Ban,
   Check,
-  FolderGit2,
+  ChevronDown,
   FolderX,
   GitBranch,
   GitMerge,
@@ -12,6 +12,7 @@ import {
   Pencil,
   Play,
   Trash2,
+  TreeDeciduous,
   Undo2,
   Unplug,
   type LucideIcon,
@@ -46,9 +47,13 @@ const AGENT_LABEL: Record<string, string> = {
 };
 
 /**
- * Click-to-copy for the three identifiers a ticket is handled by. They are values you paste
- * into a terminal, never values you read, so the branch and worktree path collapse to an icon
- * and give the card back a line each.
+ * Click-to-copy for the identifiers a ticket is handled by.
+ *
+ * The branch and the worktree path are pure functions of the ticket id — Herdr derives the
+ * directory from the branch and the branch is `ticket/<project>/<number>` (memory/naming.md) —
+ * so rendering either as text would be the id again in a longer font. They are values you paste
+ * into a terminal, never values you read, which is exactly what a copy affordance is for. Both
+ * are still spelled out in full when the card is expanded.
  */
 function CopyButton({
   value,
@@ -81,9 +86,23 @@ function CopyButton({
         timer.current = window.setTimeout(() => setCopied(false), 1200);
       }}
     >
-      {copied ? <Check aria-hidden className="size-3 text-emerald-600 dark:text-emerald-400" /> : <Icon aria-hidden className="size-3" />}
+      {copied ? (
+        <Check aria-hidden className="size-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
+      ) : (
+        <Icon aria-hidden className="size-3 shrink-0" />
+      )}
       {children}
     </button>
+  );
+}
+
+/** A labelled line in the expanded region: name on the left, value monospaced and wrapping. */
+function Detail({ term, children }: { term: string; children: React.ReactNode }) {
+  return (
+    <>
+      <dt className="text-muted-foreground">{term}</dt>
+      <dd className="break-all font-mono">{children}</dd>
+    </>
   );
 }
 
@@ -121,8 +140,8 @@ function RunActions({ ticket }: { ticket: Ticket }) {
           Cancel
         </Button>
         {/*
-          Icon-only: at five columns a card is ~185px, and "Remove worktree" beside Cancel
-          overflows it. The label lives in the tooltip and the accessible name instead.
+          Icon-only: at five columns a card is too narrow for "Remove worktree" beside Cancel.
+          The label lives in the tooltip and the accessible name instead.
         */}
         {ticket.hasWorktree && (
           <Button
@@ -155,7 +174,15 @@ function RunActions({ ticket }: { ticket: Ticket }) {
   return null;
 }
 
+/**
+ * Every card is the same height collapsed, whatever state its ticket is in: an identity row, a
+ * one-line title, a one-line description slot that is reserved even when empty, and one row of
+ * actions. Anything a ticket may or may not have — the branch, the worktree, a pull request, a
+ * dead run, diagnostics — lives below the fold, so a column of cards scans as a list rather
+ * than as a ragged stack.
+ */
 export function TicketCard({ ticket }: { ticket: Ticket }) {
+  const [open, setOpen] = useState(false);
   const failed = runFailed(ticket);
   const PrIcon = ticket.prState ? PR_ICON[ticket.prState] : null;
 
@@ -168,69 +195,92 @@ export function TicketCard({ ticket }: { ticket: Ticket }) {
       data-died={failed || undefined}
       className="group rounded-md border bg-card p-3 text-card-foreground shadow-xs transition-colors data-[died]:border-destructive/60"
     >
-      {/*
-        Identity row: the id stays readable because it is what you scan and search for, while
-        the branch and the worktree path — long, and only ever pasted — sit beside it as icons.
-      */}
-      <div className="flex items-center justify-between gap-2">
+      {/* `h-5` is what makes every card identical: the status badge is taller than the copy
+          buttons, so without it a card with a live agent stands 4px above one without. */}
+      <div className="flex h-5 items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <CopyButton value={ticket.id} label="Ticket id" icon={Hash}>
             <span className="truncate font-mono text-xs">{ticket.id}</span>
           </CopyButton>
           {ticket.branch && <CopyButton value={ticket.branch} label={`Branch ${ticket.branch}`} icon={GitBranch} />}
           {ticket.worktreePath && (
-            <CopyButton value={ticket.worktreePath} label={`Worktree ${ticket.worktreePath}`} icon={FolderGit2} />
+            <CopyButton value={ticket.worktreePath} label={`Worktree ${ticket.worktreePath}`} icon={TreeDeciduous} />
           )}
         </div>
 
+        {/*
+          One slot, two occupants that never coexist: a ticket has a live agent (In Progress, In
+          Review) or a pull request (Done, whose agent is retired), never both. A dead run is the
+          red border, not a third chip.
+        */}
         <div className="flex shrink-0 items-center gap-1">
-          {ticket.agentStatus && (
-            <Badge variant="secondary" data-status={ticket.agentStatus} className="text-[10px]">
+          {ticket.agentStatus ? (
+            <Badge
+              variant="secondary"
+              data-status={ticket.agentStatus}
+              className="h-4 px-1.5 text-[10px] leading-none"
+            >
               {AGENT_LABEL[ticket.agentStatus] ?? ticket.agentStatus}
             </Badge>
+          ) : (
+            ticket.prUrl &&
+            PrIcon && (
+              <a
+                href={ticket.prUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-[10px] underline-offset-2 hover:underline"
+              >
+                <PrIcon aria-hidden className={`size-3.5 ${PR_TONE[ticket.prState!]}`} />
+                <span className="font-mono">#{ticket.prNumber}</span>
+                {ticket.prAdditions !== null && ticket.prDeletions !== null && (
+                  <span className="font-mono">
+                    <span className="text-emerald-600 dark:text-emerald-400">+{ticket.prAdditions}</span>{" "}
+                    <span className="text-red-600 dark:text-red-400">&minus;{ticket.prDeletions}</span>
+                  </span>
+                )}
+              </a>
+            )
           )}
-          {/*
-            No "finished" tick: `finished` is true exactly when the ticket is in review or done,
-            so the column already says it. The only run fact a card can carry that its column
-            cannot is a run that died.
-          */}
           {failed && <Unplug aria-hidden className="size-3.5 text-destructive" />}
           {failed && <span className="sr-only" title="run died" />}
+          {/*
+            The disclosure sits with the metadata it reveals, not with the run actions: the
+            action row is already at its width budget on an In Review card.
+          */}
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-label={open ? "Hide details" : "Show details"}
+            title={open ? "Hide details" : "Show details"}
+            className="ml-0.5 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+            onClick={() => setOpen((v) => !v)}
+          >
+            <ChevronDown aria-hidden className={`size-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
+          </button>
         </div>
       </div>
 
-      <h3 className="mt-2 truncate text-sm leading-snug font-medium" title={ticket.title}>
+      <h3
+        className={`mt-2 text-sm leading-snug font-medium ${open ? "" : "truncate"}`}
+        title={open ? undefined : ticket.title}
+      >
         {ticket.title}
       </h3>
 
-      {ticket.description && (
-        <p className="mt-1 truncate text-xs text-muted-foreground" title={ticket.description}>
-          {ticket.description}
-        </p>
-      )}
+      {/*
+        One description, two shapes. Closed it is a reserved single line — rendered even when
+        empty, which is what keeps every collapsed card the same height. Open it wraps in place,
+        so the full text appears where the reader is already looking instead of being repeated
+        further down.
+      */}
+      <p
+        className={`mt-1 text-xs leading-4 text-muted-foreground ${open ? "" : "h-4 truncate"}`}
+        title={open ? undefined : ticket.description}
+      >
+        {ticket.description}
+      </p>
 
-      {ticket.prUrl && PrIcon && (
-        <p className="mt-2 flex items-center gap-2 text-[11px]">
-          <PrIcon aria-hidden className={`size-3.5 ${PR_TONE[ticket.prState!]}`} />
-          <a href={ticket.prUrl} target="_blank" rel="noopener noreferrer" className="underline-offset-2 hover:underline">
-            PR #{ticket.prNumber}
-          </a>
-          {ticket.prAdditions !== null && ticket.prDeletions !== null && (
-            <span className="font-mono">
-              <span className="text-emerald-600 dark:text-emerald-400">+{ticket.prAdditions}</span>{" "}
-              <span className="text-red-600 dark:text-red-400">&minus;{ticket.prDeletions}</span>
-            </span>
-          )}
-        </p>
-      )}
-
-      {failed && (
-        <p className="mt-2 truncate rounded-md bg-destructive/10 p-2 text-[11px] text-destructive" title="Run died — the pane exited before finishing. The worktree was kept so you can inspect it.">
-          Run died — the pane exited before finishing.
-        </p>
-      )}
-
-      {/* Run actions lead; the two status-independent ones are icons pinned to the right edge. */}
       <div className="mt-3 flex items-center gap-1.5">
         <RunActions ticket={ticket} />
         <div className="ml-auto flex shrink-0 items-center">
@@ -249,19 +299,32 @@ export function TicketCard({ ticket }: { ticket: Ticket }) {
         </div>
       </div>
 
-      {/* Off unless VITE_DIAGNOSTICS=true; see frontend/.env.example. */}
-      {import.meta.env["VITE_DIAGNOSTICS"] === "true" && ticket.diagnostics && (
-        <details className="mt-2">
-          <summary className="cursor-pointer text-[11px] text-muted-foreground">diagnostics</summary>
-          <dl className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 font-mono text-[11px] text-muted-foreground">
-            {Object.entries(ticket.diagnostics).map(([k, v]) => (
-              <div key={k} className="contents">
-                <dt>{k}</dt>
-                <dd className="text-right">{String(v)}</dd>
-              </div>
-            ))}
+      {open && (
+        <div className="mt-3 space-y-2 border-t pt-3 text-[11px]">
+          {failed && (
+            <p className="rounded-md bg-destructive/10 p-2 text-destructive">
+              Run died — the pane exited before finishing. The worktree was kept so you can inspect it.
+            </p>
+          )}
+
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+            {ticket.branch && <Detail term="Branch">{ticket.branch}</Detail>}
+            {ticket.worktreePath && <Detail term="Worktree">{ticket.worktreePath}</Detail>}
+            {ticket.agentName && <Detail term="Agent">{ticket.agentName}</Detail>}
           </dl>
-        </details>
+
+          {/* Off unless VITE_DIAGNOSTICS=true; see frontend/.env.example. */}
+          {import.meta.env["VITE_DIAGNOSTICS"] === "true" && ticket.diagnostics && (
+            <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 border-t pt-2 font-mono text-muted-foreground">
+              {Object.entries(ticket.diagnostics).map(([k, v]) => (
+                <div key={k} className="contents">
+                  <dt>{k}</dt>
+                  <dd className="text-right">{String(v)}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </div>
       )}
     </article>
   );
