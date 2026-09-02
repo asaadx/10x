@@ -299,6 +299,19 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
             />
           </div>
 
+          {/* A before/after pair is evidence for the change the description above just
+              described, so it reads with the description rather than after the plan below —
+              shown only when the pair exists, so no ticket needs to be classified as a UI
+              change (most tickets simply have `screenshots: null` and render nothing here).
+              Both urls are null today because nothing captures them yet, which is what
+              `ScreenshotPane`'s placeholder is for. */}
+          {!creating && ticket.screenshots && (
+            <div className="grid gap-4">
+              <ScreenshotPane label="Before" url={ticket.screenshots.before} />
+              <ScreenshotPane label="After" url={ticket.screenshots.after} />
+            </div>
+          )}
+
           <Checklist label="Task Breakdown" rows={taskBreakdown} onRowsChange={setTaskBreakdown} />
 
           <Checklist label="Acceptance Criteria" rows={acceptanceCriteria} onRowsChange={setAcceptanceCriteria} />
@@ -374,17 +387,6 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
                 )}
               </div>
             </>
-          )}
-
-          {/* Shown only when a before/after pair exists, so no ticket needs to be classified as
-              a UI change — most tickets simply have `screenshots: null` and render nothing here.
-              Both urls are null today because nothing captures them yet, which is what
-              `ScreenshotPane`'s placeholder is for. */}
-          {!creating && ticket.screenshots && (
-            <div className="grid gap-4">
-              <ScreenshotPane label="Before" url={ticket.screenshots.before} />
-              <ScreenshotPane label="After" url={ticket.screenshots.after} />
-            </div>
           )}
 
           {failed && (

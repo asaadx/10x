@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { BoardToolbar } from "@/components/BoardToolbar.tsx";
 import { Column } from "@/components/Column.tsx";
+import { NavBar } from "@/components/NavBar.tsx";
 import { TicketSheet } from "@/components/TicketSheet.tsx";
-import { TopBar } from "@/components/TopBar.tsx";
 import { ALL_PROJECTS, matchesProject, ticketsForColumn } from "@/lib/board.ts";
 import { applyTheme, initialTheme, type Theme } from "@/lib/theme.ts";
 import { MOCK_PROJECTS, MOCK_TICKETS } from "@/mock.ts";
@@ -27,17 +28,14 @@ export function App() {
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
-      <TopBar
+      <NavBar
         projects={MOCK_PROJECTS}
         projectId={projectId}
         onProjectChange={setProjectId}
-        query={query}
-        onQueryChange={setQuery}
-        order={order}
-        onOrderChange={setOrder}
         theme={theme}
         onThemeToggle={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
       />
+      <BoardToolbar query={query} onQueryChange={setQuery} order={order} onOrderChange={setOrder} />
 
       {/*
         Capped and centred so columns stop stretching on a wide monitor.

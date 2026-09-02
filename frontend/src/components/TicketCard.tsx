@@ -379,6 +379,7 @@ export function TicketCard({ ticket, onOpen }: { ticket: Ticket; onOpen: () => v
             every card the same height. */}
         <div className="flex h-5 items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-1.5">
+            {/* The id stays in the accessible tree through `<article aria-label={ticket.id}>`, so hiding the text here costs nothing to assistive tech. */}
             <CopyButton value={ticket.id} label={`Ticket id ${ticket.id}`} icon={Hash} />
             {dispatched && ticket.branch && (
               <CopyButton value={ticket.branch} label={`Branch ${ticket.branch}`} icon={GitBranch} tone="git" />
