@@ -362,7 +362,10 @@ export function TicketCard({ ticket }: { ticket: Ticket }) {
                 {ticket.worktreePath}
               </Detail>
             )}
-            {ticket.agentName && (
+            {/* Accept is `retireAgent` — it closes the pane and deletes the transcript
+                (memory/teardown.md), so a Done ticket's `agentName` names an agent that no
+                longer exists. */}
+            {ticket.agentName && ticket.status !== "done" && (
               <Detail term="Agent" icon={Bot}>
                 {ticket.agentName}
               </Detail>
