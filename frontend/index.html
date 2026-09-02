@@ -1,93 +1,14 @@
 <!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="color-scheme" content="light" />
-<title>10x — Backlog → In Progress → In Review</title>
-<link rel="stylesheet" href="./styles.css" />
-</head>
-<body>
-
-<header class="topbar">
-  <div class="brand">10x<small>backlog → in progress → in review</small></div>
-  <div class="field-inline">
-    <label for="project-select">Project</label>
-    <select id="project-select"></select>
-  </div>
-  <div class="repo-path" id="repo-path"></div>
-</header>
-
-<!--
-  The composer is a right-hand drawer, opened only from the Backlog column. A native
-  <dialog> rather than a toggled <aside>: Escape-to-close and focus containment come from
-  the platform instead of from hand-written JS that would have to live in render.js.
--->
-<dialog class="sidebar" id="composer-dialog" aria-labelledby="composer-heading">
-  <form class="composer-form" id="composer-form" method="dialog">
-    <h2 id="composer-heading">New ticket</h2>
-    <div class="field">
-      <label for="c-title">Title</label>
-      <input id="c-title" type="text" autocomplete="off" placeholder="Short summary" />
-      <span class="field-error" id="c-title-error"></span>
-    </div>
-    <div class="field">
-      <label for="c-desc">Description</label>
-      <textarea id="c-desc" rows="6" placeholder="What should the agent do?"></textarea>
-      <span class="field-error" id="c-desc-error"></span>
-    </div>
-    <div class="field">
-      <label for="c-project">Project</label>
-      <select id="c-project"></select>
-      <span class="field-error" id="c-project-error"></span>
-    </div>
-    <div class="sidebar-actions">
-      <button type="button" class="ghost" id="c-cancel">Cancel</button>
-      <button type="submit" class="primary" id="c-submit">Add</button>
-    </div>
-    <span class="field-error" id="c-form-error"></span>
-  </form>
-</dialog>
-
-<div class="board-error" id="board-error" hidden></div>
-
-<section class="unowned" id="unowned-panel" hidden>
-  <h2>Unowned worktrees</h2>
-  <div class="note">Reported only — nothing here is ever removed automatically. Clean these up by hand if they are no longer needed.</div>
-  <div id="unowned-rows"></div>
-</section>
-
-<!--
-  Each column is a named `region`, labelled by its own heading, so its accessible
-  name carries the live count ("Backlog 1") without duplicating it. That name is
-  the stable handle for assistive tech and for the e2e suite; a redesign may move,
-  restyle or re-order these columns and the semantics do not move with it.
-
-  The New ticket button is a SIBLING of the heading, never inside it: `aria-labelledby`
-  points at the h2, so a button nested in it would append its label to the region's
-  accessible name ("Backlog 1 New ticket").
--->
-<main class="board">
-  <div class="column" role="region" aria-labelledby="backlog-heading" data-status="backlog">
-    <div class="column-head">
-      <h2 id="backlog-heading">Backlog <span class="count" id="backlog-count">0</span></h2>
-      <button type="button" class="ghost" id="new-ticket">New ticket</button>
-    </div>
-    <div class="cards" id="backlog-cards"></div>
-  </div>
-  <div class="column" role="region" aria-labelledby="in-progress-heading" data-status="in_progress">
-    <h2 id="in-progress-heading">In Progress <span class="count" id="in-progress-count">0</span></h2>
-    <div class="cards" id="in-progress-cards"></div>
-  </div>
-  <div class="column" role="region" aria-labelledby="in-review-heading" data-status="in_review">
-    <h2 id="in-review-heading">In Review <span class="count" id="in-review-count">0</span></h2>
-    <div class="cards" id="in-review-cards"></div>
-  </div>
-  <div class="column" role="region" aria-labelledby="done-heading" data-status="done">
-    <h2 id="done-heading">Done <span class="count" id="done-count">0</span></h2>
-    <div class="cards" id="done-cards"></div>
-  </div>
-</main>
-
-<script type="module" src="./js/app.js"></script>
-</body>
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Set by the theme toggle before paint; see src/theme.ts. -->
+    <meta name="color-scheme" content="light dark" />
+    <title>10x</title>
+  </head>
+  <body class="h-full">
+    <div id="root" class="h-full"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>

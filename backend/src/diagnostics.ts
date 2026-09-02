@@ -1,27 +1,8 @@
 /**
- * Per-run spawn diagnostics.
- *
- * Deliberately NOT persisted: these describe one attempt at starting an agent and are
- * debugging output, not ticket state. Losing them on restart is correct.
- *
- * Their reason for existing is memory/spawn.md — `agent.start` returns before the agent is usable, so
- * the guard retries and polls. These fields let the UI show whether that fired, which is
- * normal rather than a fault.
+ * The fresh-diagnostics constructor. The `Diagnostics` shape itself lives in types.ts, since
+ * it crosses the wire and the frontend needs it; this module owns only its zero value.
  */
-export type Diagnostics = {
-  startAttempts: number;
-  paneBusyRetries: number;
-  startReturnedStatus: string | null;
-  startReturnedReady: boolean | null;
-  startReturnedAfterMs: number | null;
-  neededReadinessPoll: boolean;
-  readinessPolls: number;
-  readyAfterMs: number | null;
-  promptAttempts: number;
-  promptNotReadyRetries: number;
-  /** True when spawn re-attached to an already-running agent rather than starting one. */
-  reusedExistingAgent: boolean;
-};
+import type { Diagnostics } from "./types.ts";
 
 export function freshDiagnostics(): Diagnostics {
   return {

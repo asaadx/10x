@@ -17,58 +17,10 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { allocateSlot, type SlotAllocation } from "./ports.ts";
+import type { Project, PullRequestState, Status, Ticket } from "./types.ts";
 
 export const STATE_DIR = process.env.STATE_DIR ?? join(homedir(), ".10x");
 const DB_PATH = process.env.DB_PATH ?? join(STATE_DIR, "10x.db");
-
-/**
- * `in_review` is reached automatically when the agent's turn completes, and the ticket keeps
- * both its live agent and its port block while it sits there — a Reject has to be able to
- * re-prompt the same agent with its full context, and a Preview binds the same range.
- */
-export type Status = "backlog" | "in_progress" | "in_review" | "done";
-
-/** The three states a PR can be in from the board's point of view, mirroring `Status`. */
-export type PullRequestState = "open" | "merged" | "closed";
-
-export type Project = {
-  /** Immutable slug used in branch and agent names. Renaming would orphan worktrees. */
-  id: string;
-  /** Display name. Freely renameable — nothing derived depends on it. */
-  name: string;
-  repoPath: string;
-  baseBranch: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type Ticket = {
-  id: string;
-  projectId: string;
-  number: number;
-  title: string;
-  description: string;
-  status: Status;
-  /** A turn ended after `working` was observed (memory/agent-status.md). */
-  finished: boolean;
-  /** The pane exited. NOT the same as finished (memory/teardown.md rule 3). */
-  died: boolean;
-  /** Persisted, not derived — see rule 1 above. Null until first spawn. */
-  branch: string | null;
-  agentName: string | null;
-  /** OMP transcript directory, needed by teardown and outliving the worktree (memory/reconciliation.md). */
-  sessionDir: string | null;
-  /** Set together by `setPullRequest` once Accept opens the PR. Null until then. */
-  prNumber: number | null;
-  prUrl: string | null;
-  // Written by the webhook receiver from the `pull_request` payload (server.ts
-  // /webhooks/github). additions/deletions need no API call — they are already on the event.
-  prState: PullRequestState | null;
-  prAdditions: number | null;
-  prDeletions: number | null;
-  createdAt: string;
-  updatedAt: string;
-};
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (

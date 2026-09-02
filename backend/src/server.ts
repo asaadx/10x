@@ -13,10 +13,11 @@
  *    at worst it is a second stale.
  */
 import { createServer } from "node:http";
+import { existsSync } from "node:fs";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { request, HerdrError } from "./herdr.ts";
 import { extname, join, sep } from "node:path";
-import { freshDiagnostics, type Diagnostics } from "./diagnostics.ts";
+import { freshDiagnostics } from "./diagnostics.ts";
 import { agentNameFor, branchFor, isSettled } from "./lifecycle.ts";
 import { focusAgent } from "./panes.ts";
 import { createProject, deleteProject, listProjects, getProject, updateProject } from "./projects.ts";
@@ -37,18 +38,25 @@ import {
   reservePortSlot,
   setPullRequest,
   setPullRequestState,
-  type Project,
-  type PullRequestState,
-  type Ticket,
 } from "./db.ts";
+import type {
+  BoardResponse,
+  BoardTicket,
+  Diagnostics,
+  Project,
+  PullRequestState,
+  Ticket,
+} from "./types.ts";
 import { fetchPullRequestState, needsLiveCheck, openPullRequest, pullRequestUpdate, pushTicketBranch } from "./github.ts";
 import { blockFor } from "./ports.ts";
 import { killDevServers } from "./dev-server.ts";
 
 const PORT = Number(process.env.PORT ?? 4010);
-// The frontend is its own workspace package. Served straight from source today; once Vite
-// lands this becomes its build output, and the served directory is the only line that moves.
-const PUBLIC_DIR = join(import.meta.dirname, "..", "..", "frontend");
+// The frontend is its own workspace package and is served from its BUILD, not its source.
+// In development you do not come here at all — `pnpm dev` runs Vite on :5173, which proxies
+// the API back to this process. This path matters when the board is being used rather than
+// worked on, and `dist` is gitignored, hence the boot check below.
+const PUBLIC_DIR = join(import.meta.dirname, "..", "..", "frontend", "dist");
 
 /**
  * Extension → content type, and the whole allow-list of what may be served. An extension
@@ -61,6 +69,11 @@ const CONTENT_TYPES: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".svg": "image/svg+xml",
+  // Vite emits self-hosted Geist as .woff2. Without this the fonts 404 and the board falls
+  // back to a system sans — a failure that looks almost right, which is the worst kind.
+  ".woff2": "font/woff2",
+  ".ico": "image/x-icon",
+  ".png": "image/png",
 };
 
 /**
@@ -146,7 +159,9 @@ async function board(projectFilter: string | undefined): Promise<Reply> {
     worktreeLists.flat().flatMap((w) => (w.branch ? [[w.branch, w]] : [])),
   );
 
-  const live = tickets.map((t) => {
+  // The `: BoardTicket` annotation is the point of types.ts: this object literal is the wire
+  // format, and without it a field added or dropped here diverged from the frontend silently.
+  const live = tickets.map((t): BoardTicket => {
     const branch = t.branch ?? branchFor(t.projectId, t.number);
     const agentName = t.agentName ?? agentNameFor(t.projectId, t.number);
     const agent = byAgentName.get(agentName);
@@ -165,7 +180,8 @@ async function board(projectFilter: string | undefined): Promise<Reply> {
     };
   });
 
-  return json({ tickets: live, unowned: orphanLists.flat() });
+  const payload: BoardResponse = { tickets: live, unowned: orphanLists.flat() };
+  return json(payload);
 }
 
 async function readBody(req: { on: (e: string, f: (c?: unknown) => void) => void }) {
@@ -649,6 +665,18 @@ createServer(async (req, res) => {
   }
 }).listen(PORT, async () => {
   console.log(`10x → http://localhost:${PORT}`);
+
+  /*
+   * `dist` is gitignored and only exists after `pnpm build`, so a fresh clone — or a checkout
+   * where someone forgot — would otherwise serve nothing but 404s and a blank page. Say so
+   * once, plainly, rather than leaving it to be diagnosed from an empty browser tab.
+   *
+   * A warning and not a refusal: the API, the webhook receiver and every endpoint work fine
+   * without a frontend, and the e2e suite's API specs run against exactly that.
+   */
+  if (!existsSync(join(PUBLIC_DIR, "index.html"))) {
+    console.warn(`no frontend build at ${PUBLIC_DIR} — run \`pnpm build\` (not needed in dev: \`pnpm dev\` serves the UI on :5173)`);
+  }
 
   /*
    * Reclaim port blocks held by tickets that are no longer in progress — the residue of a
