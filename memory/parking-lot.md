@@ -163,6 +163,73 @@ worktree; a worktree is only truly reclaimable at merge (above).
 
 ---
 
+## Open question: what Plan actually does
+
+**Settled.** The state machine has `Backlog → To Do`, triggered by a click labelled Plan, and it
+is not built on either side (verified: `memory/operations.md:19`). `backlog` holds raw ideas and
+`todo` holds work that is ready to start (verified: `memory/operations.md:11`). The frontend
+already renders a `Plan` button on every `backlog` card, wired to nothing (verified:
+`frontend/src/components/TicketCard.tsx:212-218`).
+
+**Two candidate readings, neither decided:**
+
+- **Plan as a bare status flip.** One conditional `UPDATE`, claimed first like every other
+  transition — the same pattern `/spawn` uses today: "Claim first, work second. No `await`
+  between the check and the write" (verified: `backend/src/server.ts:325-328`). Cheap: a route
+  that calls `claimTicket(id, "backlog", "todo")` and returns. Under this reading, To Do becomes
+  a purely human triage step — a ticket moves there unedited.
+- **Plan as spawning a real planning agent.** The agent turns an idea into an implementable
+  ticket — writing a task breakdown and acceptance criteria onto the ticket — before flipping it
+  to `todo`. This is what the state machine table currently implies (verified:
+  `memory/operations.md:19`, "a planning agent turns an idea into an implementable ticket") and
+  what the button's own tooltip already promises (verified:
+  `frontend/src/components/TicketCard.tsx:214`, "Talks the idea through with a planning agent
+  until it is ready to start."). This reading re-opens everything the four-call spawn sequence
+  already had to answer for Start ([spawn](./spawn.md)): whether a planning agent needs its own
+  worktree, whether it needs a port block, and what happens to the ticket if planning fails
+  partway through.
+
+**The mechanism question is separate from the semantics.** The route regex admits only
+`/spawn`, `/cancel`, `/worktree`, `/focus`, `/accept`, `/reject` as ticket sub-paths, plus a bare
+`PATCH /tickets/:id` (verified: `backend/src/server.ts:246`), and that `PATCH` rejects `status`
+outright as an immutable field (verified: `IMMUTABLE`, `backend/src/ticket-store.ts:168-177`).
+So Plan needs either a new route or a relaxation of the `PATCH` guard. **Inferred:** the guard
+exists so that every status move goes through the compare-and-swap in `claimTicket`, so that two
+concurrent requests cannot both win a transition — a `PATCH` that could write `status` freely
+would be a way around that invariant. The code does not say this in so many words; it follows
+from reading the CAS comment on `/spawn` (`backend/src/server.ts:325-328`) next to the
+immutability list that deliberately excludes `status` from ordinary writes.
+
+**The coupling.** Whatever Plan becomes, four places have to agree on it, and they do not today:
+
+- The insert default — every new ticket is created with status `'backlog'`, hardcoded into the
+  prepared statement (verified: `INSERT_TICKET`, `backend/src/ticket-store.ts:118-123`).
+- The spawn claim's from-state — `/spawn` claims `backlog → in_progress` (verified:
+  `backend/src/server.ts:326`), skipping `todo` entirely.
+- The route regex — no `/plan` action exists to move a ticket out of `backlog` any other way
+  (verified: `backend/src/server.ts:246`).
+- The board's Start guard — the frontend renders Start only when `ticket.status === "todo"`
+  (verified: `frontend/src/components/TicketCard.tsx:220-226`).
+
+Until this is resolved, **every Start on the board answers 409**: the board offers Start only on
+`todo`, but spawn claims from `backlog`, and nothing today ever moves a ticket into `todo` — so a
+card that reached `todo` by any future Plan implementation is the only card Start could ever work
+on, and no such path exists yet. `memory/operations.md:13-15` already flags this as the
+outstanding backend half.
+
+**Related sub-question:** should `POST /tickets` accept a status. The board's "New ticket"
+button is offered from both the Backlog and the To Do column (verified:
+`frontend/src/App.tsx:55-56`, `onNewTicket` passed when `status === "backlog" || status ===
+"todo"`), but the create path narrows only `projectId`, `title`, `description` — there is no
+status field to accept (verified: `TicketInput`, `backend/src/ticket-store.ts:149-153`), and
+`INSERT_TICKET` always writes `'backlog'` regardless of which column's button opened the sheet
+(verified: `backend/src/ticket-store.ts:118-123`). Creating straight into `todo` would skip
+planning entirely. This may be intended: a ticket specified well enough at creation time needs no
+planning step, so the To Do composer landing in `backlog` anyway could be a gap or could be
+correct — not decided here.
+
+---
+
 ## Push board updates with SSE instead of polling
 
 The harness UI polls `GET /tickets` every second. That is a placeholder, and the freshness
