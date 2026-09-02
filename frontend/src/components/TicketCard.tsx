@@ -42,6 +42,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.tsx";
 import { runFailed } from "@/lib/board.ts";
+import { REMOTE_TARGET, remoteCommand, type SteerMode } from "@/lib/steer-mode.ts";
 import type { Ticket } from "@/types.ts";
 
 const PR_ICON = {
@@ -185,6 +186,61 @@ function PullRequestLine({ ticket }: { ticket: Ticket }) {
   );
 }
 
+/**
+ * Focus, not prompt — this always POSTs `/tickets/:id/focus`, which calls `agent.focus` in the
+ * backend, never `agent.prompt`. Two mechanisms follow from that rather than from a prompt
+ * refusal:
+ *
+ * Focusing marks the tab "seen", and that is what flips a `done` agent back to `idle`
+ * (verified in `herdr --skill`) — steering a ticket the agent just finished can reopen it as a
+ * side effect of this same call.
+ *
+ * Herdr also has per-client focus — `herdr --skill` warns "Do not rely on another client's
+ * focused pane" — so whether a remote client freshly attached with `herdr --remote` lands on
+ * the pane this call focused is UNVERIFIED; this button only guarantees the focus call itself.
+ *
+ * Remote mode additionally copies the attach command, reusing the tick-feedback timer
+ * `CopyButton` already uses above rather than inventing a second pattern.
+ */
+function SteerButton({ ticket, steerMode }: { ticket: Ticket; steerMode: SteerMode }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+
+  // A card unmounts on every poll that changes it, and a pending timer would then set state on
+  // a dead component.
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  const remoteConfigured = steerMode === "remote" && REMOTE_TARGET !== "";
+  const title =
+    steerMode === "local"
+      ? "Focuses the agent's pane in Herdr."
+      : remoteConfigured
+        ? "Copies the remote attach command and focuses the agent's pane in Herdr."
+        : "VITE_HERDR_REMOTE_TARGET is unset, so the attach command cannot be copied.";
+
+  return (
+    <Button
+      size="sm"
+      className="h-7 gap-1 px-2 text-[11px]"
+      title={title}
+      onClick={() => {
+        // Never copy "herdr --remote " with a missing target — copying only happens once a
+        // target is actually configured. Focusing still runs either way.
+        if (remoteConfigured) {
+          void navigator.clipboard.writeText(remoteCommand());
+          setCopied(true);
+          clearTimeout(timer.current);
+          timer.current = window.setTimeout(() => setCopied(false), 1200);
+        }
+        void fetch(`/tickets/${ticket.id}/focus`, { method: "POST" });
+      }}
+    >
+      {copied ? <Check aria-hidden className="size-3" /> : <ShipWheel aria-hidden className="size-3" />}
+      Steer
+    </Button>
+  );
+}
+
 type PreviewState = "idle" | "starting" | "live" | "stopping";
 
 /**
@@ -200,11 +256,13 @@ type PreviewState = "idle" | "starting" | "live" | "stopping";
  */
 function RunActions({
   ticket,
+  steerMode,
   onCancel,
   previewState,
   onTogglePreview,
 }: {
   ticket: Ticket;
+  steerMode: SteerMode;
   onCancel: () => void;
   previewState: PreviewState;
   onTogglePreview: () => void;
@@ -229,16 +287,11 @@ function RunActions({
     return (
       <>
         {/*
-          Always offered, so every card in a column carries the same actions. Wiring it has to
-          handle the two agents that will not take a prompt: Herdr reports no status once the
-          pane is gone, and it refuses a blocked agent outright — `agent.prompt` answers
-          `agent_blocked` and sends nothing (memory/agent-status.md). A blocked agent is
-          answered in Herdr itself.
+          Always offered, so every card in a column carries the same actions. This focuses
+          rather than prompts — see the doc comment on `SteerButton` for the two mechanisms
+          that follow from a focus call instead of a prompt.
         */}
-        <Button size="sm" className="h-7 gap-1 px-2 text-[11px]" title="Sends another instruction to the running agent without interrupting it.">
-          <ShipWheel aria-hidden className="size-3" />
-          Steer
-        </Button>
+        <SteerButton ticket={ticket} steerMode={steerMode} />
         <Button size="sm" variant="destructive" className="h-7 gap-1 px-2 text-[11px]" title="Discards the attempt: deletes the branch and worktree." onClick={onCancel}>
           <Ban aria-hidden className="size-3" />
           Cancel
@@ -327,7 +380,7 @@ function RunActions({
  *
  * The top right holds the overflow menu and nothing else.
  */
-export function TicketCard({ ticket, onOpen }: { ticket: Ticket; onOpen: () => void }) {
+export function TicketCard({ ticket, steerMode, onOpen }: { ticket: Ticket; steerMode: SteerMode; onOpen: () => void }) {
   const failed = runFailed(ticket);
   const running = ticket.status === "in_progress" && !failed;
   // Herdr refuses a prompt to a blocked agent — `agent.prompt` answers `agent_blocked` and sends
@@ -488,6 +541,7 @@ export function TicketCard({ ticket, onOpen }: { ticket: Ticket; onOpen: () => v
         <div className="mt-3 flex h-7 items-center gap-1.5 [&>*]:min-w-0 [&>*]:flex-1">
           <RunActions
             ticket={ticket}
+            steerMode={steerMode}
             onCancel={() => setConfirmCancel(true)}
             previewState={previewState}
             onTogglePreview={handleTogglePreview}

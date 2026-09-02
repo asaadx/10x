@@ -5,6 +5,7 @@ import { Column } from "@/components/Column.tsx";
 import { NavBar } from "@/components/NavBar.tsx";
 import { TicketSheet } from "@/components/TicketSheet.tsx";
 import { ALL_PROJECTS, matchesProject, ticketsForColumn } from "@/lib/board.ts";
+import { initialSteerMode, storeSteerMode, type SteerMode } from "@/lib/steer-mode.ts";
 import { applyTheme, initialTheme, type Theme } from "@/lib/theme.ts";
 import { MOCK_PROJECTS, MOCK_TICKETS } from "@/mock.ts";
 import { COLUMNS, type SortOrder, type Ticket } from "@/types.ts";
@@ -16,6 +17,7 @@ import { COLUMNS, type SortOrder, type Ticket } from "@/types.ts";
  */
 export function App() {
   const [theme, setTheme] = useState<Theme>(() => initialTheme());
+  const [steerMode, setSteerMode] = useState<SteerMode>(() => initialSteerMode());
   const [projectId, setProjectId] = useState(MOCK_PROJECTS[0]!.id);
   const [query, setQuery] = useState("");
   const [order, setOrder] = useState<SortOrder>("newest");
@@ -23,6 +25,7 @@ export function App() {
   const [sheetTicket, setSheetTicket] = useState<Ticket | null>(null);
 
   useEffect(() => applyTheme(theme), [theme]);
+  useEffect(() => storeSteerMode(steerMode), [steerMode]);
 
   const visible = useMemo(() => MOCK_TICKETS.filter((t) => matchesProject(t, projectId)), [projectId]);
 
@@ -32,6 +35,8 @@ export function App() {
         projects={MOCK_PROJECTS}
         projectId={projectId}
         onProjectChange={setProjectId}
+        steerMode={steerMode}
+        onSteerModeChange={setSteerMode}
         theme={theme}
         onThemeToggle={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
       />
@@ -51,6 +56,7 @@ export function App() {
             key={status}
             status={status}
             label={label}
+            steerMode={steerMode}
             tickets={ticketsForColumn(visible, status, query, order)}
             onNewTicket={
               status === "backlog" || status === "todo"
