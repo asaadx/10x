@@ -66,16 +66,17 @@ export function NavBar({ projects, projectId, onProjectChange, theme, onThemeTog
             ))}
           </NativeSelect>
 
+          {/* Fixed size-8 square (not padding around an icon) gives the icon a box to centre in and matches the h-8 select beside it. */}
           <button
             type="button"
-            className="flex items-center rounded-full p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+            className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg border border-input bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none dark:bg-input/30 dark:hover:bg-input/50"
             aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
             onClick={onThemeToggle}
           >
             {theme === "dark" ? (
-              <IconSunFilled aria-hidden className="size-3" />
+              <IconSunFilled aria-hidden className="size-4" />
             ) : (
-              <IconMoonFilled aria-hidden className="size-3" />
+              <IconMoonFilled aria-hidden className="size-4" />
             )}
           </button>
         </div>
