@@ -33,11 +33,13 @@ export function ComposerSheet({ open, onOpenChange, projects, defaultProjectId }
   const [description, setDescription] = useState("");
   const [projectId, setProjectId] = useState(defaultProjectId);
 
-  // Reopening should be a fresh ticket, not a half-typed one.
+  // Reopening should be a fresh ticket, not a half-typed one — including the project, which
+  // otherwise keeps whatever the last attempt picked after the board has moved on.
   const close = (next: boolean) => {
     if (!next) {
       setTitle("");
       setDescription("");
+      setProjectId(defaultProjectId);
     }
     onOpenChange(next);
   };
@@ -50,12 +52,42 @@ export function ComposerSheet({ open, onOpenChange, projects, defaultProjectId }
           <SheetDescription>Describe the work. The agent reads the title and description.</SheetDescription>
         </SheetHeader>
 
+        {/*
+          Project leads: it decides which repo the agent is dispatched into, so choosing it
+          after writing the work is choosing it too late. It has no default when the board is
+          showing every project, because "all" is not somewhere a ticket can be created.
+        */}
         <div className="grid gap-4 px-4">
           <div className="grid gap-1.5">
-            <label htmlFor="c-title" className="text-xs text-muted-foreground">
-              Title
+            <label htmlFor="c-project" className="text-xs text-muted-foreground">
+              Project <span className="text-destructive">*</span>
             </label>
-            <Input id="c-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Short summary" />
+            <NativeSelect
+              id="c-project"
+              required
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value)}
+            >
+              <NativeSelectOption value="">Select a project</NativeSelectOption>
+              {projects.map((p) => (
+                <NativeSelectOption key={p.id} value={p.id}>
+                  {p.name}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+          </div>
+
+          <div className="grid gap-1.5">
+            <label htmlFor="c-title" className="text-xs text-muted-foreground">
+              Title <span className="text-destructive">*</span>
+            </label>
+            <Input
+              id="c-title"
+              required
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Short summary"
+            />
           </div>
 
           <div className="grid gap-1.5">
@@ -71,26 +103,13 @@ export function ComposerSheet({ open, onOpenChange, projects, defaultProjectId }
               className="min-h-24 resize-y rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
             />
           </div>
-
-          <div className="grid gap-1.5">
-            <label htmlFor="c-project" className="text-xs text-muted-foreground">
-              Project
-            </label>
-            <NativeSelect id="c-project" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-              {projects.map((p) => (
-                <NativeSelectOption key={p.id} value={p.id}>
-                  {p.name}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-          </div>
         </div>
 
         <SheetFooter className="flex-row justify-end gap-2">
           <SheetClose asChild>
             <Button variant="outline">Cancel</Button>
           </SheetClose>
-          <Button disabled={title.trim() === ""}>Add</Button>
+          <Button disabled={title.trim() === "" || projectId === ""}>Add</Button>
         </SheetFooter>
       </SheetContent>
     </Sheet>

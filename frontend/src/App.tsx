@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Column } from "@/components/Column.tsx";
 import { ComposerSheet } from "@/components/ComposerSheet.tsx";
 import { TopBar } from "@/components/TopBar.tsx";
-import { ticketsForColumn } from "@/lib/board.ts";
+import { ALL_PROJECTS, matchesProject, ticketsForColumn } from "@/lib/board.ts";
 import { applyTheme, initialTheme, type Theme } from "@/lib/theme.ts";
 import { MOCK_PROJECTS, MOCK_TICKETS } from "@/mock.ts";
 import { COLUMNS, type SortOrder } from "@/types.ts";
@@ -22,7 +22,7 @@ export function App() {
 
   useEffect(() => applyTheme(theme), [theme]);
 
-  const visible = useMemo(() => MOCK_TICKETS.filter((t) => t.projectId === projectId), [projectId]);
+  const visible = useMemo(() => MOCK_TICKETS.filter((t) => matchesProject(t, projectId)), [projectId]);
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
@@ -53,7 +53,9 @@ export function App() {
             status={status}
             label={label}
             tickets={ticketsForColumn(visible, status, query, order)}
-            onNewTicket={status === "backlog" ? () => setComposerOpen(true) : undefined}
+            onNewTicket={
+              status === "backlog" || status === "todo" ? () => setComposerOpen(true) : undefined
+            }
           />
         ))}
       </main>
@@ -62,7 +64,7 @@ export function App() {
         open={composerOpen}
         onOpenChange={setComposerOpen}
         projects={MOCK_PROJECTS}
-        defaultProjectId={projectId}
+        defaultProjectId={projectId === ALL_PROJECTS ? "" : projectId}
       />
     </div>
   );

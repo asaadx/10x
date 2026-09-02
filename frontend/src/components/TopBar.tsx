@@ -1,8 +1,9 @@
-import { Moon, Search, Sun } from "lucide-react";
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, Filter, Moon, Search, Sun } from "lucide-react";
 
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select.tsx";
+import { ALL_PROJECTS } from "@/lib/board.ts";
 import type { Theme } from "@/lib/theme.ts";
 import type { Project, SortOrder } from "@/types.ts";
 
@@ -30,6 +31,7 @@ export function TopBar({
   onThemeToggle,
 }: Props) {
   const repoPath = projects.find((p) => p.id === projectId)?.repoPath ?? "";
+  const newestFirst = order === "newest";
 
   return (
     <header className="flex shrink-0 flex-wrap items-center gap-3 border-b px-4 py-2">
@@ -48,6 +50,7 @@ export function TopBar({
           onChange={(e) => onProjectChange(e.target.value)}
           className="h-8 w-40"
         >
+          <NativeSelectOption value={ALL_PROJECTS}>All projects</NativeSelectOption>
           {projects.map((p) => (
             <NativeSelectOption key={p.id} value={p.id}>
               {p.name}
@@ -68,28 +71,44 @@ export function TopBar({
         />
       </div>
 
-      <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        Sort
-        <NativeSelect
-          aria-label="Sort"
-          value={order}
-          onChange={(e) => onOrderChange(e.target.value as SortOrder)}
-          className="h-8 w-32"
+      {/*
+        Sort and Filters sit together at the right edge. Sort is one button rather than a
+        select because there is exactly one key to sort by; the arrow carries the direction and
+        the accessible name spells out what the next click does, since "ascending" on a date is
+        ambiguous in a way "oldest first" is not.
+      */}
+      <div className="ml-auto flex items-center gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-8 gap-1.5 text-xs"
+          aria-label={newestFirst ? "Sorted newest first. Sort oldest first" : "Sorted oldest first. Sort newest first"}
+          title={newestFirst ? "Newest first" : "Oldest first"}
+          onClick={() => onOrderChange(newestFirst ? "oldest" : "newest")}
         >
-          <NativeSelectOption value="newest">Newest first</NativeSelectOption>
-          <NativeSelectOption value="oldest">Oldest first</NativeSelectOption>
-        </NativeSelect>
-      </label>
+          Sort by
+          {newestFirst ? (
+            <ArrowDownWideNarrow aria-hidden className="size-3.5" />
+          ) : (
+            <ArrowUpNarrowWide aria-hidden className="size-3.5" />
+          )}
+        </Button>
 
-      <Button
-        size="icon"
-        variant="ghost"
-        className="size-8"
-        aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-        onClick={onThemeToggle}
-      >
-        {theme === "dark" ? <Sun aria-hidden className="size-4" /> : <Moon aria-hidden className="size-4" />}
-      </Button>
+        <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs">
+          Filters
+          <Filter aria-hidden className="size-3.5" />
+        </Button>
+
+        <Button
+          size="icon"
+          variant="ghost"
+          className="size-8"
+          aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          onClick={onThemeToggle}
+        >
+          {theme === "dark" ? <Sun aria-hidden className="size-4" /> : <Moon aria-hidden className="size-4" />}
+        </Button>
+      </div>
 
       <span className="hidden truncate font-mono text-[11px] text-muted-foreground lg:inline">{repoPath}</span>
     </header>

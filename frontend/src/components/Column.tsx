@@ -42,10 +42,22 @@ export function Column({ status, label, tickets, onNewTicket }: Props) {
         points at the h2, so a button nested in it would append its label to the region's
         accessible name ("Backlog 2 New ticket").
       */}
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b px-3">
+      <div className="flex h-10 shrink-0 items-center gap-2.5 border-b px-3">
         <span aria-hidden className={`size-2 shrink-0 rounded-full ${DOT[status]}`} />
-        <h2 id={headingId} className="truncate text-xs font-medium tracking-wide uppercase">
-          {label} <span className="text-muted-foreground">{tickets.length}</span>
+        {/*
+          The count stays INSIDE the h2: `aria-labelledby` points here, so the region's
+          accessible name is "Backlog 2" and the e2e suite locates columns by it. Styling the
+          count as a pill is safe; moving it out of the heading is not.
+
+          The `{" "}` is load-bearing for the same reason. Flex `gap` is drawn, not text, so
+          without a real whitespace node the accessible name computes as "Backlog2" and every
+          column locator in the suite misses.
+        */}
+        <h2 id={headingId} className="flex min-w-0 items-center gap-2 text-sm font-medium tracking-tight">
+          <span className="truncate">{label}</span>{" "}
+          <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-muted px-1.5 text-[11px] font-normal text-muted-foreground tabular-nums">
+            {tickets.length}
+          </span>
         </h2>
 
         <div className="ml-auto flex items-center gap-1">
