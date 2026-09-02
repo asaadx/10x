@@ -47,6 +47,23 @@ function readString(id: string, column: "status" | "updated_at"): string {
   return value;
 }
 
+/**
+ * The row `toTicket` wants, which is not the row SQLite hands back: the three list columns
+ * are JSON text on disk and typed arrays in `TicketRow`, and parsing them is what
+ * ticket-store.ts's `decode` does in production. This is the test's own parse boundary.
+ * Both are NOT NULL with an '[]' default, so the read is always text.
+ */
+function rowOf(id: string): TicketRow {
+  const row = db.prepare("SELECT * FROM tickets WHERE id = ?").get(id);
+  if (row === undefined) assert.fail(`no ticket ${id}`);
+  return {
+    ...row,
+    task_breakdown: JSON.parse(String(row["task_breakdown"])),
+    acceptance_criteria: JSON.parse(String(row["acceptance_criteria"])),
+    attachments: JSON.parse(String(row["attachments"])),
+  } as TicketRow;
+}
+
 describe("claimTicket", () => {
   test("a first claim from backlog to in_progress wins and moves the row", () => {
     seed("t-win", "backlog");
@@ -230,9 +247,7 @@ describe("setPullRequest", () => {
   test("stores both values and they survive a read back through toTicket", () => {
     seed("t-pr", "in_review");
     setPullRequest("t-pr", 42, "https://example.com/pr/42");
-    // Raw SELECT * is the same shape node:sqlite hands `toTicket` in production; this is
-    // the test's own parse boundary, mirroring ticket-store.ts's `decode`.
-    const row = db.prepare("SELECT * FROM tickets WHERE id = ?").get("t-pr") as TicketRow;
+    const row = rowOf("t-pr");
     const ticket = toTicket(row);
     assert.equal(ticket.prNumber, 42);
     assert.equal(ticket.prUrl, "https://example.com/pr/42");
@@ -240,7 +255,7 @@ describe("setPullRequest", () => {
 
   test("a ticket that has never been accepted reads null for both", () => {
     seed("t-no-pr", "backlog");
-    const row = db.prepare("SELECT * FROM tickets WHERE id = ?").get("t-no-pr") as TicketRow;
+    const row = rowOf("t-no-pr");
     const ticket = toTicket(row);
     assert.equal(ticket.prNumber, null);
     assert.equal(ticket.prUrl, null);
@@ -254,7 +269,7 @@ describe("setPullRequestState", () => {
     const before = readString("t-pr-state", "updated_at");
     const matched = setPullRequestState("https://example.com/pr/9", "merged", 12, 3);
     assert.equal(matched, true);
-    const row = db.prepare("SELECT * FROM tickets WHERE id = ?").get("t-pr-state") as TicketRow;
+    const row = rowOf("t-pr-state");
     const ticket = toTicket(row);
     assert.equal(ticket.prState, "merged");
     assert.equal(ticket.prAdditions, 12);
@@ -268,7 +283,7 @@ describe("setPullRequestState", () => {
     const before = readString("t-pr-other", "updated_at");
     const matched = setPullRequestState("https://example.com/pr/does-not-exist", "closed", 1, 1);
     assert.equal(matched, false);
-    const row = db.prepare("SELECT * FROM tickets WHERE id = ?").get("t-pr-other") as TicketRow;
+    const row = rowOf("t-pr-other");
     assert.equal(row.pr_state, null);
     assert.equal(readString("t-pr-other", "updated_at"), before);
   });
