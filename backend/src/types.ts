@@ -27,6 +27,20 @@ export type Status = "backlog" | "todo" | "in_progress" | "in_review" | "done";
 /** The three states a PR can be in from the board's point of view, mirroring `Status`. */
 export type PullRequestState = "open" | "merged" | "closed";
 
+/**
+ * Which configured profile a ticket is dispatched with. Unlike `agentStatus`, which is left
+ * as a bare `string` because Herdr owns that vocabulary, 10x owns this one, so a closed union
+ * is safe and gives the board an exhaustive option list.
+ */
+export type Playbook =
+  | "fullstack"
+  | "frontend"
+  | "backend"
+  | "database"
+  | "devops"
+  | "docs"
+  | "research";
+
 export type Project = {
   /** Immutable slug used in branch and agent names. Renaming would orphan worktrees. */
   id: string;
@@ -119,6 +133,26 @@ export type BoardTicket = Ticket & {
   paneId: string | null;
   workspaceId: string | null;
   busy: boolean;
+  /**
+   * ISO timestamp of when the agent was spawned, or `null` when unknown. NOT persisted yet —
+   * there is no `started_at` column — so the server always sends `null` here today. A real
+   * value requires a `started_at` write, once, at the point the spawn compare-and-swap wins.
+   */
+  startedAt: string | null;
+  /**
+   * A before/after screenshot pair for a ticket that changed the UI, or `null` when the
+   * ticket has none. NOT persisted — there is no table and no capture path — so the server
+   * always sends `null` here today. Populating it means having the agent capture the two
+   * images. Each URL is independently nullable: a pair can exist before both shots are
+   * taken, and the UI falls back to a placeholder pane for whichever one is missing.
+   */
+  screenshots: { before: string | null; after: string | null } | null;
+  /**
+   * The configured profile the ticket is dispatched with, or `null` when unset. NOT
+   * persisted — there is no column and no write path — so the server always sends `null`
+   * here today. `null` means the ticket predates the field, not that it has no playbook.
+   */
+  playbook: Playbook | null;
   diagnostics: Diagnostics;
 };
 

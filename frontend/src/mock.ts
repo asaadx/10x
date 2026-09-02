@@ -4,8 +4,14 @@ import type { Project, Ticket } from "@/types.ts";
  * Fixtures for the UI-only phase, deleted when the board is wired.
  *
  * Chosen to cover every visual state the board can reach rather than to look tidy: a working
- * agent, a finished-but-unreviewed run, a run that died without finishing, a merged PR, a
- * closed-unmerged PR, an orphaned worktree, and an empty column.
+ * agent, a blocked agent, a finished-but-unreviewed run, a run that died without finishing, a
+ * merged PR, a closed-unmerged PR, an open PR still awaiting review, an orphaned worktree, a
+ * run whose worktree is already gone, an empty description next to a title long enough to
+ * truncate, a description long enough for the single-line clamp to matter, a second project
+ * with tickets of its own so the project filter has something to prove, an empty column, an
+ * in-review ticket with a screenshot pair whose shots never got taken (the sheet's placeholder
+ * pane) next to one with no pair at all, and a ticket left at the inherited `null` playbook
+ * next to others with a real one so the empty case is visible too.
  *
  * These are checked against the real `GET /tickets` shape now, not a local copy of it, so the
  * resolved fields have to be internally consistent: `branch` and `agentName` are always present
@@ -16,8 +22,12 @@ import type { Project, Ticket } from "@/types.ts";
 const iso = (daysAgo: number, hour = 9) =>
   new Date(Date.UTC(2026, 7, 31 - daysAgo, hour, 0, 0)).toISOString();
 
-/** Herdr's worktree directory: its per-repo folder plus the branch with `/` turned into `-`. */
-const worktree = (number: number) => `/home/asaad/.herdr/worktrees/10x/ticket-10x-${number}`;
+/**
+ * Herdr's worktree directory: its per-repo folder plus the branch with `/` turned into `-`.
+ * Takes the project slug rather than hardcoding one, since branches are namespaced per project.
+ */
+const worktree = (project: string, number: number) =>
+  `/home/asaad/.herdr/worktrees/${project}/ticket-${project}-${number}`;
 
 /** The zero value of `Diagnostics`: a ticket that has never been spawned, or whose run is over. */
 const noDiagnostics = {
@@ -59,6 +69,12 @@ const base: Ticket = {
   paneId: null,
   workspaceId: null,
   busy: false,
+  // Fixture-only: the server does not populate this field yet (see BoardTicket's doc comment).
+  startedAt: null,
+  // Fixture-only: the server does not populate this field yet (see BoardTicket's doc comment).
+  screenshots: null,
+  // Fixture-only: the server does not populate this field yet (see BoardTicket's doc comment).
+  playbook: null,
   prNumber: null,
   prUrl: null,
   prState: null,
@@ -98,6 +114,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "backlog",
     branch: "ticket/10x/8",
     agentName: "ticket-10x-8",
+    playbook: "frontend",
     createdAt: iso(0, 11),
     updatedAt: iso(0, 11),
   },
@@ -110,6 +127,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "backlog",
     branch: "ticket/10x/7",
     agentName: "ticket-10x-7",
+    playbook: "frontend",
     createdAt: iso(0),
     updatedAt: iso(0),
   },
@@ -123,6 +141,7 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "todo",
     branch: "ticket/10x/6",
     agentName: "ticket-10x-6",
+    playbook: "frontend",
     createdAt: iso(3),
     updatedAt: iso(3),
   },
@@ -135,10 +154,11 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "in_progress",
     branch: "ticket/10x/5",
     agentName: "ticket-10x-5",
+    playbook: "backend",
     agentStatus: "working",
     sessionDir: "/home/asaad/.omp/sessions/ticket-10x-5",
     hasWorktree: true,
-    worktreePath: worktree(5),
+    worktreePath: worktree("10x", 5),
     paneId: "w15:p1",
     workspaceId: "w15",
     // The pane was busy twice and readiness had to be polled — the spawn guard firing, which
@@ -157,6 +177,38 @@ export const MOCK_TICKETS: Ticket[] = [
     },
     createdAt: iso(1),
     updatedAt: iso(0, 14),
+    startedAt: iso(0, 14),
+  },
+  {
+    ...base,
+    id: "10x-9",
+    number: 9,
+    title: "Validate the project slug at creation time",
+    description: "Reject a slug that cannot become a branch, at the point the project is created.",
+    status: "in_progress",
+    branch: "ticket/10x/9",
+    agentName: "ticket-10x-9",
+    playbook: "backend",
+    // Herdr saw a real question UI. `agent.prompt` refuses a blocked agent outright, so this
+    // ticket cannot move until a human answers (memory/agent-status.md).
+    agentStatus: "blocked",
+    sessionDir: "/home/asaad/.omp/sessions/ticket-10x-9",
+    hasWorktree: true,
+    worktreePath: worktree("10x", 9),
+    paneId: "w17:p1",
+    workspaceId: "w17",
+    diagnostics: {
+      ...noDiagnostics,
+      startAttempts: 1,
+      startReturnedStatus: "idle",
+      startReturnedReady: true,
+      startReturnedAfterMs: 1980,
+      readyAfterMs: 1980,
+      promptAttempts: 1,
+    },
+    createdAt: iso(1, 12),
+    updatedAt: iso(0, 9),
+    startedAt: iso(0, 9),
   },
   {
     ...base,
@@ -167,12 +219,13 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "in_progress",
     branch: "ticket/10x/4",
     agentName: "ticket-10x-4",
+    playbook: "frontend",
     // The pane exited, so Herdr no longer lists the agent: no status, no pane, no workspace.
     // `died` is the persisted fact; `agentStatus` only ever carries what Herdr reports.
     died: true,
     sessionDir: "/home/asaad/.omp/sessions/ticket-10x-4",
     hasWorktree: true,
-    worktreePath: worktree(4),
+    worktreePath: worktree("10x", 4),
     diagnostics: {
       ...noDiagnostics,
       startAttempts: 1,
@@ -194,13 +247,17 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "in_review",
     branch: "ticket/10x/3",
     agentName: "ticket-10x-3",
+    playbook: "frontend",
     agentStatus: "idle",
     finished: true,
     sessionDir: "/home/asaad/.omp/sessions/ticket-10x-3",
     hasWorktree: true,
-    worktreePath: worktree(3),
+    worktreePath: worktree("10x", 3),
     paneId: "w9:p1",
     workspaceId: "w9",
+    // A pair exists but neither shot was captured yet, which is what exercises the sheet's
+    // placeholder pane instead of a real image.
+    screenshots: { before: null, after: null },
     diagnostics: {
       ...noDiagnostics,
       startAttempts: 1,
@@ -225,12 +282,13 @@ export const MOCK_TICKETS: Ticket[] = [
     status: "done",
     branch: "ticket/10x/2",
     agentName: "ticket-10x-2",
+    playbook: "backend",
     finished: true,
     // Retired agent, worktree not yet reclaimed — the state "Remove worktree" exists for. The
     // transcript outlives the worktree, and diagnostics are per-run so they are gone.
     sessionDir: "/home/asaad/.omp/sessions/ticket-10x-2",
     hasWorktree: true,
-    worktreePath: worktree(2),
+    worktreePath: worktree("10x", 2),
     prNumber: 30,
     prUrl: "https://github.com/asaadx/10x/pull/30",
     prState: "merged",
@@ -256,5 +314,184 @@ export const MOCK_TICKETS: Ticket[] = [
     prDeletions: 9,
     createdAt: iso(9),
     updatedAt: iso(5),
+  },
+  {
+    ...base,
+    id: "10x-10",
+    number: 10,
+    title: "Show the emerald open-PR icon on the Done card",
+    description: "Merged and closed both render today; an open PR still awaiting review renders nothing.",
+    status: "done",
+    branch: "ticket/10x/10",
+    agentName: "ticket-10x-10",
+    playbook: "frontend",
+    finished: true,
+    sessionDir: "/home/asaad/.omp/sessions/ticket-10x-10",
+    hasWorktree: true,
+    worktreePath: worktree("10x", 10),
+    prNumber: 41,
+    prUrl: "https://github.com/asaadx/10x/pull/41",
+    prState: "open",
+    prAdditions: 118,
+    prDeletions: 22,
+    createdAt: iso(3),
+    updatedAt: iso(0, 10),
+  },
+  {
+    ...base,
+    id: "10x-11",
+    number: 11,
+    title: "Recover a run whose worktree Herdr already reclaimed",
+    description: "The agent is still live but `git worktree remove` beat the ticket to it.",
+    status: "in_progress",
+    branch: "ticket/10x/11",
+    agentName: "ticket-10x-11",
+    playbook: "devops",
+    // Herdr reports a status the board has never seen before. `unknown` is deliberately not
+    // one of the values `isSettled`/`isAgentReady` recognize, so it never proves completion.
+    agentStatus: "unknown",
+    sessionDir: "/home/asaad/.omp/sessions/ticket-10x-11",
+    hasWorktree: false,
+    worktreePath: null,
+    paneId: "w21:p1",
+    workspaceId: "w21",
+    diagnostics: {
+      ...noDiagnostics,
+      startAttempts: 1,
+      startReturnedStatus: "idle",
+      startReturnedReady: true,
+      startReturnedAfterMs: 1640,
+      readyAfterMs: 1640,
+      promptAttempts: 1,
+    },
+    createdAt: iso(1, 8),
+    updatedAt: iso(0, 13),
+    startedAt: iso(0, 13),
+  },
+  {
+    ...base,
+    id: "10x-12",
+    number: 12,
+    title:
+      "Reserve the description line's height even when a ticket has no description at all so cards in a five-column board do not jump",
+    description: "",
+    status: "todo",
+    branch: "ticket/10x/12",
+    agentName: "ticket-10x-12",
+    playbook: "frontend",
+    createdAt: iso(2, 15),
+    updatedAt: iso(2, 15),
+  },
+  {
+    ...base,
+    id: "10x-13",
+    number: 13,
+    title: "Expand the description in the ticket sheet",
+    description:
+      "The card clamps a description to one line, which is correct for the board but hides everything past the first sentence. The sheet already has the room to show the whole thing. Add an affordance in the sheet that reveals the full text on demand, rather than truncating there too.",
+    status: "backlog",
+    branch: "ticket/10x/13",
+    agentName: "ticket-10x-13",
+    playbook: "frontend",
+    createdAt: iso(0, 16),
+    updatedAt: iso(0, 16),
+  },
+  {
+    ...base,
+    id: "10x-test-1",
+    projectId: "10x-test",
+    number: 1,
+    title: "Point the webhook receiver at the second repo",
+    description: "The GitHub App is only installed on 10x today; 10x-test needs its own delivery URL.",
+    status: "backlog",
+    branch: "ticket/10x-test/1",
+    agentName: "ticket-10x-test-1",
+    playbook: "backend",
+    createdAt: iso(5),
+    updatedAt: iso(5),
+  },
+  {
+    ...base,
+    id: "10x-test-2",
+    projectId: "10x-test",
+    number: 2,
+    title: "Give 10x-test its own port block",
+    description: "Reusing 10x's range collides the moment both projects run an agent at once.",
+    status: "in_progress",
+    branch: "ticket/10x-test/2",
+    agentName: "ticket-10x-test-2",
+    playbook: "backend",
+    agentStatus: "working",
+    sessionDir: "/home/asaad/.omp/sessions/ticket-10x-test-2",
+    hasWorktree: true,
+    worktreePath: worktree("10x-test", 2),
+    paneId: "w25:p1",
+    workspaceId: "w25",
+    diagnostics: {
+      ...noDiagnostics,
+      startAttempts: 1,
+      startReturnedStatus: "idle",
+      startReturnedReady: true,
+      startReturnedAfterMs: 1420,
+      readyAfterMs: 1420,
+      promptAttempts: 1,
+    },
+    createdAt: iso(1, 10),
+    updatedAt: iso(0, 12),
+    startedAt: iso(0, 12),
+  },
+  {
+    ...base,
+    id: "10x-test-3",
+    projectId: "10x-test",
+    number: 3,
+    title: "Merge the base-branch bump for 10x-test",
+    description: "10x-test tracks master, not dev, so the rebase agent needed a per-project base branch.",
+    status: "done",
+    branch: "ticket/10x-test/3",
+    agentName: "ticket-10x-test-3",
+    playbook: "devops",
+    finished: true,
+    sessionDir: "/home/asaad/.omp/sessions/ticket-10x-test-3",
+    hasWorktree: true,
+    worktreePath: worktree("10x-test", 3),
+    prNumber: 4,
+    prUrl: "https://github.com/asaadx/10x-test/pull/4",
+    prState: "merged",
+    prAdditions: 56,
+    prDeletions: 11,
+    createdAt: iso(4, 9),
+    updatedAt: iso(1, 9),
+  },
+  {
+    ...base,
+    id: "10x-14",
+    number: 14,
+    title: "Free the port block when Herdr reclaims a worktree",
+    description:
+      "Reconciliation removes the worktree but the port range stays marked busy, so the next spawn for this project has one fewer port than it should.",
+    status: "in_review",
+    branch: "ticket/10x/14",
+    agentName: "ticket-10x-14",
+    playbook: "backend",
+    agentStatus: "idle",
+    finished: true,
+    sessionDir: "/home/asaad/.omp/sessions/ticket-10x-14",
+    hasWorktree: true,
+    worktreePath: worktree("10x", 14),
+    paneId: "w29:p1",
+    workspaceId: "w29",
+    diagnostics: {
+      ...noDiagnostics,
+      startAttempts: 1,
+      startReturnedStatus: "idle",
+      startReturnedReady: true,
+      startReturnedAfterMs: 1310,
+      readyAfterMs: 1310,
+      promptAttempts: 1,
+    },
+    createdAt: iso(2, 10),
+    updatedAt: iso(0, 8),
+    // Screenshots stay inherited `null`: this ticket has no before/after pair, unlike 10x-3.
   },
 ];

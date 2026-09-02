@@ -7,6 +7,16 @@ import type { SortOrder, Status, Ticket } from "@/types.ts";
  */
 
 /**
+ * Sentinel for the project picker's "All projects" entry. Not a project id: no project may be
+ * called this, which is guaranteed because a project id is a slug and this contains a colon.
+ */
+export const ALL_PROJECTS = "all:projects";
+
+export function matchesProject(ticket: Ticket, projectId: string): boolean {
+  return projectId === ALL_PROJECTS || ticket.projectId === projectId;
+}
+
+/**
  * Case-insensitive substring across title, description and id.
  *
  * Id is included because a ticket id is the handle everything else in the system uses — a
