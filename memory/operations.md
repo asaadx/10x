@@ -4,14 +4,21 @@
 
 ## Ticket state machine
 
-### Scope: Backlog → In Progress → In Review → Done.
+### Scope: Backlog → To Do → In Progress → In Review → Done.
 
-**Four columns.** Done is terminal — delete only — and is reached **only** by Accept.
+**Five columns.** Done is terminal — delete only — and is reached **only** by Accept.
+
+`backlog` holds raw ideas; `todo` holds work that is ready to start. The board renders both
+today (verified: `frontend/src/types.ts` `COLUMNS`, and `Status` in `backend/src/types.ts`
+carries `todo`), but **the server still claims `backlog → in_progress` for a spawn and returns a
+cancelled ticket to `backlog`** — the Plan transition and the re-pointing of Start are the
+outstanding backend half ([parking-lot](./parking-lot.md)).
 
 | From | To | Trigger | Side effect |
 |---|---|---|---|
-| Backlog | In Progress | **spawn**, a click | the four spawn calls ([spawn](./spawn.md)), claimed by CAS ([below](#claiming-a-ticket-reject-concurrent-requests)) |
-| In Progress | Backlog | **cancel**, a click | force-remove worktree, delete branch ([teardown](./teardown.md)) |
+| Backlog | To Do | **plan**, a click | not built. A planning agent turns an idea into an implementable ticket ([parking-lot](./parking-lot.md)) |
+| To Do | In Progress | **spawn**, a click | the four spawn calls ([spawn](./spawn.md)), claimed by CAS ([below](#claiming-a-ticket-reject-concurrent-requests)) |
+| In Progress | To Do | **cancel**, a click | force-remove worktree, delete branch ([teardown](./teardown.md)) |
 | In Progress | In Review | **automatic**: the agent's turn completed | none — the agent stays alive and the port block stays held |
 | In Review | Done | **accept**, a click | push the branch, open a PR, retire the agent and its transcript, release the port slot. The worktree and branch **survive**; 10x never merges |
 | In Review | In Progress | **reject**, a click with a mandatory reason | re-prompts the same live agent with the reason and clears `finished`. Destroys nothing |

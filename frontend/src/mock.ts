@@ -36,7 +36,7 @@ const noDiagnostics = {
 
 /**
  * A complete ticket rather than a `Partial`, so the shared defaults are checked against the
- * real type once instead of failing seven times at the spread sites. Every fixture overrides
+ * real type once instead of failing at every spread site. Every fixture overrides
  * its identity fields.
  */
 const base: Ticket = {
@@ -91,6 +91,18 @@ export const MOCK_PROJECTS: Project[] = [
 export const MOCK_TICKETS: Ticket[] = [
   {
     ...base,
+    id: "10x-8",
+    number: 8,
+    title: "Hide old Done tickets behind a filter",
+    description: "Done grows without bound. An `archived` flag and a toggle, not a sixth column.",
+    status: "backlog",
+    branch: "ticket/10x/8",
+    agentName: "ticket-10x-8",
+    createdAt: iso(0, 11),
+    updatedAt: iso(0, 11),
+  },
+  {
+    ...base,
     id: "10x-7",
     number: 7,
     title: "Add a keyboard shortcut for the composer",
@@ -108,7 +120,7 @@ export const MOCK_TICKETS: Ticket[] = [
     title: "Reject should preserve the previous reason",
     description:
       "When a ticket is rejected twice, the drawer starts empty. Pre-fill it with the last reason so a small amendment does not mean retyping the whole thing.",
-    status: "backlog",
+    status: "todo",
     branch: "ticket/10x/6",
     agentName: "ticket-10x-6",
     createdAt: iso(3),

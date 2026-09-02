@@ -14,7 +14,9 @@ task touches. Every node is small on purpose — prefer reading one node over se
 `10x` is a Kanban board (TypeScript, no framework) where moving a ticket to **In Progress** spawns
 an OMP coding agent in its own git worktree and branch inside a Herdr pane.
 
-**Current scope: `Backlog → In Progress → In Review → Done`.** A finished turn moves its own ticket
+**Current scope: `Backlog → To Do → In Progress → In Review → Done`.** Backlog holds raw ideas
+and To Do holds work that is ready to start; the board renders both, the server does not move
+between them yet. A finished turn moves its own ticket
 into In Review, where the agent stays alive so Reject can re-prompt it. Accept pushes the branch,
 opens a PR and retires the agent; Done is terminal — delete only. Single user, one Linux host,
 board reached from a MacBook over Tailscale. No auth, sessions, or multi-tenancy anywhere;
