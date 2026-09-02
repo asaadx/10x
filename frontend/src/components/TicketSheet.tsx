@@ -159,7 +159,7 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
   return (
     <Sheet open={open} onOpenChange={close}>
       <SheetContent side="right" className="w-full sm:max-w-md">
-        <SheetHeader>
+        <SheetHeader className="shrink-0">
           <SheetTitle>{creating ? "New ticket" : ticket.id}</SheetTitle>
           {creating && (
             <SheetDescription>Describe the work. The agent reads the title and description.</SheetDescription>
@@ -170,8 +170,15 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
           Project leads: it decides which repo the agent is dispatched into, so choosing it
           after writing the work is choosing it too late. It has no default when the board is
           showing every project, because "all" is not somewhere a ticket can be created.
+
+          `min-h-0` is load-bearing, not decoration: `SheetContent` is a flex column and a flex
+          child defaults to `min-height: auto`, so without it this div refuses to shrink below
+          its content and the whole sheet grows past the viewport instead of just this body
+          scrolling — the same trap documented on the board grid in App.tsx. `flex-1` lets it
+          claim the space left by the header and footer, and `overflow-y-auto` is what actually
+          scrolls it.
         */}
-        <div className="grid gap-4 px-4">
+        <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-4 pb-6">
           <div className="grid gap-1.5">
             <label htmlFor="c-project" className="text-xs text-muted-foreground">
               Project <span className="text-destructive">*</span>
@@ -345,7 +352,7 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
           )}
         </div>
 
-        <SheetFooter className="flex-row items-center gap-2">
+        <SheetFooter className="shrink-0 flex-row items-center gap-2">
           {!creating && (
             <Button
               variant="ghost"

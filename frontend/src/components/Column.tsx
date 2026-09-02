@@ -74,26 +74,23 @@ export function Column({ status, label, tickets, onNewTicket, onOpenTicket }: Pr
 
         <div className="ml-auto flex items-center gap-1">
           {working && <Spinner aria-label="agent working" className={`size-3.5 ${SPINNER[status]}`} />}
+          {onNewTicket && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 gap-1 px-2 text-xs"
+              aria-label="New ticket"
+              onClick={onNewTicket}
+            >
+              <Plus aria-hidden className="size-3.5" />
+              New
+            </Button>
+          )}
         </div>
       </div>
 
       {/* Scrolls inside a fixed-height column, so the board never grows past the viewport. */}
       <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
-        {/*
-          New ticket lives here, not the header: the spinner can now light in any column, so
-          the header stays lean, and the board sorts newest-first, so the list's first slot is
-          exactly where a freshly created ticket lands.
-        */}
-        {onNewTicket && (
-          <Button
-            variant="ghost"
-            className="h-8 w-full shrink-0 justify-center gap-1 border border-dashed text-xs text-muted-foreground"
-            onClick={onNewTicket}
-          >
-            <Plus aria-hidden className="size-3.5" />
-            New ticket
-          </Button>
-        )}
         {tickets.length === 0 && (
           <p data-empty className="px-1 py-6 text-center text-xs text-muted-foreground">
             nothing here
