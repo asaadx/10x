@@ -50,9 +50,9 @@ export function Column({ status, label, tickets, onNewTicket, onOpenTicket }: Pr
       className="flex min-w-0 flex-col rounded-md border bg-muted/40"
     >
       {/*
-        The New ticket button is a SIBLING of the heading, never inside it: `aria-labelledby`
-        points at the h2, so a button nested in it would append its label to the region's
-        accessible name ("Backlog 2 New ticket").
+        The heading `div` holds only the dot, the labelled h2, and the working spinner: the
+        New ticket button lives in the footer below, never inside the h2's `aria-labelledby`
+        subtree, so it can never append its label to the region's accessible name.
       */}
       <div className="flex h-10 shrink-0 items-center gap-2.5 border-b px-3">
         <span aria-hidden className={`size-2 shrink-0 rounded-full ${DOT[status]}`} />
@@ -74,18 +74,6 @@ export function Column({ status, label, tickets, onNewTicket, onOpenTicket }: Pr
 
         <div className="ml-auto flex items-center gap-1">
           {working && <Spinner aria-label="agent working" className={`size-3.5 ${SPINNER[status]}`} />}
-          {onNewTicket && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 gap-1 px-2 text-xs"
-              aria-label="New ticket"
-              onClick={onNewTicket}
-            >
-              <Plus aria-hidden className="size-3.5" />
-              New
-            </Button>
-          )}
         </div>
       </div>
 
@@ -100,6 +88,23 @@ export function Column({ status, label, tickets, onNewTicket, onOpenTicket }: Pr
           <TicketCard key={t.id} ticket={t} onOpen={() => onOpenTicket(t)} />
         ))}
       </div>
+
+      {/*
+        Pinned below the scroll region, not inside it: it never occupies card space and never
+        scrolls away with the list. The border reads it as column chrome, not as a card.
+      */}
+      {onNewTicket && (
+        <div className="shrink-0 border-t p-2">
+          <Button
+            variant="ghost"
+            className="h-8 w-full justify-center gap-1 text-xs text-muted-foreground"
+            onClick={onNewTicket}
+          >
+            <Plus aria-hidden className="size-3.5" />
+            New ticket
+          </Button>
+        </div>
+      )}
     </section>
   );
 }
