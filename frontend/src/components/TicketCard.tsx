@@ -2,7 +2,9 @@ import {
   Ban,
   Check,
   ChevronDown,
-  FolderX,
+  ExternalLink,
+  Folder,
+  FolderMinus,
   GitBranch,
   GitMerge,
   GitPullRequest,
@@ -11,15 +13,15 @@ import {
   NotebookPen,
   Pencil,
   Play,
+  ShipWheel,
   Trash2,
-  TreeDeciduous,
+  TriangleAlert,
   Undo2,
   Unplug,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { Badge } from "@/components/ui/badge.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { runFailed } from "@/lib/board.ts";
 import type { Ticket } from "@/types.ts";
@@ -37,14 +39,19 @@ const PR_TONE = {
 } as const;
 
 /**
- * Herdr's `idle` and `done` are the same state — the agent is alive and not generating
- * (memory/agent-status.md) — and "idle" reads as "wasting time" rather than "waiting for you".
- * Anything unrecognised is shown verbatim rather than swallowed.
+ * The one agent state worth interrupting a reader for.
+ *
+ * `working` is what an In Progress card is supposed to look like, and the column spinner
+ * already says it. Every other status there means the agent has STOPPED in a column it should
+ * be running in: `idle`/`done` are the same state and may be a prose question that Herdr cannot
+ * tell from success, `blocked` is a question it can — and `agent.prompt` refuses a blocked
+ * agent outright, so nothing moves until a human looks. `unknown` never proves completion
+ * (memory/agent-status.md). A chip on all five would be decoration; a chip on the four that
+ * need you is a signal.
  */
-const AGENT_LABEL: Record<string, string> = {
-  idle: "waiting",
-  done: "waiting",
-};
+function needsAttention(ticket: Ticket): boolean {
+  return ticket.status === "in_progress" && ticket.agentStatus !== null && ticket.agentStatus !== "working";
+}
 
 /**
  * Click-to-copy for the identifiers a ticket is handled by.
@@ -107,13 +114,15 @@ function Detail({ term, children }: { term: string; children: React.ReactNode })
 }
 
 /**
- * One branch per status and never an `else`. Plan is scoped to `backlog`, Start to `todo`,
- * Cancel to `in_progress`, Accept and Reject to `in_review`, and the server answers 409 from
- * anywhere else — so an `else` would put a button on a card whose status cannot take it. Done
- * is terminal and draws no run action; Edit and Delete are status-independent.
+ * One branch per status and never an `else`. Plan is scoped to `backlog`, Start and Steer to
+ * `todo`/`in_progress`, Accept, Reject and Preview to `in_review`, and the server answers 409
+ * from anywhere else — so an `else` would put a button on a card whose status cannot take it.
+ * Done is terminal and draws no run action.
  *
  * Variants carry the consequence: the forward move is primary, a reversible move is outline,
- * and only the two that destroy something are destructive.
+ * and only the ones that destroy something are destructive. Edit and Delete are not run actions
+ * at all and live in the expanded region, which is also what keeps this row inside the width of
+ * a five-column card.
  */
 function RunActions({ ticket }: { ticket: Ticket }) {
   if (ticket.status === "backlog") {
@@ -135,13 +144,26 @@ function RunActions({ ticket }: { ticket: Ticket }) {
   if (ticket.status === "in_progress") {
     return (
       <>
+        {/*
+          Steer needs an agent that will actually accept the prompt. Herdr reports no status
+          once the pane is gone, and it REFUSES a blocked one — `agent.prompt` answers
+          `agent_blocked` and sends nothing (memory/agent-status.md) — so in both cases this
+          would be a button that cannot work. A blocked agent is answered in Herdr itself.
+        */}
+        {ticket.agentStatus !== null && ticket.agentStatus !== "blocked" && (
+          <Button size="sm" className="h-7 gap-1.5 px-2.5 text-xs" title="Sends another instruction to the running agent without interrupting it.">
+            <ShipWheel aria-hidden className="size-3.5" />
+            Steer
+          </Button>
+        )}
         <Button size="sm" variant="destructive" className="h-7 gap-1.5 px-2.5 text-xs" title="Discards the attempt: deletes the branch and worktree.">
           <Ban aria-hidden className="size-3.5" />
           Cancel
         </Button>
         {/*
-          Icon-only: at five columns a card is too narrow for "Remove worktree" beside Cancel.
-          The label lives in the tooltip and the accessible name instead.
+          Icon-only, and a minus rather than a cross: removing a worktree reclaims disk and
+          keeps the branch and every commit, so it is not the destructive act an X implies. It
+          pairs with the plain folder that marks a worktree on the identity row.
         */}
         {ticket.hasWorktree && (
           <Button
@@ -151,7 +173,7 @@ function RunActions({ ticket }: { ticket: Ticket }) {
             aria-label="Remove worktree"
             title="Remove worktree — reclaims disk space. The branch and its commits are kept."
           >
-            <FolderX aria-hidden className="size-3.5" />
+            <FolderMinus aria-hidden className="size-3.5" />
           </Button>
         )}
       </>
@@ -167,6 +189,21 @@ function RunActions({ ticket }: { ticket: Ticket }) {
         <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2.5 text-xs" title="Sends feedback back to the agent, which keeps working. Nothing is destroyed.">
           <Undo2 aria-hidden className="size-3.5" />
           Reject
+        </Button>
+        {/*
+          MUST become conditional on the project's run config — command, port count and path to
+          open — before this is wired: a backend-only project has no meaningful preview, and the
+          recorded decision is that the button HIDES rather than fails (memory/parking-lot.md).
+          It binds the ticket's own port block, which is why review still holds one.
+        */}
+        <Button
+          size="icon"
+          variant="outline"
+          className="size-7"
+          aria-label="Preview"
+          title="Preview — opens the agent's dev server on this ticket's port block."
+        >
+          <ExternalLink aria-hidden className="size-3.5" />
         </Button>
       </>
     );
@@ -204,24 +241,26 @@ export function TicketCard({ ticket }: { ticket: Ticket }) {
           </CopyButton>
           {ticket.branch && <CopyButton value={ticket.branch} label={`Branch ${ticket.branch}`} icon={GitBranch} />}
           {ticket.worktreePath && (
-            <CopyButton value={ticket.worktreePath} label={`Worktree ${ticket.worktreePath}`} icon={TreeDeciduous} />
+            <CopyButton value={ticket.worktreePath} label={`Worktree ${ticket.worktreePath}`} icon={Folder} />
           )}
         </div>
 
         {/*
-          One slot, two occupants that never coexist: a ticket has a live agent (In Progress, In
-          Review) or a pull request (Done, whose agent is retired), never both. A dead run is the
-          red border, not a third chip.
+          One slot, and it is never decorative. A ticket has a stopped agent that needs you, or
+          a pull request (Done, whose agent is retired) — never both, because a retired agent
+          reports no status at all. `working` shows nothing: that is what In Progress is
+          supposed to look like, and the column spinner already says it.
         */}
         <div className="flex shrink-0 items-center gap-1">
-          {ticket.agentStatus ? (
-            <Badge
-              variant="secondary"
+          {needsAttention(ticket) ? (
+            <span
               data-status={ticket.agentStatus}
-              className="h-4 px-1.5 text-[10px] leading-none"
+              title={`Agent is ${ticket.agentStatus} — it has stopped and will not continue without you.`}
+              className="inline-flex h-4 items-center gap-1 rounded-full bg-amber-500/15 px-1.5 text-[10px] leading-none text-amber-700 dark:text-amber-400"
             >
-              {AGENT_LABEL[ticket.agentStatus] ?? ticket.agentStatus}
-            </Badge>
+              <TriangleAlert aria-hidden className="size-2.5" />
+              needs you
+            </span>
           ) : (
             ticket.prUrl &&
             PrIcon && (
@@ -281,22 +320,11 @@ export function TicketCard({ ticket }: { ticket: Ticket }) {
         {ticket.description}
       </p>
 
-      <div className="mt-3 flex items-center gap-1.5">
+      {/* Run actions only. Adding Steer and Preview put this row over the width of a
+          five-column card, and Edit and Delete were the two on it that are not transitions.
+          `h-7` holds the row open on a Done card, which is terminal and has no run action. */}
+      <div className="mt-3 flex h-7 items-center gap-1.5">
         <RunActions ticket={ticket} />
-        <div className="ml-auto flex shrink-0 items-center">
-          <Button size="icon" variant="ghost" className="size-7" aria-label="Edit ticket" title="Edit">
-            <Pencil aria-hidden className="size-3.5" />
-          </Button>
-          <Button
-            size="icon"
-            variant="ghost"
-            className="size-7 text-muted-foreground hover:text-destructive"
-            aria-label="Delete ticket"
-            title="Delete"
-          >
-            <Trash2 aria-hidden className="size-3.5" />
-          </Button>
-        </div>
       </div>
 
       {open && (
@@ -312,6 +340,21 @@ export function TicketCard({ ticket }: { ticket: Ticket }) {
             {ticket.worktreePath && <Detail term="Worktree">{ticket.worktreePath}</Detail>}
             {ticket.agentName && <Detail term="Agent">{ticket.agentName}</Detail>}
           </dl>
+
+          <div className="flex items-center gap-1 border-t pt-2">
+            <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs">
+              <Pencil aria-hidden className="size-3.5" />
+              Edit
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 gap-1.5 px-2 text-xs text-muted-foreground hover:text-destructive"
+            >
+              <Trash2 aria-hidden className="size-3.5" />
+              Delete
+            </Button>
+          </div>
 
           {/* Off unless VITE_DIAGNOSTICS=true; see frontend/.env.example. */}
           {import.meta.env["VITE_DIAGNOSTICS"] === "true" && ticket.diagnostics && (
