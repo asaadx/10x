@@ -1,6 +1,8 @@
 import { IconChristmasTreeFilled } from "@tabler/icons-react";
 import {
   Archive,
+  ArrowLeft,
+  ArrowRight,
   Ban,
   Bot,
   Check,
@@ -248,6 +250,9 @@ type PreviewState = "idle" | "starting" | "live" | "stopping";
  * Steer and Cancel to `in_progress`, Accept and Reject to `in_review`, and the server answers
  * 409 from anywhere else — so an `else` would put a button on a card whose status cannot take
  * it. Done is terminal and its only run action is Archive; its pull request fills the rest of the row.
+ * The two manual moves sit alongside them — To Do on `backlog`, Backlog on `todo`. Both are
+ * human-only: they spawn nothing and retire nothing, which is why they are the only
+ * transitions in this row that are pure status writes.
  *
  * Variants carry the consequence: the forward move is primary, a reversible move is outline,
  * and only the one that destroys something is destructive. Everything that is not a state
@@ -269,18 +274,30 @@ function RunActions({
 }) {
   if (ticket.status === "backlog") {
     return (
-      <Button size="sm" className="h-7 gap-1 px-2 text-[11px]" title="Talks the idea through with a planning agent until it is ready to start.">
-        <NotebookPen aria-hidden className="size-3" />
-        Plan
-      </Button>
+      <>
+        <Button size="sm" className="h-7 gap-1 px-2 text-[11px]" title="Talks the idea through with a planning agent until it is ready to start.">
+          <NotebookPen aria-hidden className="size-3" />
+          Plan
+        </Button>
+        <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-[11px]" title="Accepts the ticket as written and skips planning.">
+          <ArrowRight aria-hidden className="size-3" />
+          To Do
+        </Button>
+      </>
     );
   }
   if (ticket.status === "todo") {
     return (
-      <Button size="sm" className="h-7 gap-1 px-2 text-[11px]" title="Spawns the agent in its own worktree, branch and port block.">
-        <Play aria-hidden className="size-3" />
-        Start
-      </Button>
+      <>
+        <Button size="sm" className="h-7 gap-1 px-2 text-[11px]" title="Spawns the agent in its own worktree, branch and port block.">
+          <Play aria-hidden className="size-3" />
+          Start
+        </Button>
+        <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-[11px]" title="Returns the ticket for re-planning. Nothing is destroyed.">
+          <ArrowLeft aria-hidden className="size-3" />
+          Backlog
+        </Button>
+      </>
     );
   }
   if (ticket.status === "in_progress") {
