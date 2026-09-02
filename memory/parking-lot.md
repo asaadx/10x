@@ -254,19 +254,22 @@ above. Deriving it would need owner/repo resolved and exposed through the projec
 Preferred direction: an owner in `.env` plus the repo name from the project. Design smell with a
 direction, not a bug. Deferred, low priority.
 
-## A Backlog of ideas, ahead of To Do — with a planning agent
+## The planning agent behind Plan
 
 **Scheduled: before the demo video.** Not deferred indefinitely like the rest of this file.
 
-Today's `backlog` is a queue of work that is ready to start. The change splits that in two:
+**The columns exist** ([operations](./operations.md)): `backlog` holds raw ideas, `todo` holds
+work that is ready to start, and the only move between them is **Plan**, the only action a
+Backlog card offers. `todo` was added as a new status rather than renaming `backlog`, because a
+created ticket *is* a raw idea — the existing insert default lands in the right column and no row
+needed migrating.
 
-- **`backlog` is renamed `To Do`.** Functionally unchanged — same transitions, same Start button,
-  same everything. A rename of the label, not of the state.
-- **A new `Backlog` column is inserted BEFORE it**, and becomes where raw ideas are dumped. It is
-  the new head of the board.
+Two halves are outstanding, and both are backend:
 
-The only transition out of the new Backlog is **Backlog → To Do**, and the only action on a card
-there is **Plan**.
+- **The server still claims `backlog → in_progress` for a spawn** and returns a cancelled ticket
+  to `backlog`. Both should point at `todo`. The Start button is frontend-only today, so nothing
+  is inconsistent at runtime yet — it becomes wrong the moment the board is wired.
+- **Plan does nothing.** The button renders and has no handler.
 
 **Plan spawns a planning agent** — Opus — that the user can talk to, to turn an idea into an
 implementable ticket: the approach, the blast radius, every file that will be touched, or the
