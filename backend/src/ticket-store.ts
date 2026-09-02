@@ -9,16 +9,20 @@
  *     MAX and one of them dies on the constraint, so the read and the insert share a
  *     `BEGIN IMMEDIATE`.
  *
- *  2. Editing a ticket touches `title` and `description` and nothing else. `status`,
- *     `branch`, `agent_name`, `session_dir`, `finished` and `died` belong to the
+ *  2. Editing a ticket touches exactly five fields — `title`, `description`, `playbook`,
+ *     `taskBreakdown` and `acceptanceCriteria` — and nothing else. `status`, `branch`,
+ *     `agent_name`, `session_dir`, `started_at`, `finished` and `died` belong to the
  *     spawn/teardown lifecycle — status in particular IS the concurrency lock
  *     (memory/herdr-omp-lifecycle.md memory/operations.md), so a PATCH that quietly reassigned it would
  *     walk the board straight past the compare-and-swap that stops a double spawn.
  *     A PATCH naming any of them is a 400; the lifecycle writes through `setRunFields`.
+ *
+ *     `attachments` and the screenshot pair are absent from that list on purpose: they are
+ *     written by an upload path, not by an edit, so a PATCH cannot forge a stored file.
  */
 import type { SQLInputValue, SQLOutputValue } from "node:sqlite";
 import { db, nowIso, toTicket } from "./db.ts";
-import type { Ticket } from "./types.ts";
+import type { Attachment, ChecklistItem, Ticket } from "./types.ts";
 
 /** `{ error: "<code>", ...context }` — the uniform error envelope the whole API uses. */
 export type ErrorBody = { error: string; field?: string; message?: string; [key: string]: unknown };
@@ -32,6 +36,11 @@ export type RunFields = {
   branch?: string | null;
   agentName?: string | null;
   sessionDir?: string | null;
+  /**
+   * When the agent began work. The lifecycle's field, not an editable one: it is stamped once,
+   * where the spawn compare-and-swap wins, and the card's run timer counts from it.
+   */
+  startedAt?: string | null;
   finished?: boolean;
   died?: boolean;
 };
@@ -73,6 +82,36 @@ const intOrNull = (row: Row, column: string): number | null => {
   return bad(column, v);
 };
 
+/**
+ * A JSON list column: one TEXT value holding a whole array, which is how the plan and the
+ * attachments are stored (see db.ts). This is where it becomes a typed array.
+ *
+ * NULL decodes to an empty list. The migration never actually produces one — SQLite hands the
+ * `'[]'` default back for every row that predates a `NOT NULL DEFAULT '[]'` column, verified
+ * against node:sqlite — so this only covers a database whose column arrived without that
+ * default, where the alternative is every reader crashing on a null it cannot use.
+ *
+ * A non-array, or JSON that will not parse, throws through `bad()` naming the column: a
+ * corrupt row is a bug to surface, and returning `[]` would hide it right up until the next
+ * write silently replaced the ticket's plan with nothing.
+ *
+ * The items themselves are NOT validated. Only this API writes these columns and
+ * `updateTicket` narrows every element on the way in, so what comes back out is whatever we
+ * put in. This is the seam to tighten if anything else ever gains write access.
+ */
+const jsonList = <T>(row: Row, column: string): T[] => {
+  const v = row[column];
+  if (v === null || v === undefined) return [];
+  if (typeof v !== "string") return bad(column, v);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(v);
+  } catch {
+    return bad(column, v);
+  }
+  return Array.isArray(parsed) ? (parsed as T[]) : bad(column, v);
+};
+
 const decode = (row: Row): Ticket =>
   toTicket({
     id: text(row, "id"),
@@ -91,6 +130,13 @@ const decode = (row: Row): Ticket =>
     pr_state: maybeText(row, "pr_state"),
     pr_additions: intOrNull(row, "pr_additions"),
     pr_deletions: intOrNull(row, "pr_deletions"),
+    playbook: maybeText(row, "playbook"),
+    task_breakdown: jsonList<ChecklistItem>(row, "task_breakdown"),
+    acceptance_criteria: jsonList<ChecklistItem>(row, "acceptance_criteria"),
+    attachments: jsonList<Attachment>(row, "attachments"),
+    screenshot_before: maybeText(row, "screenshot_before"),
+    screenshot_after: maybeText(row, "screenshot_after"),
+    started_at: maybeText(row, "started_at"),
     created_at: text(row, "created_at"),
     updated_at: text(row, "updated_at"),
   });
@@ -150,6 +196,9 @@ type TicketInput = {
   projectId?: unknown;
   title?: unknown;
   description?: unknown;
+  playbook?: unknown;
+  taskBreakdown?: unknown;
+  acceptanceCriteria?: unknown;
 };
 
 const invalid = (field: string, message: string): TicketResult => ({
@@ -163,6 +212,24 @@ const notAnObject: TicketResult = {
   status: 400,
   body: { error: "invalid_input", message: "body must be a JSON object" },
 };
+
+/**
+ * The request-side counterpart to `jsonList`: a checklist read out of the database is trusted
+ * because only this function let it in, which is exactly why this one validates every item.
+ * Both lists are stored as JSON text, so an item missing `done` would be written verbatim and
+ * come back as a row the board can render neither ticked nor unticked.
+ */
+const isChecklist = (value: unknown): value is ChecklistItem[] =>
+  Array.isArray(value) &&
+  value.every(
+    (item: unknown): boolean =>
+      typeof item === "object" &&
+      item !== null &&
+      "text" in item &&
+      typeof item.text === "string" &&
+      "done" in item &&
+      typeof item.done === "boolean",
+  );
 
 /** Owned by the lifecycle, so naming one in a PATCH is a mistake worth reporting. */
 const IMMUTABLE = [
@@ -257,7 +324,7 @@ export function updateTicket(id: string, input: unknown): TicketResult {
     }
   }
 
-  const { title, description }: TicketInput = input;
+  const { title, description, playbook, taskBreakdown, acceptanceCriteria }: TicketInput = input;
   const columns: [string, SQLInputValue][] = [];
   if (title !== undefined) {
     if (typeof title !== "string" || title.trim() === "") {
@@ -269,8 +336,30 @@ export function updateTicket(id: string, input: unknown): TicketResult {
     if (typeof description !== "string") return invalid("description", "must be a string");
     columns.push(["description", description]);
   }
+  if (playbook !== undefined) {
+    // Null is a real value here rather than "absent": it is how the picker clears a profile.
+    if (playbook !== null && typeof playbook !== "string") {
+      return invalid("playbook", "must be a string or null");
+    }
+    columns.push(["playbook", playbook]);
+  }
+  if (taskBreakdown !== undefined) {
+    if (!isChecklist(taskBreakdown)) {
+      return invalid("taskBreakdown", "must be an array of { text: string, done: boolean }");
+    }
+    columns.push(["task_breakdown", JSON.stringify(taskBreakdown)]);
+  }
+  if (acceptanceCriteria !== undefined) {
+    if (!isChecklist(acceptanceCriteria)) {
+      return invalid("acceptanceCriteria", "must be an array of { text: string, done: boolean }");
+    }
+    columns.push(["acceptance_criteria", JSON.stringify(acceptanceCriteria)]);
+  }
   if (columns.length === 0) {
-    return invalid("title", "nothing to update: provide title and/or description");
+    return invalid(
+      "title",
+      "nothing to update: provide title, description, playbook, taskBreakdown and/or acceptanceCriteria",
+    );
   }
 
   writeColumns(id, columns);
@@ -289,6 +378,7 @@ export function setRunFields(id: string, fields: RunFields): void {
   if (fields.branch !== undefined) columns.push(["branch", fields.branch]);
   if (fields.agentName !== undefined) columns.push(["agent_name", fields.agentName]);
   if (fields.sessionDir !== undefined) columns.push(["session_dir", fields.sessionDir]);
+  if (fields.startedAt !== undefined) columns.push(["started_at", fields.startedAt]);
   if (fields.finished !== undefined) columns.push(["finished", fields.finished ? 1 : 0]);
   if (fields.died !== undefined) columns.push(["died", fields.died ? 1 : 0]);
   writeColumns(id, columns);

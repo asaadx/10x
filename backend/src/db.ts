@@ -17,7 +17,14 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { allocateSlot, type SlotAllocation } from "./ports.ts";
-import type { Project, PullRequestState, Status, Ticket } from "./types.ts";
+import type {
+  Attachment,
+  ChecklistItem,
+  Project,
+  PullRequestState,
+  Status,
+  Ticket,
+} from "./types.ts";
 
 export const STATE_DIR = process.env.STATE_DIR ?? join(homedir(), ".10x");
 const DB_PATH = process.env.DB_PATH ?? join(STATE_DIR, "10x.db");
@@ -67,6 +74,27 @@ CREATE TABLE IF NOT EXISTS tickets (
   pr_state     TEXT,
   pr_additions INTEGER,
   pr_deletions INTEGER,
+  -- The ticket's dispatch profile, one of the values in the Playbook union. Nullable:
+  -- null means the ticket predates the field or was never given one, not a default profile.
+  playbook    TEXT,
+  -- The plan a ticket carries: its task breakdown, its acceptance criteria, and the files
+  -- attached to it. JSON text rather than child tables because all three are only ever read
+  -- and written whole with their ticket — there is no query that wants one item, and no join
+  -- that wants them separately — and the UI computes its own ticked/total counts from the
+  -- decoded array, so a COUNT(*) would buy nothing. The '[]' defaults are what keep a row
+  -- from ever decoding to null; the arrays are empty, never absent.
+  task_breakdown      TEXT NOT NULL DEFAULT '[]',
+  acceptance_criteria TEXT NOT NULL DEFAULT '[]',
+  attachments         TEXT NOT NULL DEFAULT '[]',
+  -- Two columns rather than one JSON blob: the pair is fixed at two, and each side is
+  -- independently nullable — the "after" shot only exists once the run is over, so a ticket
+  -- sits with a before and no after for its whole run. Paths, not URLs; the server maps them.
+  screenshot_before TEXT,
+  screenshot_after  TEXT,
+  -- When the AGENT began work, which is not created_at: a ticket can sit in backlog for days
+  -- before anything spawns. Null on a ticket that has never been spawned, and it is what the
+  -- card's run timer counts from — counting from created_at would show that backlog wait.
+  started_at  TEXT,
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL,
   UNIQUE (project_id, number)
@@ -103,6 +131,17 @@ addColumnIfMissing("tickets", "pr_state", "TEXT");
 addColumnIfMissing("tickets", "pr_additions", "INTEGER");
 addColumnIfMissing("tickets", "pr_deletions", "INTEGER");
 
+// ADD COLUMN accepts NOT NULL only alongside a non-null constant default, which '[]' is —
+// and SQLite hands that default back for every row that predates the column, so a migrated
+// row reads as an empty list rather than as NULL.
+addColumnIfMissing("tickets", "playbook", "TEXT");
+addColumnIfMissing("tickets", "task_breakdown", "TEXT NOT NULL DEFAULT '[]'");
+addColumnIfMissing("tickets", "acceptance_criteria", "TEXT NOT NULL DEFAULT '[]'");
+addColumnIfMissing("tickets", "attachments", "TEXT NOT NULL DEFAULT '[]'");
+addColumnIfMissing("tickets", "screenshot_before", "TEXT");
+addColumnIfMissing("tickets", "screenshot_after", "TEXT");
+addColumnIfMissing("tickets", "started_at", "TEXT");
+
 export const nowIso = () => new Date().toISOString();
 
 type ProjectRow = {
@@ -131,6 +170,15 @@ export type TicketRow = {
   pr_state: string | null;
   pr_additions: number | null;
   pr_deletions: number | null;
+  playbook: string | null;
+  // Already parsed. The JSON lives in one TEXT column each, and the parse happens at the
+  // decode boundary in ticket-store.ts, where a corrupt column can be reported by name.
+  task_breakdown: ChecklistItem[];
+  acceptance_criteria: ChecklistItem[];
+  attachments: Attachment[];
+  screenshot_before: string | null;
+  screenshot_after: string | null;
+  started_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -178,6 +226,14 @@ export const toTicket = (r: TicketRow): Ticket => ({
   prState: toPullRequestState(r.pr_state),
   prAdditions: r.pr_additions,
   prDeletions: r.pr_deletions,
+  playbook: r.playbook,
+  taskBreakdown: r.task_breakdown,
+  acceptanceCriteria: r.acceptance_criteria,
+  attachments: r.attachments,
+  // The two columns become the nested object here: `screenshots` is the shape the board
+  // consumes, while a fixed pair of independently nullable paths is the shape SQLite wants.
+  screenshots: { before: r.screenshot_before, after: r.screenshot_after },
+  startedAt: r.started_at,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });
