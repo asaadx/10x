@@ -178,11 +178,20 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
   // already has a row called Agent for the running Herdr agent's name, so this control is named
   // Playbook rather than colliding with it. It is local state only — nothing persists this yet,
   // same as the rest of the composer's fields before Add is wired up.
-  const [playbook, setPlaybook] = useState<Playbook>(ticket?.playbook ?? "fullstack");
+  const [playbook, setPlaybook] = useState<string>(ticket?.playbook ?? "fullstack");
   // Task Breakdown and Acceptance Criteria are the plan a Plan agent is meant to produce; there
   // is no wire field for either yet, so both live only as local state, same as Playbook above.
-  const [taskBreakdown, setTaskBreakdown] = useState<ChecklistRow[]>([{ text: "", done: false }]);
-  const [acceptanceCriteria, setAcceptanceCriteria] = useState<ChecklistRow[]>([{ text: "", done: false }]);
+  // Seeded from `ticket` via a `useState` initializer rather than an effect: `App.tsx` keys this
+  // component by ticket id, so React remounts (and re-runs this initializer) whenever a
+  // different ticket opens — no sync needed. The `.length` check (not `??`) matters too: a
+  // persisted-but-empty array must still become one blank row, or the checklist has no input
+  // and can never be started.
+  const [taskBreakdown, setTaskBreakdown] = useState<ChecklistRow[]>(
+    ticket?.taskBreakdown.length ? ticket.taskBreakdown : [{ text: "", done: false }],
+  );
+  const [acceptanceCriteria, setAcceptanceCriteria] = useState<ChecklistRow[]>(
+    ticket?.acceptanceCriteria.length ? ticket.acceptanceCriteria : [{ text: "", done: false }],
+  );
 
   // The callsite's `key` re-seeds this component when a *different* ticket is opened, but the
   // create key is the constant "new", so the composer never remounts between one creation
@@ -261,7 +270,7 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
               id="c-playbook"
               aria-label="Playbook"
               value={playbook}
-              onChange={(e) => setPlaybook(e.target.value as Playbook)}
+              onChange={(e) => setPlaybook(e.target.value)}
               className="w-full"
             >
               {Object.entries(PLAYBOOKS).map(([value, label]) => (
@@ -301,11 +310,12 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
 
           {/* A before/after pair is evidence for the change the description above just
               described, so it reads with the description rather than after the plan below —
-              shown only when the pair exists, so no ticket needs to be classified as a UI
-              change (most tickets simply have `screenshots: null` and render nothing here).
-              Both urls are null today because nothing captures them yet, which is what
-              `ScreenshotPane`'s placeholder is for. */}
-          {!creating && ticket.screenshots && (
+              shown only when at least one side has been captured. The `screenshots` object is
+              always present on a ticket now (only its sides are nullable), so testing the
+              object itself would show this block on every ticket; testing the sides is what
+              actually means "a shot exists". `ScreenshotPane`'s placeholder covers whichever
+              side is still null. */}
+          {!creating && (ticket.screenshots.before !== null || ticket.screenshots.after !== null) && (
             <div className="grid gap-4">
               <ScreenshotPane label="Before" url={ticket.screenshots.before} />
               <ScreenshotPane label="After" url={ticket.screenshots.after} />
