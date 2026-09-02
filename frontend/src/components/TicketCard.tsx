@@ -34,6 +34,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog.tsx";
 import { Button } from "@/components/ui/button.tsx";
+import { Spinner } from "@/components/ui/spinner.tsx";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -183,6 +184,8 @@ function PullRequestLine({ ticket }: { ticket: Ticket }) {
   );
 }
 
+type PreviewState = "idle" | "starting" | "live" | "stopping";
+
 /**
  * One branch per status and never an `else`. Plan is scoped to `backlog`, Start to `todo`,
  * Steer and Cancel to `in_progress`, Accept and Reject to `in_review`, and the server answers
@@ -197,12 +200,12 @@ function PullRequestLine({ ticket }: { ticket: Ticket }) {
 function RunActions({
   ticket,
   onCancel,
-  previewing,
+  previewState,
   onTogglePreview,
 }: {
   ticket: Ticket;
   onCancel: () => void;
-  previewing: boolean;
+  previewState: PreviewState;
   onTogglePreview: () => void;
 }) {
   if (ticket.status === "backlog") {
@@ -259,22 +262,37 @@ function RunActions({
           and the recorded decision is that it HIDES rather than fails
           (memory/parking-lot.md). It binds the ticket's own port block, which is why a
           ticket in review still holds one. All three In Review buttons run at this tighter
-          size so a labelled Preview still fits a five-column card. The toggle below is local
-          state only, so nothing is actually started or killed yet.
+          size so a labelled Preview still fits a five-column card. The lifecycle below is a
+          local timer, so nothing is actually started or killed yet.
         */}
         <Button
           size="sm"
-          variant={previewing ? "default" : "outline"}
+          variant={previewState === "live" || previewState === "stopping" ? "default" : "outline"}
           className="h-7 gap-1 px-2 text-[11px]"
-          title={previewing ? "Stop the preview server." : "Preview — opens the agent's dev server on this ticket's port block."}
+          disabled={previewState === "starting" || previewState === "stopping"}
+          title={
+            previewState === "live"
+              ? "Stop the preview server."
+              : previewState === "idle"
+                ? "Preview — opens the agent's dev server on this ticket's port block."
+                : undefined
+          }
           onClick={onTogglePreview}
         >
-          {previewing ? (
+          {previewState === "starting" || previewState === "stopping" ? (
+            <Spinner aria-hidden className="size-3" />
+          ) : previewState === "live" ? (
             <span aria-hidden className="size-2 shrink-0 animate-pulse rounded-full bg-emerald-400" />
           ) : (
             <ExternalLink aria-hidden className="size-3" />
           )}
-          {previewing ? "Live" : "Preview"}
+          {previewState === "starting"
+            ? "Starting..."
+            : previewState === "live"
+              ? "Live"
+              : previewState === "stopping"
+                ? "Teardown..."
+                : "Preview"}
         </Button>
       </>
     );
@@ -322,7 +340,25 @@ export function TicketCard({ ticket, onOpen }: { ticket: Ticket; onOpen: () => v
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmWorktree, setConfirmWorktree] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
-  const [previewing, setPreviewing] = useState(false);
+  const [previewState, setPreviewState] = useState<PreviewState>("idle");
+  const previewTimer = useRef<number | undefined>(undefined);
+
+  // A card unmounts on every poll that changes it, and a pending timer would then set state on
+  // a dead component.
+  useEffect(() => () => clearTimeout(previewTimer.current), []);
+
+  const handleTogglePreview = () => {
+    // A click mid-transition must do nothing: the button is also disabled in these states, so
+    // together they rule out a double-click queuing a second timer or leaving a stale one.
+    if (previewState === "starting" || previewState === "stopping") return;
+    if (previewState === "idle") {
+      setPreviewState("starting");
+      previewTimer.current = window.setTimeout(() => setPreviewState("live"), 2000);
+    } else {
+      setPreviewState("stopping");
+      previewTimer.current = window.setTimeout(() => setPreviewState("idle"), 2000);
+    }
+  };
 
   return (
     <>
@@ -448,8 +484,8 @@ export function TicketCard({ ticket, onOpen }: { ticket: Ticket; onOpen: () => v
           <RunActions
             ticket={ticket}
             onCancel={() => setConfirmCancel(true)}
-            previewing={previewing}
-            onTogglePreview={() => setPreviewing((v) => !v)}
+            previewState={previewState}
+            onTogglePreview={handleTogglePreview}
           />
         </div>
       </article>
