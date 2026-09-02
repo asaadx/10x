@@ -403,10 +403,13 @@ export function TicketCard({ ticket, onOpen }: { ticket: Ticket; onOpen: () => v
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
+              {/* The hit area comes from a transparent `::after`, not padding: the row is a
+                  fixed `h-5` and this button draws its focus ring on its own box, so growing
+                  the box would both overflow the row and enlarge the ring. */}
               <button
                 type="button"
                 aria-label="Ticket actions"
-                className="shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+                className="relative shrink-0 rounded-sm text-muted-foreground transition-colors after:absolute after:-inset-1.5 after:content-[''] hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
               >
                 <MoreHorizontal aria-hidden className="size-3.5" />
               </button>
