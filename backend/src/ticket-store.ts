@@ -17,7 +17,8 @@
  *     A PATCH naming any of them is a 400; the lifecycle writes through `setRunFields`.
  */
 import type { SQLInputValue, SQLOutputValue } from "node:sqlite";
-import { db, nowIso, toTicket, type Ticket } from "./db.ts";
+import { db, nowIso, toTicket } from "./db.ts";
+import type { Ticket } from "./types.ts";
 
 /** `{ error: "<code>", ...context }` — the uniform error envelope the whole API uses. */
 export type ErrorBody = { error: string; field?: string; message?: string; [key: string]: unknown };

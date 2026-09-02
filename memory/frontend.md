@@ -2,7 +2,7 @@
 
 **Node:** frontend · Parent: [INDEX.md](./INDEX.md)
 
-The board's browser half — everything under `public/`. The server that serves it, the HTTP surface
+The board's browser half — everything under `frontend/`. The server that serves it, the HTTP surface
 it calls and the database behind that are in [architecture](./architecture.md).
 
 ## 1. Four layers, five modules
@@ -14,13 +14,13 @@ this node.
 | --- | --- | --- | --- |
 | transport | `js/api.js` | 88 | one `api()` wrapper — it never throws and never swallows, so a network failure and a 500 arrive in the same `{ok, status, body}` shape — plus a named function per endpoint the UI uses. **No DOM.** |
 | state | `js/state.js` | 103 | the `state` object, `actionErrors`, `pendingActions`, `copyConfirms`, and the derivations (`isBusy`, `cardIsProtected`, `attachCommandFor`, `prMetaFor`). **No DOM, no `fetch`.** |
-| rendering | `js/render.js` | 447 | **every `document` reference in the frontend.** Reads state, writes markup, decides nothing. |
-| wiring | `js/app.js` | 254 | what a click means, and the poll loop. **Touches no DOM.** |
+| rendering | `js/render.js` | 459 | **every `document` reference in the frontend.** Reads state, writes markup, decides nothing. |
+| wiring | `js/app.js` | 276 | what a click means, and the poll loop. **Touches no DOM.** |
 
 Three files sit outside the layering. `js/icons.js` (50) is a table, not a layer: the eight icons JS
 renders — steer, finished, died, worktree, busy, and the three PR states — in one map.
-`index.html` (81) is markup only: the landmarks, the composer, the unowned panel and the four
-columns. `styles.css` (665) is all styling and is read by nothing.
+`index.html` (93) is markup only: the landmarks, the composer drawer, the unowned panel and the
+four columns. `styles.css` (688) is all styling and is read by nothing.
 
 **The Done card's PR meta is the worked example of the layering.** `prMetaFor(ticket)` in
 `state.js` decides *whether* there is anything to show and returns `{url, number, state, additions,
@@ -50,15 +50,16 @@ Two rules, both load-bearing, both stated at the top of `render.js`.
 
 **Nothing is located by class.** Every lookup is `document.getElementById`, a `[data-*]` selector or
 a role. There is no class-based `querySelector`, no `classList` read, no `className` read and no
-`closest()` anywhere in `public/js/`. *(Verified.)* The one hit for
-`git grep -nE 'classList|className|closest\(' public/js/` is `el.className = "card"` in
+`closest()` anywhere in `frontend/js/`. *(Verified.)* The one hit for
+`git grep -nE 'classList|className|closest\(' frontend/js/` is `el.className = "card"` in
 `renderColumn` — a **write** of a constant, which is the rule rather than an exception to it.
 
 **State leaves as an attribute, never as a class:** `data-busy` / `data-blocked` / `data-died` on a
-card, `data-status` on a badge and on each column, `data-icon` on a badge icon,
-`data-state="live|failing"` on the connection pill, `data-flagged` and `data-race-tag` in
-diagnostics, `data-empty` on the empty-column placeholder, and the native `hidden` attribute on the
-unowned panel and the board-error banner.
+card, `data-status` on a badge and on each column, `data-icon` on a badge icon, `data-pr-state` on
+a Done card's PR meta, `data-flagged` and `data-race-tag` in diagnostics, `data-empty` on the
+empty-column placeholder, and the native `hidden` attribute on the unowned panel and the
+board-error banner. The composer drawer is the one exception, and only because the platform owns
+it: a `<dialog>`'s `open` is set by `showModal()`/`close()`, never by us.
 
 `render.js` *does* emit class names — `card`, `badge`, `primary`, `danger`, `ghost`, `card-top` and
 some thirty in total — but every one is a **static styling handle that JS only ever writes**. None
@@ -92,7 +93,7 @@ status, never an `else`**, so a new status renders no action rather than the wro
 
 ## 4. Design tokens
 
-`styles.css` declares **78 custom properties, all of them on `:root`** — every colour, space,
+`styles.css` declares **77 custom properties, all of them on `:root`** — every colour, space,
 radius and type value in the design. The spacing scale is **named by its current pixel value**
 (`--space-9: 9px`): the design uses fourteen distinct spacings, enumerating them is the finding, and
 a name that lied about its value would make collapsing the list harder rather than easier. Two icons
@@ -102,15 +103,15 @@ JS never renders them.
 
 **Adding a token means adding a line, never rewriting the block.** A missing custom property fails
 **silently** — `var(--gone)` resolves to nothing and the element quietly inherits, with no console
-error and no visual clue at the definition site. `--green` and `--green-bg` are referenced by four
-rules hundreds of lines below `:root` (the connection pill, the idle/done badge, the completion
-checkmark), so dropping them while adding `--purple` broke three unrelated surfaces and the only
+rules hundreds of lines below `:root` (the idle/done badge, the completion checkmark, a card
+accent), so dropping them while adding `--purple` broke three unrelated surfaces and the only
 symptom was a green `+412` rendering purple. Verified in the browser, not by review.
 
 ## 5. It polls
 
 `setInterval(loadTickets, 1000)` and `setInterval(loadProjects, 5000)`. A failed poll keeps the
-last-known board on screen and flips the connection pill to "poll failing" rather than blanking it.
+last-known board on screen and shows the board-error banner with the actual message rather than
+blanking it.
 The 1 s poll is a **placeholder**: the backend already learns of `pane.agent_status_changed` the
 instant it fires, so only the browser is behind. SSE is parked, with a sketch, in
 [parking-lot](./parking-lot.md).
@@ -135,11 +136,16 @@ it precedes the subcommand.)
 ## 7. What the e2e suite is allowed to locate
 
 **UI assertions use accessible semantics only** — a redesign is planned, and this is the contract
-that lets one land without touching the specs. The `<header>` is the `banner` landmark, and scoping
-to it is what separates the board's project combobox from the composer's identically labelled one.
+that lets one land without touching the specs. It held: the light re-palette, removing the
+connection pill and moving the composer into a drawer were **18/18 green with no spec edited**.
+The `<header>` is the `banner` landmark, and scoping to it is what separates the board's project
+combobox from the drawer's identically labelled one — now doubly unambiguous, since a closed
+`<dialog>` is out of the accessibility tree entirely.
 Each **column is a `region` labelled by its own heading** via `aria-labelledby`, so its accessible
 name carries the live count (`"Backlog 1"`) with no duplicated string to drift, and the heading
-itself is still assertable.
+itself is still assertable. **A control belonging to a column goes beside that heading, never
+inside it** — the New ticket button nested in the `h2` would have made the region's name
+`"Backlog 1 New ticket"`.
 
 **A card is an `article` named by its ticket id**, which is how a spec says "*this* ticket shows the
 finished badge": `getByRole("region", {name: /^In Review/}).getByRole("article", {name: id})`,

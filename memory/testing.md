@@ -9,16 +9,16 @@ The two suites 10x has, what each one is for, and — the part that costs money 
 
 ## 1. Two suites, three commands
 
-Deliberately separate. `npm test` (`node --test 'src/*.test.ts'`) is the pure-unit layer and needs
+Deliberately separate. `pnpm test` (`node --test 'src/*.test.ts'`) is the pure-unit layer and needs
 nothing running. Playwright drives the real HTTP surface and the real page, and it is split into
-**two projects, not one filtered run**: `npm run e2e` (`playwright test --project=fast`) runs only
-the specs known not to spawn a coding agent, and `npm run e2e:full`
+**two projects, not one filtered run**: `pnpm e2e` (`playwright test --project=fast`) runs only
+the specs known not to spawn a coding agent, and `pnpm e2e:full`
 (`playwright test --project=full`) runs every spec.
 
 **`fast` is an allow-list, and that is the whole point.** Its `testMatch` names
 `projects.spec.ts`, `tickets.spec.ts` and `board.spec.ts` explicitly. A deny-list of the spawning
 specs would default a newly added spec to *included*, so a spec that spawns real agents would
-silently start spawning under the default `npm run e2e`. An allow-list fails safe instead: a
+silently start spawning under the default `pnpm e2e`. An allow-list fails safe instead: a
 forgotten new spec merely runs slower under `e2e:full` and never spawns unexpectedly.
 
 ## 2. The unit suite
@@ -68,7 +68,7 @@ they never start an agent.
 
 **32 tests in all.** The three `fast` specs are **18 of them and run in ~7 s with no agent and no
 model cost, so run them freely** *(verified)*. The other six specs are 14 tests and **16 real agent
-spawns**, so `npm run e2e:full` costs real model turns and is not a routine check. The automatic
+spawns**, so `pnpm e2e:full` costs real model turns and is not a routine check. The automatic
 In Review transition is asserted inside the existing completion test rather than in a new one,
 precisely so covering it cost **zero extra spawns**.
 

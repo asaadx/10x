@@ -18,7 +18,8 @@
 import type { SQLOutputValue } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { db, nowIso, toProject, type Project } from "./db.ts";
+import { db, nowIso, toProject } from "./db.ts";
+import type { Project } from "./types.ts";
 import { validateProjectSlug } from "./lifecycle.ts";
 
 export type ProjectError = { error: string; field?: string; message: string };

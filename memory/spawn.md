@@ -123,7 +123,7 @@ broken.
 #### Confirmed live in the harness
 
 The guard is not theoretical — it fires on ordinary runs. Two real spawns through
-`src/runner.ts`, each a single button press:
+`backend/src/runner.ts`, each a single button press:
 
 | Diagnostic | Ticket 1 | Ticket 2 |
 |---|---|---|

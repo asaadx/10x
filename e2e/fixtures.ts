@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
-import { HerdrError, request } from "../src/herdr.ts";
+import { HerdrError, request } from "../backend/src/herdr.ts";
 
 const git = promisify(execFile);
 
@@ -80,7 +80,7 @@ export async function restartBoard(board: Board): Promise<Board> {
 }
 
 async function boardOn(stateDir: string): Promise<Board> {
-  const child = spawn(process.execPath, ["src/server.ts"], {
+  const child = spawn(process.execPath, ["backend/src/server.ts"], {
     cwd: REPO_ROOT,
     env: {
       ...process.env,
@@ -95,7 +95,7 @@ async function boardOn(stateDir: string): Promise<Board> {
   });
 
   const pid = child.pid;
-  if (pid === undefined) throw new Error("could not spawn `node src/server.ts`");
+  if (pid === undefined) throw new Error("could not spawn `node backend/src/server.ts`");
 
   // Kept so a startup failure reports what the server said instead of just "timed out".
   let log = "";

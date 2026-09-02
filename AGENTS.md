@@ -55,7 +55,7 @@ the diff already shows what. Breaking change → `!` after the type (`feat(api)!
 Before you call anything done:
 
 ```bash
-npm run typecheck && npm test
+pnpm typecheck && pnpm test
 ```
 
 Both are free and take seconds. A commit that does not typecheck, or that reddens the suite, is not

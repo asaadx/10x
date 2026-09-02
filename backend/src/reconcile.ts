@@ -12,7 +12,7 @@
  */
 import { request } from "./herdr.ts";
 import { agentNameFor, branchFor } from "./lifecycle.ts";
-import type { Ticket } from "./db.ts";
+import type { Orphan, Ticket } from "./types.ts";
 
 /** Ticket branches are namespaced, and that namespace is the whole ownership test (memory/reconciliation.md). */
 const TICKET_BRANCH_PREFIX = "ticket/";
@@ -29,9 +29,6 @@ export type WorktreeEntry = {
   is_prunable: boolean;
   open_workspace_id?: string | null;
 };
-
-/** A ticket-namespaced worktree no live ticket claims. Reported, never reclaimed. */
-export type Orphan = { branch: string; path: string };
 
 export type Divergence = {
   ticketId: string;
