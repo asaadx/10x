@@ -119,6 +119,20 @@ export type BoardTicket = Ticket & {
   paneId: string | null;
   workspaceId: string | null;
   busy: boolean;
+  /**
+   * ISO timestamp of when the agent was spawned, or `null` when unknown. NOT persisted yet —
+   * there is no `started_at` column — so the server always sends `null` here today. A real
+   * value requires a `started_at` write, once, at the point the spawn compare-and-swap wins.
+   */
+  startedAt: string | null;
+  /**
+   * A before/after screenshot pair for a ticket that changed the UI, or `null` when the
+   * ticket has none. NOT persisted — there is no table and no capture path — so the server
+   * always sends `null` here today. Populating it means having the agent capture the two
+   * images. Each URL is independently nullable: a pair can exist before both shots are
+   * taken, and the UI falls back to a placeholder pane for whichever one is missing.
+   */
+  screenshots: { before: string | null; after: string | null } | null;
   diagnostics: Diagnostics;
 };
 

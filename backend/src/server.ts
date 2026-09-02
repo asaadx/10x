@@ -176,6 +176,10 @@ async function board(projectFilter: string | undefined): Promise<Reply> {
       paneId: agent?.pane_id ?? null,
       workspaceId: agent?.workspace_id ?? worktree?.open_workspace_id ?? null,
       busy: inFlight.has(t.id),
+      // Always null: no started_at column yet (see the field's doc comment in types.ts).
+      startedAt: null,
+      // Always null: no capture path yet (see the field's doc comment in types.ts).
+      screenshots: null,
       diagnostics: runs.get(t.id)?.diagnostics ?? freshDiagnostics(),
     };
   });
