@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit && pnpm --filter @10x/frontend typecheck",
     "test": "pnpm -r test",
     "e2e": "pnpm build && playwright test --project=fast",
-    "e2e:full": "pnpm build && playwright test --project=full"
+    "e2e:full": "pnpm build && playwright test --project=full",
+    "demo:real-agent-pr": "pnpm build && node e2e/demo-backlog-to-done.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
