@@ -390,6 +390,13 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
           ticketId: ticket.id,
           projectId: ticket.projectId,
           number: ticket.number,
+          // The card as it stands, for the planner's opening message: it is told to skip
+          // anything already filled in, which it can only do if it is handed the fields.
+          title: ticket.title,
+          description: ticket.description,
+          playbook: ticket.playbook,
+          taskBreakdown: ticket.taskBreakdown,
+          acceptanceCriteria: ticket.acceptanceCriteria,
           repoPath: project.repoPath,
         },
         API_URL,
