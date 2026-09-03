@@ -3,9 +3,8 @@ import type { BoardResponse, Playbook, Project, Status, Ticket } from "@/types.t
 
 /**
  * The board's whole HTTP seam: the two GETs it renders from, and the writes behind every
- * button that has one. Nothing else is wired yet — Cancel, Reject and the two deletes still
- * have no caller here, deliberately, so a bug in one of those is a missing function rather
- * than a half-working button.
+ * button that has one. Reject is still unwired, deliberately, so a bug there is a missing
+ * function rather than a half-working button.
  *
  * Paths are relative on purpose. `vite.config.ts` proxies `/tickets` and `/projects` to the
  * backend in dev, and in production the backend serves the built bundle itself, so the board
@@ -213,4 +212,29 @@ export async function spawnAgent(id: string): Promise<void> {
  */
 export async function acceptTicket(id: string): Promise<void> {
   await request<unknown>("POST", `/tickets/${encodeURIComponent(id)}/accept`);
+}
+
+/**
+ * Discards the attempt: stops the agent and closes its pane, force-removes the worktree,
+ * deletes the branch and the transcript, and returns the ticket to `todo`. Everything the
+ * agent did is thrown away and this cannot be undone — see the confirm dialog this backs.
+ */
+export async function cancelTicket(id: string): Promise<void> {
+  await request<unknown>("POST", `/tickets/${encodeURIComponent(id)}/cancel`);
+}
+
+/**
+ * Stops the running agent and closes its pane, force-removes the worktree directory and
+ * deletes the transcript. The branch and its commits are kept.
+ */
+export async function deleteWorktree(id: string): Promise<void> {
+  await request<unknown>("DELETE", `/tickets/${encodeURIComponent(id)}/worktree`);
+}
+
+/**
+ * Stops the agent, removes the worktree, and deletes the branch and the transcript. The
+ * server refuses to delete a ticket whose pull request is still open.
+ */
+export async function deleteTicket(id: string): Promise<void> {
+  await request<unknown>("DELETE", `/tickets/${encodeURIComponent(id)}`);
 }
