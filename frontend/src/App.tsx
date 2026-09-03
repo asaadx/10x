@@ -31,6 +31,11 @@ export function App() {
   // what lets the To Do footer's button do what it looks like it does instead of dropping the
   // card in a different column.
   const [createInto, setCreateInto] = useState<Status>("backlog");
+  // The failed card action the sheet is currently showing, handed over by the card that opened
+  // it — the card is where the write is dispatched from, and the sheet is the only surface with
+  // room for the message. A snapshot taken at open, which cannot go stale because the sheet is
+  // modal: nothing on the board can be clicked, so no action can fail, while it is up.
+  const [sheetError, setSheetError] = useState<string | null>(null);
 
   useEffect(() => applyTheme(theme), [theme]);
   useEffect(() => storeSteerMode(steerMode), [steerMode]);
@@ -85,13 +90,15 @@ export function App() {
               status === "backlog" || status === "todo"
                 ? () => {
                     setSheetTicket(null);
+                    setSheetError(null);
                     setCreateInto(status);
                     setSheetOpen(true);
                   }
                 : undefined
             }
-            onOpenTicket={(ticket) => {
+            onOpenTicket={(ticket, actionError) => {
               setSheetTicket(ticket);
+              setSheetError(actionError);
               setSheetOpen(true);
             }}
             onTicketChanged={refresh}
@@ -108,6 +115,7 @@ export function App() {
         defaultProjectId={projectId === ALL_PROJECTS ? "" : projectId}
         ticket={sheetTicket}
         createInto={createInto}
+        actionError={sheetError}
         onCreated={refresh}
       />
     </div>

@@ -34,6 +34,13 @@ type Props = {
    * so `todo` is the one value that costs a follow-up move; see `submit` below.
    */
   createInto: Status;
+  /**
+   * The last card action that failed for this ticket, or null. It lives in `TicketCard` state
+   * — that is where the write is dispatched from — and the card hands it over when it opens
+   * this sheet, so the message does NOT survive a reload or either component remounting. The
+   * card only has room for a one-word `failed` chip, so this is where the text is read.
+   */
+  actionError: string | null;
   /** A ticket was created, so the board should re-read rather than wait out the poll. */
   onCreated: () => void;
 };
@@ -179,6 +186,7 @@ export function TicketSheet({
   defaultProjectId,
   ticket,
   createInto,
+  actionError,
   onCreated,
 }: Props) {
   const creating = ticket === null;
@@ -471,6 +479,25 @@ export function TicketSheet({
             </dl>
           )}
         </div>
+
+        {/*
+          The same slot and the same styling as the create failure below, for the same reason:
+          outside the scrolling body, so the message someone opened this sheet to read cannot
+          be scrolled past or missed. The card carries a one-word `failed` chip and nothing
+          else, so this is the only place the text exists — wrapped rather than truncated, and
+          selectable so it can be copied into a bug report.
+        */}
+        {!creating && actionError !== null && (
+          <div className="mx-4 grid shrink-0 gap-1.5">
+            <label className="text-xs text-muted-foreground">Last action failed</label>
+            <p
+              role="status"
+              className="rounded-md bg-destructive/10 p-2 text-xs break-words text-destructive select-text"
+            >
+              {actionError}
+            </p>
+          </div>
+        )}
 
         {/*
           Outside the scrolling body and above the footer, so it is visible wherever the body
