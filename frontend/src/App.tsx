@@ -6,7 +6,7 @@ import { NavBar } from "@/components/NavBar.tsx";
 import { TicketSheet } from "@/components/TicketSheet.tsx";
 import { ALL_PROJECTS, matchesProject, ticketsForColumn } from "@/lib/board.ts";
 import { initialSteerMode, storeSteerMode, type SteerMode } from "@/lib/steer-mode.ts";
-import { applyTheme, initialTheme, type Theme } from "@/lib/theme.ts";
+import { useTheme } from "@/lib/theme.ts";
 import { useBoard } from "@/lib/use-board.ts";
 import { COLUMNS, type SortOrder, type Status, type Ticket } from "@/types.ts";
 
@@ -17,7 +17,7 @@ import { COLUMNS, type SortOrder, type Status, type Ticket } from "@/types.ts";
  * nothing is a missing handler rather than a broken one.
  */
 export function App() {
-  const [theme, setTheme] = useState<Theme>(() => initialTheme());
+  const { theme, toggleTheme } = useTheme();
   const [steerMode, setSteerMode] = useState<SteerMode>(() => initialSteerMode());
   // Seeded from the sentinel, not from a project: projects arrive asynchronously and the list
   // may legitimately be empty, so this is the only value that is valid before the first read.
@@ -37,7 +37,6 @@ export function App() {
   // modal: nothing on the board can be clicked, so no action can fail, while it is up.
   const [sheetError, setSheetError] = useState<string | null>(null);
 
-  useEffect(() => applyTheme(theme), [theme]);
   useEffect(() => storeSteerMode(steerMode), [steerMode]);
 
   const { tickets, projects, error, refresh } = useBoard(projectId);
@@ -55,7 +54,7 @@ export function App() {
         steerMode={steerMode}
         onSteerModeChange={setSteerMode}
         theme={theme}
-        onThemeToggle={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+        onThemeToggle={toggleTheme}
       />
       <BoardToolbar query={query} onQueryChange={setQuery} order={order} onOrderChange={setOrder} />
 

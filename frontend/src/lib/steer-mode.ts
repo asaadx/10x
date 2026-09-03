@@ -3,8 +3,9 @@ export type SteerMode = "local" | "remote";
 const KEY = "10x.steer-mode";
 
 /**
- * Unlike `initialTheme`, there is no OS preference to consult here — the fallback when nothing
- * is stored is just the plain default, "local".
+ * Stored-or-default, with no third state: unlike `useTheme`, there is no OS preference to
+ * consult, so there is nothing to keep following after the first read and nothing to subscribe
+ * to. Nothing stored means the plain default, "local".
  */
 export function initialSteerMode(): SteerMode {
   const stored = localStorage.getItem(KEY);
