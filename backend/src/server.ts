@@ -52,10 +52,17 @@ import type {
   BoardTicket,
   Diagnostics,
   Project,
-  PullRequestState,
   Ticket,
 } from "./types.ts";
-import { fetchPullRequestState, needsLiveCheck, openPullRequest, pullRequestUpdate, pushTicketBranch } from "./github.ts";
+import {
+  fetchPullRequestSnapshot,
+  needsLiveCheck,
+  openPullRequest,
+  pullRequestUpdate,
+  pushTicketBranch,
+  type PullRequest,
+  type PullRequestSnapshot,
+} from "./github.ts";
 import { blockFor } from "./ports.ts";
 import { killDevServers } from "./dev-server.ts";
 
@@ -99,6 +106,22 @@ const runs = new Map<string, RunState>();
 
 /** Tickets with an operation in flight. Rejecting beats queueing: the conflict stays visible. */
 const inFlight = new Set<string>();
+
+/**
+ * Reconcile-on-read cache for PR state: a ticket's PR is asked about live at most once per TTL
+ * window rather than on every one-second board poll. Keyed by ticket id, not PR URL — every
+ * other per-ticket map in this module (`runs`, `inFlight`) is keyed by id, and a URL does not
+ * exist yet for a ticket that has never been accepted, so id needs no extra null-check to use
+ * as a key. ~60s matches memory/github.md's own estimate for how fresh an open-PR read needs
+ * to be.
+ *
+ * Tradeoff accepted here: a merge or close that happens between two live checks for the same
+ * ticket is invisible until the next one — up to PR_CHECK_TTL_MS stale. A webhook receiver
+ * would close that gap to near-real-time; memory/parking-lot.md records why it is parked
+ * rather than built, now that this reconcile makes it a latency question, not a correctness one.
+ */
+const PR_CHECK_TTL_MS = 60_000;
+const prLastChecked = new Map<string, number>();
 
 const runStateFor = (t: Ticket): RunState => {
   const existing = runs.get(t.id);
@@ -161,6 +184,43 @@ const isReply = (x: object): x is Reply => "status" in x && "body" in x;
 type LiveAgent = { name?: string | null; agent_status?: string; pane_id?: string; workspace_id?: string };
 
 /**
+ * Fail-open, unlike the delete guard's live read: this is a display concern, not an
+ * irreversible-action gate. A missing token or a failed fetch just leaves whatever the DB
+ * already has (including `null`) in place — never thrown, never lets one bad ticket fail the
+ * whole board response. Only tickets whose TTL window has elapsed are passed in, and every
+ * check runs concurrently, the same `Promise.all` shape `board()` already uses per repo.
+ *
+ * Returns what it freshly read, keyed by ticket id, rather than relying on a caller re-query:
+ * `board()`'s own `tickets` array was already fetched before this runs, so without handing the
+ * fresh values back the write above would be invisible until the *next* poll — a needless
+ * extra second of staleness on top of the TTL this function already accepts.
+ */
+async function reconcilePullRequests(
+  due: Ticket[],
+  byId: Map<string, Project>,
+  now: number,
+): Promise<Map<string, PullRequestSnapshot>> {
+  const reconciled = new Map<string, PullRequestSnapshot>();
+  const token = process.env.GITHUB_TOKEN;
+  if (!token || due.length === 0) return reconciled;
+  await Promise.all(
+    due.map(async (t) => {
+      prLastChecked.set(t.id, now);
+      const project = byId.get(t.projectId);
+      if (!project || t.prNumber === null || !t.prUrl) return;
+      try {
+        const snapshot = await fetchPullRequestSnapshot(project.repoPath, t.prNumber, token);
+        setPullRequestState(t.prUrl, snapshot.state, snapshot.additions, snapshot.deletions);
+        reconciled.set(t.id, snapshot);
+      } catch (err) {
+        console.warn(`[${t.id}] PR state reconcile failed; board serves the stale stored value:`, err);
+      }
+    }),
+  );
+  return reconciled;
+}
+
+/**
  * Everything Herdr owns, fetched in TWO calls total rather than per ticket: one
  * `agent.list` for the whole session, and one `worktree.list` per distinct repo. Joined
  * on branch and agent name — never on a path (memory/naming.md).
@@ -179,13 +239,25 @@ async function board(projectFilter: string | undefined): Promise<Reply> {
   ];
   const claimed = new Set(tickets.map((t) => t.branch ?? branchFor(t.projectId, t.number)));
 
-  const [agents, worktreeLists, orphanLists] = await Promise.all([
+  // Reconcile-on-read: every ticket whose PR is non-terminal and has not been checked within
+  // the TTL is worth a live read, backfilling `prState`/`prAdditions`/`prDeletions` for tickets
+  // no webhook ever reached — the pre-existing case — without waiting on `gh webhook forward`.
+  const now = Date.now();
+  const dueForCheck = tickets.filter(
+    (t) =>
+      t.prNumber !== null &&
+      needsLiveCheck(t.prState) &&
+      (prLastChecked.get(t.id) ?? 0) + PR_CHECK_TTL_MS <= now,
+  );
+
+  const [agents, worktreeLists, orphanLists, reconciled] = await Promise.all([
     request<{ agents: LiveAgent[] }>("agent.list", {}).catch((err: unknown) => {
       console.warn("agent.list failed; statuses will read as unknown:", err);
       return { agents: [] };
     }),
     Promise.all(repos.map((repo) => listWorktrees(repo))),
     Promise.all(repos.map((repo) => findOrphans(repo, claimed))),
+    reconcilePullRequests(dueForCheck, byId, now),
   ]);
 
   // An agent.list row may omit `name` entirely (an unnamed pane, e.g. this session's own),
@@ -204,6 +276,7 @@ async function board(projectFilter: string | undefined): Promise<Reply> {
     const agentName = liveAgentNameFor(t);
     const agent = byAgentName.get(agentName);
     const worktree = byBranch.get(branch);
+    const snapshot = reconciled.get(t.id);
     return {
       ...t,
       branch,
@@ -215,6 +288,9 @@ async function board(projectFilter: string | undefined): Promise<Reply> {
       workspaceId: agent?.workspace_id ?? worktree?.open_workspace_id ?? null,
       busy: inFlight.has(t.id),
       diagnostics: runs.get(t.id)?.diagnostics ?? freshDiagnostics(),
+      ...(snapshot
+        ? { prState: snapshot.state, prAdditions: snapshot.additions, prDeletions: snapshot.deletions }
+        : {}),
     };
   });
 
@@ -307,15 +383,15 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
           409,
         );
       }
-      let liveState: PullRequestState;
+      let live: PullRequestSnapshot;
       try {
-        liveState = await fetchPullRequestState(project.repoPath, ticket.prNumber, token);
+        live = await fetchPullRequestSnapshot(project.repoPath, ticket.prNumber, token);
       } catch (err) {
         // Fail closed: we cannot verify the PR is safe to orphan, and the teardown is irreversible.
         const message = err instanceof Error ? err.message : String(err);
         return json({ error: "pr_state_unknown", message }, 409);
       }
-      if (liveState === "open") {
+      if (live.state === "open") {
         return json(
           {
             error: "pr_open",
@@ -326,12 +402,11 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
           409,
         );
       }
-      // Persist the freshly-read terminal state. This is also the recovery path for a merge/close
-      // event missed while webhook forwarding was down (memory/teardown.md): the next delete
-      // attempt catches up the row instead of needing a manual fix. LOC is passed through
-      // unchanged since this read has no additions/deletions to offer.
+      // Persist the freshly-read terminal state and LOC. This is also the recovery path for a
+      // merge/close event missed while webhook forwarding was down (memory/teardown.md): the
+      // next delete attempt catches up the row instead of needing a manual fix.
       if (ticket.prUrl) {
-        setPullRequestState(ticket.prUrl, liveState, ticket.prAdditions, ticket.prDeletions);
+        setPullRequestState(ticket.prUrl, live.state, live.additions, live.deletions);
       }
     }
 
@@ -619,7 +694,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
 
     inFlight.add(id);
     try {
-      let pr: { number: number; url: string };
+      let pr: PullRequest;
       try {
         await pushTicketBranch(project.repoPath, ticket.branch, token);
         pr = await openPullRequest(
@@ -634,6 +709,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
           token,
         );
         setPullRequest(id, pr.number, pr.url);
+        setPullRequestState(pr.url, pr.state, pr.additions, pr.deletions);
       } catch (err) {
         // Hand the claim back: a ticket sitting in Done with no PR is worse than a visible
         // failure. The message is already redacted by github.ts — do not log the raw error

@@ -1,11 +1,25 @@
 /**
  * Tests for the pure pieces of GitHub publishing: redaction, remote parsing, and PR
- * body construction. `pushTicketBranch` and `openPullRequest` need the network and are
- * covered by an end-to-end test against a real throwaway repo, not here.
+ * body construction — plus `openPullRequest` and `fetchPullRequestSnapshot`'s metadata
+ * extraction, against a real local git repo (for `origin` remote resolution, no network) with
+ * `fetch` swapped for a queue of canned responses. `pushTicketBranch` still needs a real push
+ * and stays covered only by the end-to-end test against a real throwaway repo.
  */
-import { test, describe } from "node:test";
+import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
-import { redact, parseRemote, pullRequestBody, pullRequestUpdate, needsLiveCheck } from "./github.ts";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  redact,
+  parseRemote,
+  pullRequestBody,
+  pullRequestUpdate,
+  needsLiveCheck,
+  openPullRequest,
+  fetchPullRequestSnapshot,
+} from "./github.ts";
 
 describe("redact", () => {
   test("removes a token embedded in a plain string", () => {
@@ -109,5 +123,86 @@ describe("needsLiveCheck", () => {
 
   test("null needs a live check — null means no webhook told us, not that there is no PR, so treating it as safe-to-delete is the exact bug this guard exists to prevent", () => {
     assert.equal(needsLiveCheck(null), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A real local repo, only so `git remote get-url origin` has something to read — no network
+// call ever leaves this process. `fetch` is swapped per test for a queue of canned Response
+// objects, restored in `after`.
+// ---------------------------------------------------------------------------
+
+const repoPath = mkdtempSync(join(tmpdir(), "10x-github-test-"));
+execFileSync("git", ["init", "-q", repoPath]);
+execFileSync("git", ["remote", "add", "origin", "https://github.com/acme/proj.git"], { cwd: repoPath });
+
+const realFetch = globalThis.fetch;
+after(() => {
+  globalThis.fetch = realFetch;
+  rmSync(repoPath, { recursive: true, force: true });
+});
+
+/** Queues canned responses in call order; a call past the end of the queue is a test bug. */
+function queueFetch(responses: { status: number; body: unknown }[]): void {
+  const queue = [...responses];
+  globalThis.fetch = (async () => {
+    const next = queue.shift();
+    if (!next) throw new Error("fetch called more times than the test queued responses for");
+    return new Response(JSON.stringify(next.body), { status: next.status });
+  }) as typeof fetch;
+}
+
+const spec = { branch: "b", base: "main", title: "t", description: "d", ticketId: "tk-1" };
+
+describe("openPullRequest surfaces PR metadata", () => {
+  test("a 201 response carries state/additions/deletions alongside number/url", async () => {
+    queueFetch([
+      { status: 201, body: { number: 42, html_url: "https://github.com/acme/proj/pull/42", state: "open", merged: false, additions: 10, deletions: 4 } },
+    ]);
+    const pr = await openPullRequest(repoPath, spec, "tok");
+    assert.deepEqual(pr, { number: 42, url: "https://github.com/acme/proj/pull/42", state: "open", additions: 10, deletions: 4 });
+  });
+
+  test("a merged PR's create response (the 422-adopt branch reuses the same shape) reads state merged", async () => {
+    queueFetch([
+      { status: 201, body: { number: 43, html_url: "https://github.com/acme/proj/pull/43", state: "closed", merged: true, additions: 1, deletions: 1 } },
+    ]);
+    const pr = await openPullRequest(repoPath, spec, "tok");
+    assert.equal(pr.state, "merged");
+  });
+
+  test("a 422 already-exists response adopts the existing PR, with the same metadata fields populated", async () => {
+    queueFetch([
+      { status: 422, body: { message: "Validation Failed", errors: [{ message: "A pull request already exists for acme:b." }] } },
+      { status: 200, body: [{ number: 7, html_url: "https://github.com/acme/proj/pull/7", state: "open", merged: false, additions: 3, deletions: 1 }] },
+    ]);
+    const pr = await openPullRequest(repoPath, spec, "tok");
+    assert.deepEqual(pr, { number: 7, url: "https://github.com/acme/proj/pull/7", state: "open", additions: 3, deletions: 1 });
+  });
+
+  test("a create response missing additions/deletions still yields a PR, with null LOC", async () => {
+    queueFetch([{ status: 201, body: { number: 44, html_url: "https://github.com/acme/proj/pull/44", state: "open", merged: false } }]);
+    const pr = await openPullRequest(repoPath, spec, "tok");
+    assert.equal(pr.additions, null);
+    assert.equal(pr.deletions, null);
+  });
+});
+
+describe("fetchPullRequestSnapshot", () => {
+  test("returns state, additions and deletions from a single GET call", async () => {
+    queueFetch([{ status: 200, body: { number: 9, state: "closed", merged: true, additions: 20, deletions: 5 } }]);
+    const snapshot = await fetchPullRequestSnapshot(repoPath, 9, "tok");
+    assert.deepEqual(snapshot, { state: "merged", additions: 20, deletions: 5 });
+  });
+
+  test("an open PR reads state open with its LOC", async () => {
+    queueFetch([{ status: 200, body: { number: 9, state: "open", merged: false, additions: 2, deletions: 0 } }]);
+    const snapshot = await fetchPullRequestSnapshot(repoPath, 9, "tok");
+    assert.deepEqual(snapshot, { state: "open", additions: 2, deletions: 0 });
+  });
+
+  test("throws on a non-200 response, with the token redacted", async () => {
+    queueFetch([{ status: 404, body: { message: "Not Found" } }]);
+    await assert.rejects(() => fetchPullRequestSnapshot(repoPath, 9, "secret-tok"), /GitHub API error \(404\)/);
   });
 });

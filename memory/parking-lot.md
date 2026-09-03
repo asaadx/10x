@@ -305,6 +305,33 @@ real UI replaces the harness UI, not before.
 
 ---
 
+## Webhook receiver: built, and no longer a correctness dependency
+
+`POST /webhooks/github` is fully built ([github](./github.md)) and updates a ticket the instant
+`gh webhook forward` happens to be running against it. Nothing in `package.json` starts it:
+`gh webhook forward --repo=… --events=pull_request --url=…` is a foreground, ephemeral-subscription
+CLI tool bound to exactly one `--repo`, architecturally unable to cover "every project this board
+might have registered" without one long-running process per project — and events that occur while
+it is down are lost, not queued ([github](./github.md)), so even a parked instance would silently
+stop being a source of truth the moment it exited.
+
+**Why this is no longer a correctness gap.** `board()` reconciles PR state on read (`server.ts`,
+`reconcilePullRequests`): every ticket whose PR is non-terminal gets a live
+`GET /repos/{owner}/{repo}/pulls/{n}` at most once per `PR_CHECK_TTL_MS` (60s, matching
+[github](./github.md)'s own "a ~60s cache is enough"), independent of whether any webhook was
+ever wired up. A ticket accepted long before this landed, sitting with `prState: null` forever
+because no webhook ever reached it, backfills itself on the next board read — no manual fix, no
+webhook required.
+
+**Tradeoff accepted.** A merge or close that happens between two live checks for the same ticket
+is invisible for up to the 60s TTL — fine for a single-user board polled once a second by a
+human, not fine if this ever needs push-exact notifications (driving an automated action off "PR
+just merged", say). If that need appears, wiring one `gh webhook forward` per registered project,
+or moving to a real endpoint with HMAC per [github](./github.md), closes the gap to
+near-real-time. Not needed for correctness today — only for latency.
+
+---
+
 ## Validate the project slug at creation time
 
 Agent names must match `[a-z][a-z0-9_-]{0,31}` — 32 characters total. `agentNameFor` spends
