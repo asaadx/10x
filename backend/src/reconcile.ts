@@ -9,9 +9,15 @@
  * and is unrecoverable, so it is only ever an explicit user action (memory/teardown.md rows 1-4). Hence no
  * `worktree.remove`, no `force: true` and no branch deletion appears here, and none may be
  * added. `reconcileTickets` returns findings only — the caller decides what to act on.
+ *
+ * `sweepPlanWorkspaces` is the one exception, and only because a plan workspace has nothing
+ * to lose: a planner owns no worktree, no branch and no commits (planner.ts), so closing its
+ * pane cannot destroy work the way `worktree.remove` can. The same carve-out as the port slot
+ * (memory/reconciliation.md) and bounded the same way — it may close ONLY a workspace whose
+ * planning is provably over, never one a human might still be talking to.
  */
 import { request } from "./herdr.ts";
-import { agentNameFor, branchFor } from "./lifecycle.ts";
+import { agentNameFor, branchFor, isPlanAgentName, planAgentNameFor } from "./lifecycle.ts";
 import type { Orphan, Ticket } from "./types.ts";
 
 /** Ticket branches are namespaced, and that namespace is the whole ownership test (memory/reconciliation.md). */
@@ -103,7 +109,7 @@ export async function findOrphans(
  * reliably matches the real one (memory/naming.md).
  *
  * Purely observational: no database write, no Herdr mutation. Row 3 of the memory/reconciliation.md table
- * ("nothing exists" -> reset to backlog) is the caller's decision, not ours.
+ * ("nothing exists" -> reset to todo) is the caller's decision, not ours.
  */
 export async function reconcileTickets(
   tickets: readonly Ticket[],
@@ -161,4 +167,111 @@ export async function reconcileTickets(
       note: `neither a worktree on ${branch} nor an agent ${agentName} exists — status is false, nothing to destroy`,
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Plan workspaces. A planner has no worktree and no branch, so nothing above can see it:
+// every lookup in this file joins on a branch, and there is none. Its Herdr LABEL is the
+// only handle (memory/naming.md), which is why the sweep exists at all.
+// ---------------------------------------------------------------------------
+
+/** A `workspace.list` row, narrowed to the fields the sweep reads (`WorkspaceInfo`). */
+type WorkspaceEntry = { workspace_id: string; label?: string | null };
+
+/**
+ * Only the four fields the sweep needs. Narrower than `Ticket` on purpose: the decision is
+ * "does a ticket own this label, and has it left backlog", and a test should not have to
+ * build a whole ticket row to state that.
+ */
+export type PlanTicket = Pick<Ticket, "id" | "projectId" | "number" | "status">;
+
+export type PlanSweepDecision = {
+  workspaceId: string;
+  label: string;
+  close: boolean;
+  reason: string;
+};
+
+/**
+ * Decide which plan workspaces may be closed. Pure, because the rule is the load-bearing
+ * part and getting it wrong destroys a conversation a human is in the middle of.
+ *
+ * **Spare anything still in `backlog`.** Herdr keeps panes and agents alive across a restart
+ * of this process — the same fact that makes `agent_name_taken` a real case in runner.ts — so
+ * a plan workspace surviving a boot is the NORMAL state of an ongoing conversation, not
+ * residue. Planning is over only when the ticket no longer exists, or has left backlog
+ * because a human promoted it.
+ *
+ * `tickets` MUST be every ticket in the store, not one project's: labels are unique across
+ * the whole Herdr session, and a ticket missing from this list reads as deleted.
+ */
+export function decidePlanSweep(
+  workspaces: readonly WorkspaceEntry[],
+  tickets: readonly PlanTicket[],
+): PlanSweepDecision[] {
+  const owners = new Map(tickets.map((t) => [planAgentNameFor(t.projectId, t.number), t]));
+
+  const decisions: PlanSweepDecision[] = [];
+  for (const workspace of workspaces) {
+    const label = workspace.label;
+    // A workspace we did not label is not ours, and is never a candidate at all — the same
+    // structural ownership test `findOrphans` applies to a branch namespace.
+    if (typeof label !== "string" || !isPlanAgentName(label)) continue;
+
+    const ticket = owners.get(label);
+    if (!ticket) {
+      decisions.push({
+        workspaceId: workspace.workspace_id,
+        label,
+        close: true,
+        reason: "no ticket owns this label — it was deleted while its planner was open",
+      });
+    } else if (ticket.status === "backlog") {
+      decisions.push({
+        workspaceId: workspace.workspace_id,
+        label,
+        close: false,
+        reason: `ticket ${ticket.id} is still in backlog — the conversation may be live`,
+      });
+    } else {
+      decisions.push({
+        workspaceId: workspace.workspace_id,
+        label,
+        close: true,
+        reason: `ticket ${ticket.id} has left backlog (${ticket.status}) — planning is over`,
+      });
+    }
+  }
+  return decisions;
+}
+
+/**
+ * Boot-time sweep of plan workspaces. Returns what it decided, having closed the closable.
+ *
+ * Never throws: this runs on the way up, and a Herdr that is down or slow must not stop the
+ * server from starting — the same degradation rule as `listWorktrees` above. A workspace it
+ * fails to close is simply swept at the next boot.
+ */
+export async function sweepPlanWorkspaces(
+  tickets: readonly PlanTicket[],
+): Promise<PlanSweepDecision[]> {
+  let workspaces: WorkspaceEntry[];
+  try {
+    const result = await request<{ workspaces?: WorkspaceEntry[] }>("workspace.list", {});
+    workspaces = result.workspaces ?? [];
+  } catch (err) {
+    console.warn("plan sweep: workspace.list failed; no plan workspace was swept:", err);
+    return [];
+  }
+
+  const decisions = decidePlanSweep(workspaces, tickets);
+  for (const decision of decisions) {
+    if (!decision.close) continue;
+    try {
+      await request("workspace.close", { workspace_id: decision.workspaceId });
+    } catch (err) {
+      console.warn(`plan sweep: could not close ${decision.label} (${decision.workspaceId}):`, err);
+    }
+  }
+  return decisions;
 }

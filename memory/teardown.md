@@ -15,7 +15,7 @@ The dials: **agent process**, **Herdr pane/workspace**, **worktree directory**, 
 
 | Trigger | Agent | Pane / workspace | Worktree | Branch | Transcript |
 |---|---|---|---|---|---|
-| **Cancel** (In Progress → Backlog) | stop | close | **force-remove** | **delete** | **delete** |
+| **Cancel** (In Progress → To Do) | stop | close | **force-remove** | **delete** | **delete** |
 | **Ticket deleted** | stop | close | **force-remove** | **delete** | **delete** |
 | **Project deleted** | stop all | close all, incl. source workspace | **force-remove all** | **delete all** | **delete all** |
 | **Manual "remove worktree"** | stop | close | **force-remove** | keep | **delete** |
@@ -40,7 +40,7 @@ Five rules fall out of that table, and they are the whole policy:
    until the user says so.
 3. **A dead pane is not a finished ticket.** Crash, `pane.exited`, Herdr restart and a
    hand-closed tab all leave the worktree alone and surface the ticket as needing attention. A
-   ticket in Backlog *with* a worktree does not imply garbage — the agent may just have been
+   ticket back in Backlog or To Do *with* a worktree does not imply garbage — the agent may just have been
    stopped, and destroying it would discard real work to save kilobytes.
 4. **The transcript dies with the worktree, except on a crash** — there it is the only record of
    what went wrong, so it is kept. Note the corollary: cancelling a crashed ticket *does* delete
@@ -98,10 +98,11 @@ it always did.
 exists.** Herdr owns the panes and agents, so both survive a 10x backend restart untouched.
 
 **The route is no longer a backend restart (verified).** Status lives in SQLite, so a restart
-brings the ticket back still `in_progress` and pressing Start answers **409 `not_in_backlog`** —
+brings the ticket back still `in_progress` and pressing Start answers **409 `not_in_todo`** —
 the claim is the lock and it outlives the process ([operations](./operations.md)). What remains
 reachable is a **spawn that fails after `agent.start` succeeded**: the handler releases the claim
-back to Backlog while Herdr keeps the agent, so the next spawn hits an existing worktree *and* an
+back to To Do, where the spawn found it, while Herdr keeps the agent, so the next spawn hits an
+existing worktree *and* an
 agent still registered under the same name:
 
 ```

@@ -8,20 +8,35 @@
 
 **Five columns.** Done is terminal — delete only — and is reached **only** by Accept.
 
-`backlog` holds raw ideas; `todo` holds work that is ready to start. The board renders both
-today (verified: `frontend/src/types.ts` `COLUMNS`, and `Status` in `backend/src/types.ts`
-carries `todo`), but **the server still claims `backlog → in_progress` for a spawn and returns a
-cancelled ticket to `backlog`** — the Plan transition and the re-pointing of Start are the
-outstanding backend half ([parking-lot](./parking-lot.md)).
+`backlog` holds raw ideas; `todo` holds work that is ready to start. Both halves are now built
+(verified: `Status` in `backend/src/types.ts`, `COLUMNS` in `frontend/src/types.ts`, and
+`POST /tickets/:id/status` in `backend/src/server.ts`). Start dispatches from **To Do**, and a
+cancelled ticket goes back to **To Do**.
 
-| From | To | Trigger | Side effect |
+**[`backend/src/transitions.ts`](../backend/src/transitions.ts) is the single source of truth**
+and the server validates every manual move against it (verified). Each row below is one row of
+that table, and records the thing that is easy to get wrong: whether the move is a **pure status
+write** or whether it **belongs to a route** because it has side effects outside the row. A pair
+that is not in the table cannot be reached by any request.
+
+| From | To | Trigger | How |
 |---|---|---|---|
-| Backlog | To Do | **plan**, a click | not built. A planning agent turns an idea into an implementable ticket ([parking-lot](./parking-lot.md)) |
-| To Do | In Progress | **spawn**, a click | the four spawn calls ([spawn](./spawn.md)), claimed by CAS ([below](#claiming-a-ticket-reject-concurrent-requests)) |
-| In Progress | To Do | **cancel**, a click | force-remove worktree, delete branch ([teardown](./teardown.md)) |
-| In Progress | In Review | **automatic**: the agent's turn completed | none — the agent stays alive and the port block stays held |
-| In Review | Done | **accept**, a click | push the branch, open a PR, retire the agent and its transcript, release the port slot. The worktree and branch **survive**; 10x never merges |
-| In Review | In Progress | **reject**, a click with a mandatory reason | re-prompts the same live agent with the reason and clears `finished`. Destroys nothing |
+| Backlog | To Do | **plan**, a click | pure status write — a human accepting a plan; nothing outside the row changes |
+| To Do | Backlog | **send back**, a click | pure status write — the ticket goes back to be re-planned |
+| To Do | In Progress | **spawn**, a click | `POST /tickets/:id/spawn`: the four spawn calls ([spawn](./spawn.md)), claimed by CAS ([below](#claiming-a-ticket-reject-concurrent-requests)) |
+| In Progress | To Do | **cancel**, a click | `POST /tickets/:id/cancel`: force-remove worktree, delete branch ([teardown](./teardown.md)). `DELETE /tickets/:id/worktree` takes the same edge, keeping the branch |
+| In Progress | In Review | **automatic**: the agent's turn completed | the spawn handler's status callback — the agent stays alive and the port block stays held |
+| In Review | Done | **accept**, a click | `POST /tickets/:id/accept`: push the branch, open a PR, retire the agent and its transcript, release the port slot. The worktree and branch **survive**; 10x never merges |
+| In Review | In Progress | **reject**, a click with a mandatory reason | `POST /tickets/:id/reject`: re-prompts the same live agent with the reason and clears `finished`. Destroys nothing |
+
+**`POST /tickets/:id/status {to}` performs the two pure moves and only those** (verified). It
+refuses everything else in two distinguishable ways, because they are different mistakes: 409
+`illegal_transition` for a pair the machine does not have, and 409 `transition_has_side_effects`
+— carrying the `owner` that owns the edge — for a real move asked through the wrong door.
+The second refusal is the load-bearing one: without it a caller writes `in_progress` straight
+onto a row and the board renders a running card with no worktree, no branch, no port block and
+no agent. A lost CAS is 409 `not_in_status`. `PATCH /tickets/:id` still refuses `status`
+outright, so every move goes through the compare-and-swap.
 
 ### The automatic transition
 
@@ -48,7 +63,7 @@ this ticket's worktree. A port alone is not proof of ownership. The reap is fire
 an attached catch: a kill that fails must never fail the column transition that already happened.
 
 **A ticket in review has two routes out, both by hand: Accept and Reject.** Cancel claims
-`in_progress → backlog` and answers 409 from review, so an In Review card renders Accept and
+`in_progress → todo` and answers 409 from review, so an In Review card renders Accept and
 Reject but **no run action** ([frontend](./frontend.md)). Delete still works from any column.
 
 Both are claim-first, work-second. Accept hands the claim back to `in_review` if the push or the
@@ -117,10 +132,10 @@ a drag. Being the only user does not help — one person drags faster than the f
 **Design: compare-and-swap the real status, then do the work. Reject on CAS failure.**
 
 ```
-1. Atomically flip backlog → in_progress, only if it is still backlog.
+1. Atomically flip todo → in_progress, only if it is still todo.
    Fails? Someone else already claimed it. Reject (409). Do nothing else.
 2. Succeeded? You now own the ticket. Do the four spawn calls (spawn.md).
-3. Spawn failed? Flip back to backlog. Any worktree left behind shows up in
+3. Spawn failed? Flip back to todo. Any worktree left behind shows up in
    reconciliation (reconciliation.md).
 ```
 
@@ -137,14 +152,20 @@ Why this is sound rather than a shortcut:
 - **Spawn is idempotent** (open-by-branch, [naming](./naming.md)), so a retry after a partial
   failure is safe.
 - **Flip order matters.** Flipping *after* a successful spawn is broken: during those ~3 seconds the
-  ticket still reads `backlog`, so a second request passes the check and starts a second spawn.
+  ticket still reads `todo`, so a second request passes the check and starts a second spawn.
   Claim first, work second.
+- **A rollback target is the inverse of the claim, never a fixed status.** Both spawn rollbacks
+  — port-pool exhaustion and a spawn that threw — hand the ticket back to `todo`, because that
+  is where the claim came from (verified: `backend/src/server.ts`). Re-pointing a transition
+  therefore means re-pointing its rollback in the same edit: a rollback still aimed at `backlog`
+  would demote a planned ticket to a raw idea, and Start would then refuse it.
 
-**Atomicity without a database.** Today's store is in-process, and a single-threaded event loop
-gives this for free: a check followed by an assignment with **no `await` between them** cannot be
-interleaved. When a database arrives it becomes a conditional write
-(`UPDATE … SET status='in_progress' WHERE id=? AND status='backlog'`) and the row count tells you
-whether you won. Same design, same rejection rule, different substrate.
+**Atomicity is SQLite's, not the event loop's** (verified: `claimTicket` in
+`backend/src/db.ts`). The claim is a conditional write —
+`UPDATE tickets SET status='in_progress' WHERE id=? AND status='todo'` — and the reported row
+count is what says whether you won, so the guarantee holds across processes rather than only
+across a single-threaded check-then-assign. The handler still leaves no `await` between reading
+the ticket's status and claiming it, which is what keeps the `from` it passes truthful.
 
 #### Why not transient statuses (`spawning`, `cancelling`)
 

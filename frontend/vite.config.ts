@@ -8,6 +8,18 @@ export default defineConfig({
   resolve: {
     alias: { "@": path.resolve(import.meta.dirname, "./src") },
   },
+  // One .env for the whole repo, at the root, so the backend (which loads it itself, in
+  // `backend/src/env.ts`) and Vite read the same file. Without this, `envDir` defaults to
+  // the Vite root (this directory) and the client half drifts into a second file.
+  //
+  // Safe despite GITHUB_TOKEN living in that file: Vite exposes only VITE_-prefixed
+  // variables to client code, and inlines only those into the bundle. Everything else in
+  // .env is loaded into the config process and dropped.
+  //
+  // The corollary, and the reason this is worth a comment: that guarantee is the prefix
+  // filter, nothing more. Widening `envPrefix`, or defining `process.env` wholesale through
+  // `define`, would ship the token. Neither is done here, and neither should be.
+  envDir: path.resolve(import.meta.dirname, ".."),
   server: {
     port: 5173,
     // The board owns the API. Proxying rather than hardcoding an origin keeps the app

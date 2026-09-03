@@ -14,12 +14,18 @@ the source of truth about what is actually running.
 uncommitted work and is unrecoverable, so a background process must never do it on a guess. The bug
 class is eliminated by making divergence *visible*, not by automating destruction.
 
-**The one carve-out is the port slot** ([architecture](./architecture.md)). Boot clears
-`tickets.port_slot` for any ticket that is not `in_progress`, and that is not a breach of the rule
-above: the rule protects the user's *work* — a worktree, a branch, a transcript, none of them
-recreatable. A port slot is our own bookkeeping, a row saying "this number is spoken for", so
-reclaiming one cannot lose anything, while leaving it held silently shrinks a ten-wide pool on
-every crash.
+**There are exactly two carve-outs, and both share one test: is there any unrecoverable work
+here to lose?** The rule protects the user's *work* — a worktree, a branch, a transcript, none
+of them recreatable.
+
+**The port slot** ([architecture](./architecture.md)). Boot clears `tickets.port_slot` for any
+ticket that is not `in_progress`. A port slot is our own bookkeeping, a row saying "this number
+is spoken for", so reclaiming one cannot lose anything, while leaving it held silently shrinks a
+ten-wide pool on every crash.
+
+**The plan workspace** ([below](./reconciliation.md)). A planner holds no worktree, no branch
+and no commits, so closing its pane destroys nothing — but only once its conversation is
+provably over, which is why that rule is spelled out at length.
 
 So this is a **read model, not a cron job.** Whenever the board renders, ask Herdr what exists and
 display it next to what the tickets claim. A worktree indicator on the card, derived from Herdr
@@ -63,8 +69,8 @@ resources exist.
 |---|---|---|---|
 | `in_progress` | agent alive | running | re-subscribe to its pane ([agent status](./agent-status.md)) |
 | `in_progress` | worktree, no agent | needs attention | nothing — a human decides |
-| `in_progress` | nothing exists | not actually running | reset status to `backlog` — nothing to destroy |
-| `backlog` | worktree exists | worktree indicator | nothing |
+| `in_progress` | nothing exists | not actually running | reset status to `todo`, where the spawn claimed it from — nothing to destroy |
+| `todo` / `backlog` | worktree exists | worktree indicator | nothing |
 | — | worktree, no ticket | listed as unowned | nothing |
 
 Row 2 is the genuinely ambiguous one: an absent agent cannot distinguish "finished while the
@@ -85,6 +91,43 @@ mistake is invisible until disk fills up.
 Prerequisites differ by direction: reading Herdr and showing unowned worktrees needs **no ticket
 store** and is buildable today. Repairing ticket state needs somewhere durable to read tickets from,
 so it lands with the database.
+
+## The plan-workspace sweep — the second carve-out
+
+A planning agent ([spawn](./spawn.md)) owns no worktree, no branch and no commits, so nothing
+above can see it: every join in `reconcile.ts` is on a branch, and there is none. Its Herdr
+**workspace label** is the only handle ([naming](./naming.md)), so a planner whose ticket has
+moved on leaves a pane that nothing else will ever collect.
+
+Hence `sweepPlanWorkspaces`, at boot: `workspace.list {}`, then close the workspaces whose
+planning is provably over. It is a carve-out from "reconciliation never destroys" on the same
+grounds as the port slot — there is no unrecoverable work in a plan pane to lose — and it is
+bounded just as tightly.
+
+**The rule, and it is load-bearing:**
+
+| Workspace labelled as a planner | Decision |
+|---|---|
+| its ticket no longer exists | **close** — deleted while its planner was open |
+| its ticket has left `backlog` | **close** — a human promoted it, planning is over |
+| its ticket is still in `backlog` | **spare** — the conversation may be live |
+| not labelled by us | never a candidate at all |
+
+**Why "still in backlog" must be spared.** Herdr keeps panes and agents alive across a restart
+of this process — the same fact that makes `agent_name_taken` a real case in `runner.ts` — so a
+plan workspace surviving a boot is the *normal* state of an ongoing conversation, not residue.
+Closing it destroys work in progress, and the human is possibly typing in it at that moment.
+
+Two further constraints, both easy to get wrong:
+
+- **Feed it every ticket in the store, not one project's.** Labels are unique across the whole
+  Herdr session, and a ticket missing from the list reads as *deleted* — so a per-project sweep
+  would close every other project's live planners.
+- **Run it before the "no projects yet" early return.** A deleted project takes its tickets with
+  it, which is precisely the case that leaks a pane with nothing left to key on.
+
+It logs what it closed *and* what it spared, and never throws: a sweep failure must not stop the
+server coming up. A workspace it fails to close is swept at the next boot.
 
 ## What actually consumes disk (verified)
 

@@ -1,6 +1,8 @@
 import { IconChristmasTreeFilled } from "@tabler/icons-react";
 import {
   Archive,
+  ArrowLeft,
+  ArrowRight,
   Ban,
   Bot,
   Check,
@@ -41,9 +43,10 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.tsx";
+import { acceptTicket, moveTicket, spawnAgent, startPlanning } from "@/lib/api.ts";
 import { runFailed } from "@/lib/board.ts";
 import { REMOTE_TARGET, remoteCommand, type SteerMode } from "@/lib/steer-mode.ts";
-import type { Ticket } from "@/types.ts";
+import type { Status, Ticket } from "@/types.ts";
 
 const PR_ICON = {
   merged: GitMerge,
@@ -163,23 +166,37 @@ function CopyButton({
   );
 }
 
+/**
+ * A stored `prUrl` means the pull request exists; `prState` is only what a webhook has since
+ * told us about it. Gating the whole line on the state suppressed a real, clickable link for
+ * want of a decoration, so the link renders on the url alone and each decoration renders on
+ * its own evidence.
+ *
+ * No icon is guessed when the state is unknown: `null` means "no webhook has reported this",
+ * which is not the same as `open`, and drawing the open icon would be inventing a fact. Same
+ * for the ±LOC pair, which needs both halves, and for the number — "PR #" with nothing after
+ * it reads as a rendering fault rather than as a missing field.
+ */
 function PullRequestLine({ ticket }: { ticket: Ticket }) {
-  const Icon = ticket.prState ? PR_ICON[ticket.prState] : null;
-  if (!ticket.prUrl || !Icon) return null;
+  const { prUrl, prState, prNumber, prAdditions, prDeletions } = ticket;
+  if (!prUrl) return null;
+  // Both derived from the same narrowed local, so the icon and its tone cannot disagree.
+  const Icon = prState === null ? null : PR_ICON[prState];
+  const tone = prState === null ? "" : PR_TONE[prState];
 
   return (
     <a
-      href={ticket.prUrl}
+      href={prUrl}
       target="_blank"
       rel="noopener noreferrer"
       className="inline-flex items-center gap-1.5 text-[11px] underline-offset-2 hover:underline"
     >
-      <Icon aria-hidden className={`size-3.5 ${PR_TONE[ticket.prState!]}`} />
-      <span className="font-mono">PR #{ticket.prNumber}</span>
-      {ticket.prAdditions !== null && ticket.prDeletions !== null && (
+      {Icon !== null && <Icon aria-hidden className={`size-3.5 ${tone}`} />}
+      <span className="font-mono">{prNumber === null ? "PR" : `PR #${prNumber}`}</span>
+      {prAdditions !== null && prDeletions !== null && (
         <span className="font-mono">
-          <span className="text-emerald-600 dark:text-emerald-400">+{ticket.prAdditions}</span>{" "}
-          <span className="text-red-600 dark:text-red-400">&minus;{ticket.prDeletions}</span>
+          <span className="text-emerald-600 dark:text-emerald-400">+{prAdditions}</span>{" "}
+          <span className="text-red-600 dark:text-red-400">&minus;{prDeletions}</span>
         </span>
       )}
     </a>
@@ -244,43 +261,139 @@ function SteerButton({ ticket, steerMode }: { ticket: Ticket; steerMode: SteerMo
 type PreviewState = "idle" | "starting" | "live" | "stopping";
 
 /**
+ * The one write this card has in flight, or null. A single slot rather than a flag per button,
+ * because the card's rule is one write at a time: every button that could start another is
+ * disabled while one runs, and the value names which so only that button shows a spinner.
+ */
+type PendingAction = null | "plan" | "move" | "start" | "accept";
+
+/**
  * One branch per status and never an `else`. Plan is scoped to `backlog`, Start to `todo`,
  * Steer and Cancel to `in_progress`, Accept and Reject to `in_review`, and the server answers
  * 409 from anywhere else — so an `else` would put a button on a card whose status cannot take
  * it. Done is terminal and its only run action is Archive; its pull request fills the rest of the row.
+ * The two manual moves sit alongside them — To Do on `backlog`, Backlog on `todo`. Both are
+ * human-only: they spawn nothing and retire nothing, which is why they are the only
+ * transitions in this row that are pure status writes.
  *
  * Variants carry the consequence: the forward move is primary, a reversible move is outline,
- * and only the one that destroys something is destructive. Everything that is not a state
- * transition — Delete worktree, Edit, Delete — lives in the expanded region, which is
- * also what keeps this row inside the width of a five-column card.
+ * and only the one that destroys something is destructive. Exactly one primary per card, so
+ * the card always names a single next step — which is why a Backlog ticket hands the primary
+ * from Plan to To Do the moment it HAS a plan, rather than showing two. Everything that is
+ * not a state transition — Delete worktree, Edit, Delete — lives in the expanded region,
+ * which is also what keeps this row inside the width of a five-column card.
  */
 function RunActions({
   ticket,
   steerMode,
+  pending,
+  onPlan,
+  onMove,
+  onStart,
+  onAccept,
   onCancel,
   previewState,
   onTogglePreview,
 }: {
   ticket: Ticket;
   steerMode: SteerMode;
+  pending: PendingAction;
+  onPlan: () => void;
+  onMove: (to: Status) => void;
+  onStart: () => void;
+  onAccept: () => void;
   onCancel: () => void;
   previewState: PreviewState;
   onTogglePreview: () => void;
 }) {
   if (ticket.status === "backlog") {
+    // The whole readiness signal, and deliberately the whole of it: a plan exists once BOTH
+    // checklists are non-empty, which is exactly what the planning agent PATCHes back when it
+    // is finished. Either alone is half a plan — a breakdown with nothing to check it against,
+    // or criteria with no work behind them — and neither is inspected any further, because the
+    // agent proposes by filling them in and the human confirms by clicking To Do. Computing it
+    // here is the point: which plans are ripe has to be readable off the board without opening
+    // a pane.
+    const planned = ticket.taskBreakdown.length > 0 && ticket.acceptanceCriteria.length > 0;
     return (
-      <Button size="sm" className="h-7 gap-1 px-2 text-[11px]" title="Talks the idea through with a planning agent until it is ready to start.">
-        <NotebookPen aria-hidden className="size-3" />
-        Plan
-      </Button>
+      <>
+        {/*
+          Not instant: the route creates a workspace, a pane and an agent before it answers, so
+          the spinner is the only thing between the click and several seconds of apparent
+          nothing. Disabled for the whole of it — a second POST would answer 409
+          `operation_in_flight`, and a planner that did start twice would be a paid agent.
+        */}
+        <Button
+          size="sm"
+          variant={planned ? "outline" : "default"}
+          className="h-7 gap-1 px-2 text-[11px]"
+          disabled={pending !== null}
+          title="Talks the idea through with a planning agent until it is ready to start."
+          onClick={onPlan}
+        >
+          {pending === "plan" ? (
+            <Spinner aria-hidden className="size-3" />
+          ) : (
+            <NotebookPen aria-hidden className="size-3" />
+          )}
+          {pending === "plan" ? "Planning..." : "Plan"}
+        </Button>
+        <Button
+          size="sm"
+          variant={planned ? "default" : "outline"}
+          className="h-7 gap-1 px-2 text-[11px]"
+          disabled={pending !== null}
+          title={
+            planned
+              ? "The plan is filled in. Moves the ticket to To Do, ready to start."
+              : "Accepts the ticket as written and skips planning."
+          }
+          onClick={() => onMove("todo")}
+        >
+          <ArrowRight aria-hidden className="size-3" />
+          To Do
+        </Button>
+      </>
     );
   }
   if (ticket.status === "todo") {
     return (
-      <Button size="sm" className="h-7 gap-1 px-2 text-[11px]" title="Spawns the agent in its own worktree, branch and port block.">
-        <Play aria-hidden className="size-3" />
-        Start
-      </Button>
+      <>
+        {/*
+          The slowest write on the board: the route creates the worktree, reserves the port
+          block, writes the injected `.env` and waits for the agent to be genuinely ready
+          before it answers, so there are several seconds between the click and anything
+          changing. Disabled throughout, because a second POST that won the race would be a
+          second paid agent — and the two 409s it can answer instead (`not_in_todo`,
+          `port_pool_exhausted`) both roll the claim back to To Do, so the message on the card
+          is the only evidence the click did anything at all.
+        */}
+        <Button
+          size="sm"
+          className="h-7 gap-1 px-2 text-[11px]"
+          disabled={pending !== null}
+          title="Spawns the agent in its own worktree, branch and port block."
+          onClick={onStart}
+        >
+          {pending === "start" ? (
+            <Spinner aria-hidden className="size-3" />
+          ) : (
+            <Play aria-hidden className="size-3" />
+          )}
+          {pending === "start" ? "Starting..." : "Start"}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 gap-1 px-2 text-[11px]"
+          disabled={pending !== null}
+          title="Returns the ticket for re-planning. Nothing is destroyed."
+          onClick={() => onMove("backlog")}
+        >
+          <ArrowLeft aria-hidden className="size-3" />
+          Backlog
+        </Button>
+      </>
     );
   }
   if (ticket.status === "in_progress") {
@@ -302,9 +415,27 @@ function RunActions({
   if (ticket.status === "in_review") {
     return (
       <>
-        <Button size="sm" className="h-7 gap-1 px-2 text-[11px]" title="Pushes the branch, opens a pull request, and retires the agent.">
-          <Check aria-hidden className="size-3" />
-          Accept
+        {/*
+          Pushes the branch and opens the pull request before it answers, so it is slow for the
+          same reason Start is — and the only irreversible action on the board, since the pull
+          request outlives any local rollback. When the push or the PR call fails the server
+          hands the claim back to `in_review`, so the card must be seen to return to this
+          column with the message showing rather than settle into Done: that is exactly what
+          refreshing only on success buys.
+        */}
+        <Button
+          size="sm"
+          className="h-7 gap-1 px-2 text-[11px]"
+          disabled={pending !== null}
+          title="Pushes the branch, opens a pull request, and retires the agent."
+          onClick={onAccept}
+        >
+          {pending === "accept" ? (
+            <Spinner aria-hidden className="size-3" />
+          ) : (
+            <Check aria-hidden className="size-3" />
+          )}
+          {pending === "accept" ? "Accepting..." : "Accept"}
         </Button>
         <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-[11px]" title="Sends feedback back to the agent, which keeps working. Nothing is destroyed.">
           <Undo2 aria-hidden className="size-3" />
@@ -380,7 +511,18 @@ function RunActions({
  *
  * The top right holds the overflow menu and nothing else.
  */
-export function TicketCard({ ticket, steerMode, onOpen }: { ticket: Ticket; steerMode: SteerMode; onOpen: () => void }) {
+export function TicketCard({
+  ticket,
+  steerMode,
+  onOpen,
+  onChanged,
+}: {
+  ticket: Ticket;
+  steerMode: SteerMode;
+  onOpen: () => void;
+  /** Refreshes the board now that a write landed, instead of waiting out the poll interval. */
+  onChanged: () => void;
+}) {
   const failed = runFailed(ticket);
   const running = ticket.status === "in_progress" && !failed;
   // Herdr refuses a prompt to a blocked agent — `agent.prompt` answers `agent_blocked` and sends
@@ -396,6 +538,12 @@ export function TicketCard({ ticket, steerMode, onOpen }: { ticket: Ticket; stee
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [previewState, setPreviewState] = useState<PreviewState>("idle");
   const previewTimer = useRef<number | undefined>(undefined);
+  const [pending, setPending] = useState<PendingAction>(null);
+  // The last write that failed, or null. Shown on the card rather than in a toast: the failure
+  // belongs to THIS ticket — `not_in_backlog` means someone else's click already moved it,
+  // `transition_has_side_effects` means the button asked for a move it does not own — and a
+  // banner elsewhere would not say which card it was about.
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // A card unmounts on every poll that changes it, and a pending timer would then set state on
   // a dead component.
@@ -411,6 +559,32 @@ export function TicketCard({ ticket, steerMode, onOpen }: { ticket: Ticket; stee
     } else {
       setPreviewState("stopping");
       previewTimer.current = window.setTimeout(() => setPreviewState("idle"), 2000);
+    }
+  };
+
+  /**
+   * The one path every wired button on this card takes. The guard is belt to the buttons'
+   * braces: they are all disabled while a write runs, but a click already dispatched — or a
+   * keyboard repeat — must not start a second POST either. For Plan and Start a second POST is
+   * a second paid agent; for Accept it is a second pull request, which nothing can take back.
+   *
+   * The refresh is deliberately AFTER the await and only on success: the board is the source
+   * of truth for where a ticket now is, and reading it back is what makes the card agree with
+   * the server rather than with an optimistic guess this component made. On failure there is
+   * no refresh and no guess to undo, so a failed Accept simply stays on an In Review card with
+   * the message on it — which is where the server rolled its claim back to anyway.
+   */
+  const runAction = async (kind: Exclude<PendingAction, null>, write: () => Promise<void>) => {
+    if (pending !== null) return;
+    setPending(kind);
+    setActionError(null);
+    try {
+      await write();
+      onChanged();
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setPending(null);
     }
   };
 
@@ -507,13 +681,28 @@ export function TicketCard({ ticket, steerMode, onOpen }: { ticket: Ticket; stee
           every card the same height.
         */}
         <div className="mt-1 flex h-4 items-center gap-2">
-          {/* the line is reserved whether or not there is text, so an empty description fills it with a dimmed "n/a" rather than leaving a gap that reads as a rendering fault */}
-          <p
-            className={`min-w-0 flex-1 truncate text-xs leading-4 text-muted-foreground${ticket.description ? "" : " italic opacity-70"}`}
-            title={ticket.description || undefined}
-          >
-            {ticket.description || "n/a"}
-          </p>
+          {/*
+            A failed write takes over this line rather than adding one: the row is a fixed
+            `h-4` and every card is the same height, so an extra line would make one card taller
+            than its neighbours exactly when something has gone wrong. The description is the
+            least urgent thing on the card and the full message stays in the `title`. `role`
+            announces it, because the click that caused it gave no other feedback.
+
+            Otherwise the line is reserved whether or not there is text, so an empty description
+            fills it with a dimmed "n/a" rather than leaving a gap that reads as a rendering fault.
+          */}
+          {actionError !== null ? (
+            <p className="min-w-0 flex-1 truncate text-xs leading-4 text-destructive" role="status" title={actionError}>
+              {actionError}
+            </p>
+          ) : (
+            <p
+              className={`min-w-0 flex-1 truncate text-xs leading-4 text-muted-foreground${ticket.description ? "" : " italic opacity-70"}`}
+              title={ticket.description || undefined}
+            >
+              {ticket.description || "n/a"}
+            </p>
+          )}
           <div className="flex shrink-0 items-center gap-2">
             <PullRequestLine ticket={ticket} />
             {blocked ? (
@@ -542,6 +731,11 @@ export function TicketCard({ ticket, steerMode, onOpen }: { ticket: Ticket; stee
           <RunActions
             ticket={ticket}
             steerMode={steerMode}
+            pending={pending}
+            onPlan={() => void runAction("plan", () => startPlanning(ticket.id))}
+            onMove={(to) => void runAction("move", () => moveTicket(ticket.id, to))}
+            onStart={() => void runAction("start", () => spawnAgent(ticket.id))}
+            onAccept={() => void runAction("accept", () => acceptTicket(ticket.id))}
             onCancel={() => setConfirmCancel(true)}
             previewState={previewState}
             onTogglePreview={handleTogglePreview}

@@ -16,9 +16,11 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet.tsx";
+import { Spinner } from "@/components/ui/spinner.tsx";
+import { createTicket, moveTicket } from "@/lib/api.ts";
 import { runFailed } from "@/lib/board.ts";
 import { cn } from "@/lib/utils.ts";
-import { PLAYBOOKS, type Playbook, type Project, type Ticket } from "@/types.ts";
+import { PLAYBOOKS, type Playbook, type Project, type Status, type Ticket } from "@/types.ts";
 
 type Props = {
   open: boolean;
@@ -27,6 +29,13 @@ type Props = {
   defaultProjectId: string;
   /** The ticket being viewed, or null to create a new one. */
   ticket: Ticket | null;
+  /**
+   * The column whose New ticket button opened this. `POST /tickets` always lands in `backlog`,
+   * so `todo` is the one value that costs a follow-up move; see `submit` below.
+   */
+  createInto: Status;
+  /** A ticket was created, so the board should re-read rather than wait out the poll. */
+  onCreated: () => void;
 };
 
 /**
@@ -157,13 +166,21 @@ const isPlaybook = (value: string): value is Playbook =>
   PLAYBOOKS.some((playbook) => playbook === value);
 
 /**
- * Opened either from the Backlog column's New ticket button, with `ticket` null, or from a
+ * Opened either from a column footer's New ticket button, with `ticket` null, or from a
  * card's title/overflow menu, with `ticket` set — the one detail surface for both creating and
  * viewing/editing. `Sheet` is Radix Dialog underneath, so Escape, the backdrop and focus
  * containment are the platform's job rather than hand-written focus code — the same reason the
  * previous implementation used a native `<dialog>`.
  */
-export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ticket }: Props) {
+export function TicketSheet({
+  open,
+  onOpenChange,
+  projects,
+  defaultProjectId,
+  ticket,
+  createInto,
+  onCreated,
+}: Props) {
   const creating = ticket === null;
   const [title, setTitle] = useState(ticket?.title ?? "");
   const [description, setDescription] = useState(ticket?.description ?? "");
@@ -172,14 +189,16 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
   // Project, because it is a choice rather than something derived — and changing it after a run
   // has started cannot affect the agent already running, only the next dispatch. The sheet
   // already has a row called Agent for the running Herdr agent's name, so this control is named
-  // Playbook rather than colliding with it. It is local state only — nothing persists this yet,
-  // same as the rest of the composer's fields before Add is wired up.
+  // Playbook rather than colliding with it. It is local state only: `POST /tickets` narrows the
+  // body to `{projectId, title, description}`, so there is nowhere to send this yet.
   // Every ticket has one: the column is NOT NULL, and its default is the first entry of
   // `PLAYBOOKS`, which is also what the picker shows first — so seeding a create with it
   // matches what the API would store anyway, without naming a playbook value here.
   const [playbook, setPlaybook] = useState<Playbook>(ticket?.playbook ?? PLAYBOOKS[0]);
-  // Task Breakdown and Acceptance Criteria are the plan a Plan agent is meant to produce; there
-  // is no wire field for either yet, so both live only as local state, same as Playbook above.
+  // Task Breakdown and Acceptance Criteria are the plan a Plan agent produces, and they do come
+  // off the wire — the planning agent PATCHes them onto the ticket, and both non-empty is the
+  // readiness signal the card's To Do button reads. What is not wired is writing them from
+  // here: Save has no handler, so edits made in this sheet are local and lost on close.
   // Seeded from `ticket` via a `useState` initializer rather than an effect: `App.tsx` keys this
   // component by ticket id, so React remounts (and re-runs this initializer) whenever a
   // different ticket opens — no sync needed. The `.length` check (not `??`) matters too: a
@@ -191,6 +210,11 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
   const [acceptanceCriteria, setAcceptanceCriteria] = useState<ChecklistRow[]>(
     ticket?.acceptanceCriteria.length ? ticket.acceptanceCriteria : [{ text: "", done: false }],
   );
+  const [submitting, setSubmitting] = useState(false);
+  // The last failed create. The sheet stays OPEN on failure and keeps everything typed —
+  // discarding a description because the network blinked would be the expensive mistake — so
+  // the message sits next to the button that failed and the same click retries.
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   // The callsite's `key` re-seeds this component when a *different* ticket is opened, but the
   // create key is the constant "new", so the composer never remounts between one creation
@@ -204,8 +228,34 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
       setPlaybook(ticket?.playbook ?? PLAYBOOKS[0]);
       setTaskBreakdown([{ text: "", done: false }]);
       setAcceptanceCriteria([{ text: "", done: false }]);
+      setSubmitError(null);
     }
     onOpenChange(next);
+  };
+
+  /**
+   * Create, then move only if the click came from the To Do column's footer.
+   *
+   * `POST /tickets` hardcodes `backlog` because a new ticket is a raw idea, so that button
+   * needs a second call to land the card where it says it will. The pair is NOT atomic and is
+   * not pretended to be: if the move fails the ticket exists in Backlog and the error says so,
+   * which the card's own To Do button then retries. Refusing to create at all would be the
+   * worse trade.
+   */
+  const submit = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const created = await createTicket({ projectId, title: title.trim(), description });
+      if (createInto === "todo") await moveTicket(created.id, "todo");
+      onCreated();
+      close(false);
+    } catch (cause) {
+      setSubmitError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const failed = !creating && runFailed(ticket);
@@ -409,7 +459,7 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
             </p>
           )}
 
-          {/* Off unless VITE_DIAGNOSTICS=true; see frontend/.env.example. */}
+          {/* Off unless VITE_DIAGNOSTICS=true; see .env.example at the repo root. */}
           {!creating && import.meta.env["VITE_DIAGNOSTICS"] === "true" && ticket.diagnostics && (
             <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 border-t pt-2 font-mono text-[11px] text-muted-foreground">
               {Object.entries(ticket.diagnostics).map(([k, v]) => (
@@ -421,6 +471,18 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
             </dl>
           )}
         </div>
+
+        {/*
+          Outside the scrolling body and above the footer, so it is visible wherever the body
+          happens to be scrolled to — a create failure the user has to scroll to find is a
+          create failure they will read as a dead button. Same styling as the dead-run notice
+          above.
+        */}
+        {submitError !== null && (
+          <p role="status" className="mx-4 shrink-0 rounded-md bg-destructive/10 p-2 text-xs text-destructive">
+            {submitError}
+          </p>
+        )}
 
         <SheetFooter className="shrink-0 flex-row items-center gap-2">
           {!creating && (
@@ -437,7 +499,13 @@ export function TicketSheet({ open, onOpenChange, projects, defaultProjectId, ti
             <Button variant="outline">Cancel</Button>
           </SheetClose>
           {creating ? (
-            <Button disabled={title.trim() === "" || projectId === ""}>Add</Button>
+            <Button
+              disabled={submitting || title.trim() === "" || projectId === ""}
+              onClick={() => void submit()}
+            >
+              {submitting && <Spinner aria-hidden />}
+              {submitting ? "Adding..." : "Add"}
+            </Button>
           ) : (
             <Button disabled={title.trim() === ""}>Save</Button>
           )}

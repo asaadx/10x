@@ -10,8 +10,10 @@ import {
   agentNameFor,
   branchFor,
   isAgentReady,
+  isPlanAgentName,
   isSettled,
   normalizeEvent,
+  planAgentNameFor,
   validateProjectSlug,
 } from "./lifecycle.ts";
 
@@ -121,6 +123,44 @@ describe("agent name budget", () => {
     const name = agentNameFor("a".repeat(25), 1234);
     assert.ok(name.length > 32, `expected over 32 chars, got ${name.length}`);
     assert.doesNotMatch(name, AGENT_NAME_RE);
+  });
+});
+
+describe("planAgentNameFor / isPlanAgentName", () => {
+  test("a planner's name is the ticket's agent name plus -plan", () => {
+    assert.equal(planAgentNameFor("10x", 7), "ticket-10x-7-plan");
+  });
+
+  // The whole point of the suffix: `runner.ts` catches `agent_name_taken` and re-attaches
+  // silently, so a shared name would make Start adopt the planner and leave a ticket reading
+  // In Progress with no worktree, no branch and no instruction — and no error anywhere.
+  test("it can never collide with the implementation agent's name", () => {
+    for (const [project, number] of [
+      ["10x", 7],
+      ["a", 1],
+      ["my-app", 42],
+    ] as const) {
+      assert.notEqual(planAgentNameFor(project, number), agentNameFor(project, number));
+    }
+  });
+
+  // The suffix costs 5 of the 32, so the slug budget for a PLANNABLE ticket is 19 -
+  // len(number), not the 24 `agentNameFor` alone allows. `startPlanning` tests the result
+  // against AGENT_NAME_RE for exactly this case rather than letting Herdr refuse it after a
+  // workspace already exists.
+  test("a slug at the 20-char cap overflows the ceiling once -plan is added", () => {
+    assert.match(agentNameFor("a".repeat(20), 1234), AGENT_NAME_RE);
+    assert.doesNotMatch(planAgentNameFor("a".repeat(20), 1234), AGENT_NAME_RE);
+    assert.match(planAgentNameFor("a".repeat(15), 1234), AGENT_NAME_RE);
+  });
+
+  test("only the shape planAgentNameFor produces is recognised as a planner", () => {
+    assert.equal(isPlanAgentName(planAgentNameFor("10x", 7)), true);
+    assert.equal(isPlanAgentName(planAgentNameFor("my-app", 1234)), true);
+    // The sweep CLOSES what it matches, so a human's workspace label must never match.
+    for (const label of ["refactor-plan", "10x", "ticket-10x-7", "plan", "ticket-10x-plan"]) {
+      assert.equal(isPlanAgentName(label), false, label);
+    }
   });
 });
 

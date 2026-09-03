@@ -33,9 +33,19 @@ type Props = {
   steerMode: SteerMode;
   onNewTicket?: () => void;
   onOpenTicket: (ticket: Ticket) => void;
+  /** Passed straight to each card: a write landed, so re-read the board now. */
+  onTicketChanged: () => void;
 };
 
-export function Column({ status, label, tickets, steerMode, onNewTicket, onOpenTicket }: Props) {
+export function Column({
+  status,
+  label,
+  tickets,
+  steerMode,
+  onNewTicket,
+  onOpenTicket,
+  onTicketChanged,
+}: Props) {
   const headingId = `${status}-heading`;
   // columnIsWorking already means "an agent in this column is generating": a planning agent
   // in Backlog and an In Review agent steered by hand in Herdr (a second working cycle; see
@@ -87,7 +97,13 @@ export function Column({ status, label, tickets, steerMode, onNewTicket, onOpenT
           </p>
         )}
         {tickets.map((t) => (
-          <TicketCard key={t.id} ticket={t} steerMode={steerMode} onOpen={() => onOpenTicket(t)} />
+          <TicketCard
+            key={t.id}
+            ticket={t}
+            steerMode={steerMode}
+            onOpen={() => onOpenTicket(t)}
+            onChanged={onTicketChanged}
+          />
         ))}
       </div>
 

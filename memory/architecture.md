@@ -60,9 +60,21 @@ enum E { A }
   SyntaxError [ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX]: TypeScript enum is not supported in strip-only mode
 ```
 
-So: no constructor parameter properties, no `enum`. `HerdrError` in `backend/src/herdr.ts` is written the long way for exactly this reason — `readonly code: string` declared as a field, then assigned in the constructor body. Status is a **union type** (`"backlog" | "in_progress" | "in_review"`), never an enum.
+So: no constructor parameter properties, no `enum`. `HerdrError` in `backend/src/herdr.ts` is written the long way for exactly this reason — `readonly code: string` declared as a field, then assigned in the constructor body. Status is a **union type** (`"backlog" | "todo" | "in_progress" | "in_review" | "done"`), never an enum.
 
 `tsconfig.json` sets `erasableSyntaxOnly`, so `pnpm typecheck` rejects a parameter property or an `enum` instead of letting Node discover it at load time. The typechecker is the guard, not convention.
+
+### The backend loads `.env` itself
+
+`backend/src/env.ts` calls `process.loadEnvFile` on the **repo-root `.env`** and is the **first import in `server.ts`**. There is no `--env-file` flag on any script, so there is none to forget: plain `node backend/src/server.ts` — and `pnpm dev:api`, whose `dev` script never passed one — sees the file. It is a bare side-effect import rather than a `loadEnv()` someone calls, because a call would run after the import block, which is already too late. The path comes from `import.meta.dirname`, never `process.cwd()`: the server is started from the repo root (e2e, `plan.test.ts`, every real run) and from `backend/` (`pnpm dev:api`). Three properties of `loadEnvFile`, all verified on `v24.19.0`, shape the module:
+
+- **It does not override a variable already in the environment** — so the unit suite and `e2e/fixtures.ts` keep winning with the `STATE_DIR`, `DB_PATH` and `PORT` they pass, while `.env` still supplies `GITHUB_TOKEN`. *(Verified end to end: a `.env` setting `STATE_DIR` did not displace one passed to the child, and no directory was created at the file's path.)*
+- **Every failed open is reported as `ENOENT`, `EACCES` included** — a `.env` with mode `000` throws `ENOENT` where `readFileSync` throws `EACCES`. So the error code alone cannot distinguish "no `.env`" from "a `.env` we may not read", and `existsSync` decides: absent is swallowed (a fresh clone and CI have none, and both must boot), present-but-unopenable throws with its own message rather than Node's misleading "no such file". *(Verified: mode `000` → exit 1 at boot; file removed → boots with `GITHUB_TOKEN` unset.)*
+- **Import order is load-bearing and its failure is silent.** `db.ts` reads `STATE_DIR` and `DB_PATH` at module load and opens the database right there, and `ports.ts` reads its pool configuration at load too, so an `./env.ts` moved below either reads the defaults — opening `~/.10x/10x.db` instead of the configured file, with no error at all. `env.test.ts` reads `server.ts` and fails unless that import is the first one; the guard is a **test** because this repo has no linter and nothing else would notice a human tidying the imports. *(Verified falsifiable: moving the import below the `db.ts` one reddens that test.)*
+
+A malformed line is **not** an error to `loadEnvFile`: a line with no `=`, or a stray `NUL`, is skipped, and `A="unterminated` yields the literal `"unterminated`. Nothing in the code can catch that, so `.env.example` is the only guard against a typo.
+
+The unit suite never imports `env.ts` — only `server.ts` does — so `pnpm test` still runs with no `.env` loaded and cannot drift onto the real `~/.10x/10x.db`.
 
 ## 2. Module map
 
@@ -70,11 +82,11 @@ Line counts are `wc -l`, current as of this node.
 
 | File | Lines | Responsibility | I/O |
 | --- | --- | --- | --- |
-| `backend/src/server.ts` | 681 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
-| `backend/src/runner.ts` | 537 | `spawn` / `teardown` / `retireAgent` for one ticket; the readiness guard; event-stream reopen | Herdr socket, fs, `git` via `execFile` |
+| `backend/src/server.ts` | 844 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
+| `backend/src/runner.ts` | 525 | `spawn` / `teardown` / `retireAgent` for one ticket; the readiness guard; event-stream reopen | Herdr socket, fs, `git` via `execFile` |
 | `backend/src/db.ts` | 361 | Schema + in-place migration, connection, row types, the status and PR-state parse boundaries, `claimTicket` CAS, port-slot reserve/release, `setPullRequest`, `setPullRequestState` | SQLite (opens DB at import) |
 | `backend/src/ticket-store.ts` | 294 | Ticket persistence + `/tickets` handler bodies, input narrowing | SQLite |
-| `backend/src/db.test.ts` | 275 | Tests for the CAS, the Accept/Reject hand-backs and `setPullRequestState`, against a temp DB | SQLite (temp dir) |
+| `backend/src/db.test.ts` | 326 | Tests for the CAS, the Accept/Reject hand-backs and `setPullRequestState`, against a temp DB | SQLite (temp dir) |
 | `backend/src/projects.ts` | 214 | Project CRUD, slug / repo / base-branch validation | SQLite, `existsSync` |
 | `backend/src/lifecycle.test.ts` | 182 | Tests for the pure helpers | none |
 | `backend/src/reconcile.ts` | 167 | Read-only divergence + orphan reporting | Herdr socket (reads only) |
@@ -86,11 +98,17 @@ Line counts are `wc -l`, current as of this node.
 | `backend/src/ports.ts` | 98 | **Pure.** Port-slot pool: cap, block arithmetic, `.env` body | none |
 | `backend/src/ports.test.ts` | 78 | Tests for the pure allocator | none |
 | `backend/src/lifecycle.ts` | 71 | **Pure.** Naming, event normalisation, readiness predicates | none |
+| `backend/src/transitions.ts` | 137 | **Pure, import-free.** The legal-transitions table: every edge, and whether it is a pure status write or belongs to a route | none |
+| `backend/src/transitions.test.ts` | 147 | Tests for the table, its refusals, and a compile-time assertion that its restated `Status` union has not drifted from `types.ts` | none |
+| `backend/src/prompts.ts` | 67 | Read a system prompt out of `prompts/` and substitute its `{{markers}}` | fs (read only) |
+| `backend/src/prompts.test.ts` | 64 | Tests for substitution and both throws, plus the real prompt files | fs (read only) |
 | `backend/src/ticket-store.test.ts` | 63 | Tests for ticket input narrowing | SQLite (temp dir) |
 | `backend/src/github.test.ts` | 95 | Tests for PR body construction, token redaction and webhook payload narrowing | none |
 | `backend/src/herdr.test.ts` | 107 | Tests for `onClose`, against a real unix socket | `node:net` (temp socket) |
 | `backend/src/diagnostics.ts` | 40 | **Pure.** Per-run diagnostics record + `freshDiagnostics()` | none |
 | `backend/src/panes.ts` | 39 | `focusAgent`, `paneLocation`, `attachCommand` | Herdr socket (`attachCommand` is pure) |
+| `backend/src/env.ts` | 38 | Loads the repo-root `.env` via `process.loadEnvFile`; the first import in `server.ts` | fs (one read) |
+| `backend/src/env.test.ts` | 35 | Guards that the `./env.ts` import stays first in `server.ts` | fs (read only) |
 | `frontend/` | 1630 | The board's browser half: markup, stylesheet, five ES modules — see [frontend](./frontend.md) | `fetch` |
 
 `lifecycle.ts`, `ports.ts` and `diagnostics.ts` are the only import-free modules, deliberately: they hold the logic that has actually broken, or that would break silently, so it must be testable without a Herdr session. A port collision surfaces as an `EADDRINUSE` inside somebody's worktree, never as an error on the board, which is exactly why the allocation policy lives apart from the SQL that stores it. `panes.ts` exports only `focusAgent`: the attach command is built in the frontend instead, because it needs `location.hostname` — which the server cannot know — so a server-side copy would be unreachable duplication ([frontend](./frontend.md)).
@@ -210,13 +228,14 @@ if (projectMatch?.[1]) {
 if (method === "GET"  && path.startsWith("/tickets")) { … return board(q?.get("project") …); }
 if (method === "POST" && path === "/tickets") { … }
 if (method === "POST" && path === "/webhooks/github") { … }
-const m = /^\/tickets\/([^/]+)(\/spawn|\/cancel|\/worktree|\/focus|\/accept|\/reject)?$/.exec(path);
+const m = /^\/tickets\/([^/]+)(\/spawn|\/cancel|\/status|\/worktree|\/focus|\/accept|\/reject)?$/.exec(path);
 if (!m?.[1]) return json({ error: "not_found", path }, 404);
 …
 if (!action   && method === "PATCH")  { … }
 if (inFlight.has(id)) return json({ error: "operation_in_flight", id }, 409);
 if (!action   && method === "DELETE") { … }
 if (action === "/focus"    && method === "POST")   { … }
+if (action === "/status"   && method === "POST")   { … }
 if (action === "/spawn"    && method === "POST")   { … }
 if (action === "/cancel"   && method === "POST")   { … }
 if (action === "/worktree" && method === "DELETE") { … }
@@ -225,7 +244,7 @@ if (action === "/reject"   && method === "POST")   { … }
 return json({ error: "not_found", path, method }, 404);
 ```
 
-**Fifteen** JSON endpoints, plus one static handler covering everything under `frontend/`.
+**Sixteen** JSON endpoints, plus one static handler covering everything under `frontend/`.
 
 | # | Method | Path | Returns |
 | --- | --- | --- | --- |
@@ -238,21 +257,22 @@ return json({ error: "not_found", path, method }, 404);
 | 7 | PATCH | `/tickets/:id` | the updated `Ticket` (title/description only) |
 | 8 | DELETE | `/tickets/:id` | `{ok}` after a full destructive teardown. **Guarded**: a ticket with a `pr_number` needs its PR merged or closed first — `409 pr_open` / `409 pr_state_unknown` ([teardown](./teardown.md)) |
 | 9 | POST | `/tickets/:id/spawn` | `{ok, workspaceId, paneId, worktreePath, branch, diagnostics}` |
-| 10 | POST | `/tickets/:id/cancel` | `{ok:true}` after teardown + branch delete |
-| 11 | DELETE | `/tickets/:id/worktree` | `{ok:true, branchKept}` — disk reclaimed, branch kept |
-| 12 | POST | `/tickets/:id/focus` | `{ok}` or `{ok:false, error:<herdr code>}` — always 200 |
-| 13 | POST | `/tickets/:id/accept` | the updated `Ticket` with `prNumber`/`prUrl`; `409 no_branch` / `409 not_in_review`, `500 missing_github_token`, `502` on a failed push or PR call (claim handed back) |
-| 14 | POST | `/tickets/:id/reject` | `{reason}` in, the updated `Ticket` out; `400 reason_required`, `409 no_agent` / `not_in_review` / `agent_not_alive` / `prompt_failed` |
-| 15 | POST | `/webhooks/github` | `{ok:true, matched}` when a ticket owns that `pr_url`, `{ok:true, ignored:true}` for anything that is not a `pull_request` payload. **Always 2xx**, unauthenticated by decision ([github](./github.md)) |
+| 10 | POST | `/tickets/:id/status` | `{to}` in, the updated `Ticket` out. **Pure status writes only**, validated against `transitions.ts`: `400 invalid_input` for a `to` that is not a status, `409 illegal_transition` for a pair the machine does not have, `409 transition_has_side_effects` (carrying `owner`) for a move a route owns, `409 not_in_status` for a lost CAS ([operations](./operations.md)) |
+| 11 | POST | `/tickets/:id/cancel` | `{ok:true}` after teardown + branch delete |
+| 12 | DELETE | `/tickets/:id/worktree` | `{ok:true, branchKept}` — disk reclaimed, branch kept |
+| 13 | POST | `/tickets/:id/focus` | `{ok}` or `{ok:false, error:<herdr code>}` — always 200 |
+| 14 | POST | `/tickets/:id/accept` | the updated `Ticket` with `prNumber`/`prUrl`; `409 no_branch` / `409 not_in_review`, `500 missing_github_token`, `502` on a failed push or PR call (claim handed back) |
+| 15 | POST | `/tickets/:id/reject` | `{reason}` in, the updated `Ticket` out; `400 reason_required`, `409 no_agent` / `not_in_review` / `agent_not_alive` / `prompt_failed` |
+| 16 | POST | `/webhooks/github` | `{ok:true, matched}` when a ticket owns that `pr_url`, `{ok:true, ignored:true}` for anything that is not a `pull_request` payload. **Always 2xx**, unauthenticated by decision ([github](./github.md)) |
 | — | GET | `/`, `/index.html`, `/styles.css`, `/js/*.js` | the board's static assets |
 
-**Naming and shape decisions.** The spawn endpoint is canonically **`/spawn`**; earlier drafts called it `/start`, `spawn` is the name, it is the only spelling in the code, and `/start` must not be reintroduced. `spawn` and `cancel` are **separate endpoints** because they are opposite operations with different side effects, and `GET /tickets` is a read — that is why there is no single "transition" endpoint taking a target state: one verb per irreversible act, so the destructive ones cannot be reached by passing a different string.
+**Naming and shape decisions.** The spawn endpoint is canonically **`/spawn`**; earlier drafts called it `/start`, `spawn` is the name, it is the only spelling in the code, and `/start` must not be reintroduced. `spawn`, `cancel`, `accept` and `reject` are **separate endpoints** because each is an irreversible act with its own side effects. `/status` is the one endpoint that takes a target state, and it is safe precisely because it refuses every move those four own: one verb per irreversible act, so a destructive path still cannot be reached by passing a different string.
 
 **Errors.** Uniform envelope everywhere: `{error, field?, message?}` plus context keys (`id`, `projectId`, `status`, `path`).
 
 | Status | Meaning | Examples |
 | --- | --- | --- |
-| 409 | lost CAS, an operation already in flight, or no resource left to hand out | `not_in_backlog`, `not_in_progress`, `operation_in_flight`, `project_exists`, `port_pool_exhausted` |
+| 409 | lost CAS, an illegal or misrouted transition, an operation already in flight, or no resource left to hand out | `not_in_todo`, `not_in_progress`, `not_in_review`, `not_in_status`, `illegal_transition`, `transition_has_side_effects`, `operation_in_flight`, `project_exists`, `port_pool_exhausted` |
 | 404 | unknown ticket, project, or route | `no_such_ticket`, `no_such_project`, `project_not_found`, `not_found` |
 | 400 | validation / immutability | `invalid_input`, `immutable_field`, `invalid_project_slug`, `invalid_name`, `invalid_repo_path`, `invalid_base_branch`, `invalid_body`, `project_id_immutable` |
 | 500 | anything else, including a Herdr failure mid-operation | `{error: <message>}`, plus `diagnostics` on a failed spawn |
@@ -280,8 +300,8 @@ JSON 404; and a 404 under an API prefix keeps the API's own envelope.)*
 
 1. `resolve(id)` loads the ticket **and** its project; either missing is a 404.
 2. `inFlight.has(id)` → 409 `operation_in_flight`.
-3. `claimTicket(id, "backlog", "in_progress")` — a lost claim is 409 `not_in_backlog`. No `await` sits between the check and the write.
-4. `reservePortSlot(id)` takes the lowest free port block. Exhaustion hands the claim straight back with `claimTicket(id, "in_progress", "backlog")` and answers 409 `port_pool_exhausted` carrying `cap`, because an agent with no port of its own is worse than no agent.
+3. `claimTicket(id, "todo", "in_progress")` — a lost claim is 409 `not_in_todo`. No `await` sits between the check and the write.
+4. `reservePortSlot(id)` takes the lowest free port block. Exhaustion hands the claim straight back with `claimTicket(id, "in_progress", "todo")` — a rollback restores the claim's source, never a fixed status — and answers 409 `port_pool_exhausted` carrying `cap`, because an agent with no port of its own is worse than no agent.
 5. `inFlight.add(id)`; a fresh `RunState { diagnostics, sessionDir }` goes into `runs`; `setRunFields(id, { finished: false, died: false })`.
 6. `specFor(ticket, project)` builds `RunSpec { projectId, number, title, description, repoPath, base }` — the ticket's own fields plus the *project's* repo and base branch.
 7. `spawn(spec, block, state, onStatus, onPaneExit)` in `runner.ts` talks to Herdr: `worktree.open` → `pane.list` (falling back to `worktree.create` only on `worktree_not_found`, because create is not idempotent) → **write `.env` into the worktree and exclude it from git** → `events.subscribe` **before** `agent.start`, or the first `working` transition is lost → `agent.start` behind the readiness guard, polling `agent.get` every 125 ms → `agent.prompt`, retried up to 40× at 250 ms on `agent_not_ready`. Deadlines: `PANE_WAIT_MS` 15 000, `READY_WAIT_MS` 60 000. Details in [spawn](./spawn.md).
@@ -291,11 +311,19 @@ JSON 404; and a 404 under an API prefix keeps the API's own envelope.)*
 
 ### Injecting the port block
 
-`.env` is written into the worktree root with `PORT` (the block's first port) plus `PORT_RANGE_START` and `PORT_RANGE_END`, commented so a human who finds it knows 10x wrote it. The agent's system prompt — `systemPrompt(block)` in `runner.ts`, written to the prompt file before `agent.start` — names the same range, tells the agent to read the port from `.env` rather than hardcode one, and forbids binding outside the block. That is a **convention, not a sandbox**; nothing enforces it.
+`.env` is written into the worktree root with `PORT` (the block's first port) plus `PORT_RANGE_START` and `PORT_RANGE_END`, commented so a human who finds it knows 10x wrote it. The agent's system prompt — `prompts/implementation.md`, rendered by `loadPrompt("implementation", { portStart, portEnd })` and written to the prompt file before `agent.start` — names the same range, tells the agent to read the port from `.env` rather than hardcode one, and forbids binding outside the block. That is a **convention, not a sandbox**; nothing enforces it.
 
 **The worktree is a real git worktree the agent commits in, so a stray `.env` is one `git add -A` from being committed.** The project's tracked `.gitignore` is not ours to edit, so the entry goes into the exclude file instead. Resolve it with `git rev-parse --path-format=absolute --git-path info/exclude`, never by joining `.git/info/exclude` onto the worktree path: in a linked worktree `.git` is a **file**, and git resolves `info/exclude` against the **common** git directory — the source repo's `.git/info/exclude`, shared by every ticket worktree of that repo, which is why the append is conditional. *(Verified: after the append, `git status` inside the worktree is clean and `git check-ignore -v .env` names that file.)*
 
 `runner.ts` **never imports the store.** It receives an explicit `RunSpec` and a mutable `RunState` and knows nothing about SQLite; the caller decides what to persist. That decoupling is what keeps the spawn path testable and the store swappable.
+
+### Agent prompts live in `prompts/`, not in code
+
+`prompts/implementation.md` (the ticket agent) and `prompts/plan.md` (the planning agent) are prose a human edits, so they sit at the repo root beside `memory/` rather than inside `backend/src/`. `prompts.ts` resolves them from **`import.meta.dirname`**, exactly as `server.ts` resolves `frontend/dist` — a `process.cwd()`-relative path would work under `pnpm --filter @10x/backend dev` and break when the server is started from the repo root, which is how e2e and every real run start it.
+
+**There is no backend build.** `pnpm build` is only `pnpm --filter @10x/frontend build`; the backend is always `node backend/src/server.ts`, so nothing relocates or rewrites these files, and unlike `dist` the directory is not gitignored — a fresh clone has the prompts. *(Verified: `loadPrompt` resolves both files from cwd `/tmp` and `/`, and inside a real server process started as `node backend/src/server.ts` from the repo root with `frontend/dist` present.)*
+
+`renderPrompt` **throws on a leftover `{{marker}}` and on a supplied key that matches no marker**, because that failure is otherwise invisible: a prompt still reading "bind to port `{{portStart}}`" is a valid file and a deliverable prompt, and the only reader that would notice is the agent. The leftover scan is deliberately laxer (`{{[^}]*}}`) than the substitution pattern (`{{\w+}}`), so a marker mistyped into a shape no caller can pass is reported rather than shipped.
 
 ## 8. Per-run state that is not persisted
 

@@ -83,7 +83,7 @@ test("spawns a worktree, a branch and an agent, and persists the run", async ({ 
   // Not an assertion — this test owns a live agent and must not hand it to the next test.
   // DELETE rather than cancel because it is status-agnostic: if this agent's turn settles
   // before the test ends, the ticket has already moved itself to In Review and cancel, which
-  // claims `in_progress → backlog`, would answer 409 and leave the agent running.
+  // claims `in_progress → todo`, would answer 409 and leave the agent running.
   expect((await api(board, "DELETE", `/tickets/${id}`)).status).toBe(200);
 });
 
@@ -135,11 +135,11 @@ test("a finished turn moves the ticket to In Review by itself", async ({ page })
   // Cancel is `in_progress`-only, so review offers no run action until Accept and Reject exist.
   await expect(card.getByRole("button", { name: /Cancel/ })).toHaveCount(0);
 
-  // DELETE, not cancel: cancel claims `in_progress → backlog` and answers 409 from review.
+  // DELETE, not cancel: cancel claims `in_progress → todo` and answers 409 from review.
   expect((await api(board, "DELETE", `/tickets/${id}`)).status).toBe(200);
 });
 
-test("cancel leaves zero residue and returns the ticket to backlog", async () => {
+test("cancel leaves zero residue and returns the ticket to To Do", async () => {
   test.setTimeout(SPAWN_MS);
   await createProject(board, "cncl", repoPath);
   const id = await createTicket(board, "cncl", "Cancelled attempt", PROBE_DESCRIPTION);
@@ -154,7 +154,9 @@ test("cancel leaves zero residue and returns the ticket to backlog", async () =>
 
   await expectZeroResidue(repoPath, run, sessionDir);
   expect(storedTicket(board, id)).toEqual({
-    status: "backlog",
+    // To Do, not Backlog: cancel discards the attempt, not the plan that made the ticket
+    // startable, so the card lands back on the column Start works from.
+    status: "todo",
     branch: null,
     agentName: null,
     sessionDir: null,
