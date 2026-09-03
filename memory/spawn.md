@@ -104,13 +104,26 @@ agent.prompt         →            agent_prompted ✓
 
 **`interactive_ready` is the tell:** `true` on a real start, **absent** when premature.
 
-**Required guard — mirror the CLI:**
+**Required guard — mirror the CLI.** One implementation, `backend/src/agent-boot.ts`
+(`bootAgent`), used by **both** `spawn` and Plan; nothing else may talk to `agent.start`:
 
 1. Retry `agent_pane_busy` with a short (~100 ms) backoff, bounded by the `agent.start` timeout.
    Exponential backoff starting at 1 s overshoots; the CLI polls at ~125 ms.
 2. **Never treat `agent.start`'s return as readiness.** Poll `agent.get` until `agent_status: "idle"`
    **and** `interactive_ready: true`. Expect ~3 s.
 3. Treat `agent_not_ready` from `agent.prompt` as "still starting" and retry — not as fatal.
+
+**Step 3 is not a substitute for step 2** (verified — it cost a production failure). Plan shipped
+with the prompt retry and no readiness poll, on the argument that the retry absorbed the same
+race. Clicking Plan then returned
+`500 agent_not_ready: agent ticket-10x-4-plan is not an active named agent`. The observable
+state at that moment, against a plainly healthy Herdr: workspace `wAR` labelled
+`ticket-10x-4-plan` existed with an **omp agent running in `wAR:p1`, unnamed**, and
+`herdr agent explain ticket-10x-4-plan` answered `agent_not_found`. **That is the symptom to
+search for: a live agent in the pane, and `agent.get <name>` saying the name does not exist.**
+The retry gives up after 40 × 250 ms = 10 s, the poll waits 60 s — and a prompt is an attempt to
+*use* the agent, never a wait for it, so it cannot tell "not registered yet" from "never will
+be". Retrying the wrong question is not waiting for the right one.
 
 `pane.process_info` is not a readiness signal on its own: it reports `bash` as foreground from 24 ms
 onward, and during the busy window shows the shell still sourcing rc files (`dircolors`,
@@ -248,14 +261,17 @@ rollback and the plan sweep below.
 
 Plan is the Backlog conversation: an agent that talks to the human about what a ticket should
 say, writes the ticket by PATCHing the API, and implements nothing. `backend/src/planner.ts`
-owns it, deliberately apart from `runner.ts`, because almost everything `spawn` does is wrong
-here.
+owns it, apart from `runner.ts`, because the *worktree-shaped* parts of `spawn` are wrong here.
+**Booting the agent is not one of those parts.** Steps 3-4 below are one call into
+`backend/src/agent-boot.ts`, the same call `spawn` makes; only the `agent.start` args and the
+opening text differ.
 
 | # | Call | Send | Get back |
 |---|---|---|---|
 | 1 | `agent.get` | `target: <plan name>` | the planner, or `agent_not_found` |
 | 2 | `workspace.create` | `cwd: <project repoPath>`, `label: <plan name>`, `focus: false` | `workspace.workspace_id`, `root_pane.pane_id` |
-| 3 | `agent.start` | `name`, `kind: "omp"`, `pane_id`, `args` | `agent_started` |
+| 3 | `agent.start` | `name`, `kind: "omp"`, `pane_id`, `args` | `agent_started`, **premature** |
+| 3b | `agent.get` × n | `target: <plan name>` | polled until `idle` + `interactive_ready` |
 | 4 | `agent.prompt` | `target`, `text: <the ticket as it stands>` | `agent_prompted` |
 | 5 | `agent.focus` | `target: <plan name>` | `ok` → **return HTTP 200 here** |
 
@@ -267,28 +283,31 @@ What it does **not** do, each for a reason:
   called by `/spawn` and nowhere else.
 - **No `--wait` and no completion subscription.** The opening prompt is sent and the route
   returns; the planner's first act is to ask the human a question, so anything that waited for
-  it to settle would block until the conversation ended. Prompting is required, *waiting* is
-  the thing that is forbidden — do not collapse the two, which is how the planner shipped mute.
-- **No readiness poll.** It exists in `spawn` to keep `agent.prompt` off an agent reporting
-  `unknown`; here the same race is absorbed by the `agent_not_ready` retry on the prompt
-  itself, 40 attempts at 250 ms, runner.ts's bounds. A planner has no subscription to arm
-  before its first turn, so the exact readiness moment buys nothing else.
+  it to settle would block until the conversation ended. Prompting is required, *waiting on the
+  conversation* is the thing that is forbidden — do not collapse the two, which is how the
+  planner shipped mute. Waiting for the agent to be able to *hear* the question (step 3b) is a
+  different thing and is mandatory.
 - **No status write.** Promoting the ticket out of backlog is the human deciding the plan is
   ready; `prompts/plan.md` tells the agent so explicitly.
 
-What it keeps from `spawn`, and must:
+What it shares with `spawn`, and must:
 
-- **The `agent_pane_busy` retry.** `workspace.create` hands over a pane whose shell may not
-  have reached its interactive prompt, which is the same 2-in-6 failure measured above.
-  Without the retry Plan fails about a third of the time.
-- **Step 2 before step 3, and the rollback between them.** If `agent.start` fails after the
+- **The whole boot: start, readiness poll, prompt** — `bootAgent`, one implementation, no way
+  to opt out of the poll. Plan once had its own copy of the start-and-prompt half with the poll
+  left out, and that is exactly the bug above. `workspace.create` also hands over a pane whose
+  shell may not have reached its interactive prompt, the same 2-in-6 `agent_pane_busy` failure
+  measured above, so the retry is not padding either.
+- **Step 2 before step 3, and the rollback between them.** If the boot fails after the
   workspace exists, `workspace.close` it before returning the error — the sweep that would
   otherwise collect it only runs at boot.
 - **Idempotence at step 1.** A live planner is re-focused, never replaced: Herdr keeps panes
   and agents alive across a backend restart, so a second Plan click must resume the
   conversation rather than destroy its context. Only `agent_not_found` counts as absent
   ([agent names are session-wide](./naming.md)); any other code is a fault, because reading a
-  Herdr hiccup as absence starts a rival planner beside a live conversation.
+  Herdr hiccup as absence starts a rival planner beside a live conversation. This check is the
+  planner's own, *before* it creates anything — `spawn`'s reuse is a different shape (it learns
+  the agent exists from `agent_name_taken` on the start and re-attaches with `reattachAgent`),
+  so reuse is decided by each caller and never inside the shared boot.
 - **Prompt before focus, and no prompt on re-focus.** Focusing first drops the human into a
   pane that looks dead until the prompt lands. A second Plan click focuses only: re-prompting
   would restart a live conversation, and a planner waiting on a human question is `blocked`,

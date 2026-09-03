@@ -52,12 +52,14 @@ normalised. The CLI is *not* a thin wrapper over this API.
 
 **[spawn](./spawn.md)** — the four-call sequence, and the single most important implementation
 detail in the project: **`agent.start` does not wait for readiness; the CLI does.** Includes the
-strace evidence, the 6-trial race table, the required guard, and measured timings. Also
+strace evidence, the 6-trial race table, the required guard — **one implementation,
+`backend/src/agent-boot.ts`, that Start and Plan both boot through** — the production failure
+that proves the prompt retry is no substitute for it, and measured timings. Also
 **`--append-system-prompt` starts no turn, so every started agent needs an opening
 `agent.prompt`**; the **planning** sequence — a worktree-less, portless agent that is prompted
-but never waited on; and the proof that **result shapes are schema-proven**, `workspace_created`
-carrying its own `root_pane`.
-`worktree.create · agent.start · agent.prompt · opening prompt · agent_pane_busy · interactive_ready · readiness guard · plan · workspace.create · root_pane · ResponseResult`
+and waited *for*, never waited *on*; and the proof that **result shapes are schema-proven**,
+`workspace_created` carrying its own `root_pane`.
+`worktree.create · agent.start · agent.prompt · opening prompt · agent_pane_busy · interactive_ready · readiness guard · agent-boot.ts · bootAgent · agent_not_ready · agent_not_found · plan · workspace.create · root_pane · ResponseResult`
 
 **[agent-status](./agent-status.md)** — `idle` and `done` are the **same** state; the first `idle`
 arrives *before* the prompt; a turn ending is not the ticket succeeding; a prose question is

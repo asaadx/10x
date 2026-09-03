@@ -4,25 +4,25 @@
  * Deliberately NOT `runner.ts`. A planner talks to a human about what a ticket should say and
  * writes nothing but the ticket itself, so it gets **no worktree, no branch and no port slot**
  * and runs in the project's main checkout. That is the whole reason this is a separate module:
- * every expensive, destructive part of `spawn` — the worktree, the injected `.env`, the
- * readiness poll, the completion subscription that moves the ticket to In Review — is wrong
- * here, and sharing the code would mean sharing the parts that must not run.
+ * the expensive, destructive parts of `spawn` — the worktree, the injected `.env`, the
+ * completion subscription that moves the ticket to In Review — are wrong here.
  *
- * The two things it does share are named once and imported: the agent name
- * (`planAgentNameFor`, whose suffix is what keeps Start from adopting a planner) and the
- * prompt loader.
+ * Booting the agent is not one of those parts, and pretending it was is what broke Plan.
+ * `agent.start` + readiness guard + opening prompt is `agent-boot.ts`, called from here and
+ * from `spawn` with different args and a different opening turn and nothing else different.
+ * Read that module's header before changing anything below that talks to `agent.start`.
+ * Also shared and named once: the agent name (`planAgentNameFor`, whose suffix is what keeps
+ * Start from adopting a planner) and the prompt loader.
  *
- * The one thing it must do that looks like `runner.ts`: send an opening `agent.prompt` after
- * the start. `--append-system-prompt` installs a system prompt, it does not create a turn, so
- * an agent that is only started sits there saying nothing. What is forbidden is *waiting* on
- * that message — no `--wait`, no completion subscription, nothing that blocks on the
- * conversation — because the planner's first act is to ask the human a question and the
- * answer may be hours away. Send it and return.
+ * What is forbidden here is *waiting on the conversation* — no `--wait`, no completion
+ * subscription, nothing that blocks on the answer — because the planner's first act is to ask
+ * the human a question and the answer may be hours away. Waiting for the agent to be able to
+ * hear the question is a different thing, is mandatory, and lives in the shared boot.
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { bootAgent, type AgentEnvelope, type AgentRecord } from "./agent-boot.ts";
 import { HerdrError, request } from "./herdr.ts";
 import { AGENT_NAME_RE, planAgentNameFor } from "./lifecycle.ts";
 import { loadPrompt } from "./prompts.ts";
@@ -30,17 +30,6 @@ import type { ChecklistItem, Playbook } from "./types.ts";
 
 /** Same resolution as runner.ts: the prompt file must live outside any repo the agent sees. */
 const STATE_DIR = process.env.STATE_DIR ?? join(homedir(), ".10x");
-
-/** How long a fresh pane may take to become an available shell before we give up. */
-const PANE_WAIT_MS = 15_000;
-
-/**
- * The opening prompt's retry bounds, mirrored from runner.ts rather than re-tuned. An
- * `agent.prompt` sent before Herdr has registered the freshly started agent fails
- * `agent_not_ready` (memory/spawn.md), and that race is the same one for both agent kinds.
- */
-const PROMPT_ATTEMPTS = 40;
-const PROMPT_RETRY_MS = 250;
 
 /**
  * What a plan run needs. `repoPath` is the project's main checkout — there is no worktree.
@@ -71,8 +60,6 @@ export type PlanResult = {
 
 type PaneInfo = { pane_id: string };
 type WorkspaceCreated = { workspace: { workspace_id: string }; root_pane: PaneInfo };
-type AgentRecord = { pane_id?: string; workspace_id?: string };
-type AgentEnvelope = { agent?: AgentRecord };
 
 /**
  * The ticket's planner, or undefined if there is none.
@@ -89,48 +76,6 @@ async function livePlanner(name: string): Promise<AgentRecord | undefined> {
   } catch (err) {
     if (err instanceof HerdrError && err.code === "agent_not_found") return undefined;
     throw err;
-  }
-}
-
-/**
- * `agent.start` against a pane whose shell has not reached its interactive prompt yet fails
- * with `agent_pane_busy` — nondeterministically, in 2 of 6 measured trials on a freshly
- * created pane (memory/spawn.md), which is exactly what `workspace.create` hands us. So the
- * retry is not defensive padding; without it Plan fails about a third of the time.
- *
- * Every other code is a real fault (bad name, missing pane, agent kind not installed) and
- * surfaces immediately: a fatal error retried is just a slower error.
- *
- * runner.ts's readiness poll is still NOT mirrored, but the reason has changed now that this
- * module prompts. That poll exists to keep `agent.prompt` off an agent reporting `unknown`;
- * here the same race is absorbed where it actually surfaces, by the `agent_not_ready` retry in
- * `promptPlanAgent`, on runner.ts's own bounds. A planner has no completion subscription to
- * arm before its first turn, so knowing the moment it became ready buys nothing else.
- */
-async function startPlanAgent(name: string, paneId: string, promptFile: string): Promise<void> {
-  const deadline = Date.now() + PANE_WAIT_MS;
-  let backoff = 250;
-  for (;;) {
-    try {
-      await request("agent.start", {
-        name,
-        kind: "omp",
-        pane_id: paneId,
-        timeout_ms: 60_000,
-        args: ["--append-system-prompt", promptFile, "--auto-approve"],
-      });
-      return;
-    } catch (err) {
-      if (!(err instanceof HerdrError) || err.code !== "agent_pane_busy") throw err;
-      if (Date.now() + backoff > deadline) {
-        throw new HerdrError(
-          "agent_pane_busy",
-          `pane ${paneId} never became an available shell within ${PANE_WAIT_MS}ms`,
-        );
-      }
-      await delay(backoff);
-      backoff = Math.min(backoff * 2, 2_000);
-    }
   }
 }
 
@@ -163,27 +108,6 @@ function openingMessage(spec: PlanSpec): string {
     "",
     "That is the whole ticket. Start the conversation.",
   ].join("\n");
-}
-
-/**
- * Send the opening turn, and return the moment Herdr has taken it.
- *
- * `agent_not_ready` from `agent.prompt` means the agent is not registered yet — the fresh-pane
- * race (memory/gotchas.md), expected immediately after `agent.start` and never a reason to
- * fail the Plan. Same 40 attempts at 250ms the implementation path uses. Every other code is a
- * real fault and surfaces at once.
- */
-async function promptPlanAgent(name: string, text: string): Promise<void> {
-  for (let attempt = 1; attempt <= PROMPT_ATTEMPTS; attempt++) {
-    try {
-      await request("agent.prompt", { target: name, text });
-      return;
-    } catch (err) {
-      const notReady = err instanceof HerdrError && err.code === "agent_not_ready";
-      if (!notReady || attempt === PROMPT_ATTEMPTS) throw err;
-      await delay(PROMPT_RETRY_MS);
-    }
-  }
 }
 
 /**
@@ -248,8 +172,15 @@ export async function startPlanning(spec: PlanSpec, apiUrl: string): Promise<Pla
   const paneId = created.root_pane.pane_id;
 
   try {
-    await startPlanAgent(name, paneId, promptFile);
-    await promptPlanAgent(name, openingMessage(spec));
+    // The whole boot in one call: start (retrying the fresh pane's busy shell), wait until
+    // Herdr will actually answer for this name, then the opening turn. No diagnostics object
+    // is passed — Plan has no board counters, and the boot does not need them to work.
+    await bootAgent({
+      name,
+      paneId,
+      args: ["--append-system-prompt", promptFile, "--auto-approve"],
+      prompt: openingMessage(spec),
+    });
   } catch (err) {
     // A failed Plan must not leave a pane behind: the sweep that would collect it only runs
     // at boot, and until then the user is looking at an empty workspace that a retry cannot
