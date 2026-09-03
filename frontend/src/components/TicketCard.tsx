@@ -44,7 +44,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.tsx";
-import { acceptTicket, moveTicket, spawnAgent, startPlanning } from "@/lib/api.ts";
+import { acceptTicket, cancelTicket, deleteTicket, deleteWorktree, moveTicket, spawnAgent, startPlanning } from "@/lib/api.ts";
 import { runFailed } from "@/lib/board.ts";
 import { REMOTE_TARGET, remoteCommand, type SteerMode } from "@/lib/steer-mode.ts";
 import type { Status, Ticket } from "@/types.ts";
@@ -266,7 +266,15 @@ type PreviewState = "idle" | "starting" | "live" | "stopping";
  * because the card's rule is one write at a time: every button that could start another is
  * disabled while one runs, and the value names which so only that button shows a spinner.
  */
-type PendingAction = null | "plan" | "move" | "start" | "accept";
+type PendingAction =
+  | null
+  | "plan"
+  | "move"
+  | "start"
+  | "accept"
+  | "cancel"
+  | "deleteWorktree"
+  | "deleteTicket";
 
 /**
  * One branch per status and never an `else`. Plan is scoped to `backlog`, Start to `todo`,
@@ -406,7 +414,14 @@ function RunActions({
           that follow from a focus call instead of a prompt.
         */}
         <SteerButton ticket={ticket} steerMode={steerMode} />
-        <Button size="sm" variant="destructive" className="h-7 gap-1 px-2 text-[11px]" title="Discards the attempt: deletes the branch and worktree." onClick={onCancel}>
+        <Button
+          size="sm"
+          variant="destructive"
+          className="h-7 gap-1 px-2 text-[11px]"
+          disabled={pending !== null}
+          title="Discards the attempt: deletes the branch and worktree."
+          onClick={onCancel}
+        >
           <Ban aria-hidden className="size-3" />
           Cancel
         </Button>
@@ -585,16 +600,26 @@ export function TicketCard({
    * the server rather than with an optimistic guess this component made. On failure there is
    * no refresh and no guess to undo, so a failed Accept simply stays on an In Review card with
    * the message on it — which is where the server rolled its claim back to anyway.
+   *
+   * Returns whether the write succeeded, which is all a confirmation dialog needs to decide
+   * its own fate: Cancel, Delete worktree and Delete ticket close themselves on `true` and
+   * stay open on `false`, so a failure is read in place — next to the button that can retry
+   * it — instead of behind a dialog that already closed.
    */
-  const runAction = async (kind: Exclude<PendingAction, null>, write: () => Promise<void>) => {
-    if (pending !== null) return;
+  const runAction = async (
+    kind: Exclude<PendingAction, null>,
+    write: () => Promise<void>,
+  ): Promise<boolean> => {
+    if (pending !== null) return false;
     setPending(kind);
     setActionError(null);
     try {
       await write();
       onChanged();
+      return true;
     } catch (cause) {
       setActionError(cause instanceof Error ? cause.message : String(cause));
+      return false;
     } finally {
       setPending(null);
     }
@@ -787,12 +812,19 @@ export function TicketCard({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={pending !== null}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => setConfirmWorktree(false)}
+              disabled={pending !== null}
+              onClick={(e) => {
+                e.preventDefault();
+                void runAction("deleteWorktree", () => deleteWorktree(ticket.id)).then((ok) => {
+                  if (ok) setConfirmWorktree(false);
+                });
+              }}
             >
-              Delete worktree
+              {pending === "deleteWorktree" && <Spinner aria-hidden />}
+              {pending === "deleteWorktree" ? "Deleting worktree..." : "Delete worktree"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -808,17 +840,34 @@ export function TicketCard({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Keep working</AlertDialogCancel>
+            <AlertDialogCancel disabled={pending !== null}>Keep working</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => setConfirmCancel(false)}
+              disabled={pending !== null}
+              onClick={(e) => {
+                e.preventDefault();
+                void runAction("cancel", () => cancelTicket(ticket.id)).then((ok) => {
+                  if (ok) setConfirmCancel(false);
+                });
+              }}
             >
-              Discard attempt
+              {pending === "cancel" && <Spinner aria-hidden />}
+              {pending === "cancel" ? "Discarding..." : "Discard attempt"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      <DeleteTicketDialog ticket={ticket} open={confirmDelete} onOpenChange={setConfirmDelete} />
+      <DeleteTicketDialog
+        ticket={ticket}
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        pending={pending === "deleteTicket"}
+        onConfirm={() => {
+          void runAction("deleteTicket", () => deleteTicket(ticket.id)).then((ok) => {
+            if (ok) setConfirmDelete(false);
+          });
+        }}
+      />
     </>
   );
 }
