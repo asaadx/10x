@@ -43,7 +43,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.tsx";
-import { moveTicket, startPlanning } from "@/lib/api.ts";
+import { acceptTicket, moveTicket, spawnAgent, startPlanning } from "@/lib/api.ts";
 import { runFailed } from "@/lib/board.ts";
 import { REMOTE_TARGET, remoteCommand, type SteerMode } from "@/lib/steer-mode.ts";
 import type { Status, Ticket } from "@/types.ts";
@@ -265,7 +265,7 @@ type PreviewState = "idle" | "starting" | "live" | "stopping";
  * because the card's rule is one write at a time: every button that could start another is
  * disabled while one runs, and the value names which so only that button shows a spinner.
  */
-type PendingAction = null | "plan" | "move";
+type PendingAction = null | "plan" | "move" | "start" | "accept";
 
 /**
  * One branch per status and never an `else`. Plan is scoped to `backlog`, Start to `todo`,
@@ -289,6 +289,8 @@ function RunActions({
   pending,
   onPlan,
   onMove,
+  onStart,
+  onAccept,
   onCancel,
   previewState,
   onTogglePreview,
@@ -298,6 +300,8 @@ function RunActions({
   pending: PendingAction;
   onPlan: () => void;
   onMove: (to: Status) => void;
+  onStart: () => void;
+  onAccept: () => void;
   onCancel: () => void;
   previewState: PreviewState;
   onTogglePreview: () => void;
@@ -355,9 +359,28 @@ function RunActions({
   if (ticket.status === "todo") {
     return (
       <>
-        <Button size="sm" className="h-7 gap-1 px-2 text-[11px]" title="Spawns the agent in its own worktree, branch and port block.">
-          <Play aria-hidden className="size-3" />
-          Start
+        {/*
+          The slowest write on the board: the route creates the worktree, reserves the port
+          block, writes the injected `.env` and waits for the agent to be genuinely ready
+          before it answers, so there are several seconds between the click and anything
+          changing. Disabled throughout, because a second POST that won the race would be a
+          second paid agent — and the two 409s it can answer instead (`not_in_todo`,
+          `port_pool_exhausted`) both roll the claim back to To Do, so the message on the card
+          is the only evidence the click did anything at all.
+        */}
+        <Button
+          size="sm"
+          className="h-7 gap-1 px-2 text-[11px]"
+          disabled={pending !== null}
+          title="Spawns the agent in its own worktree, branch and port block."
+          onClick={onStart}
+        >
+          {pending === "start" ? (
+            <Spinner aria-hidden className="size-3" />
+          ) : (
+            <Play aria-hidden className="size-3" />
+          )}
+          {pending === "start" ? "Starting..." : "Start"}
         </Button>
         <Button
           size="sm"
@@ -392,9 +415,27 @@ function RunActions({
   if (ticket.status === "in_review") {
     return (
       <>
-        <Button size="sm" className="h-7 gap-1 px-2 text-[11px]" title="Pushes the branch, opens a pull request, and retires the agent.">
-          <Check aria-hidden className="size-3" />
-          Accept
+        {/*
+          Pushes the branch and opens the pull request before it answers, so it is slow for the
+          same reason Start is — and the only irreversible action on the board, since the pull
+          request outlives any local rollback. When the push or the PR call fails the server
+          hands the claim back to `in_review`, so the card must be seen to return to this
+          column with the message showing rather than settle into Done: that is exactly what
+          refreshing only on success buys.
+        */}
+        <Button
+          size="sm"
+          className="h-7 gap-1 px-2 text-[11px]"
+          disabled={pending !== null}
+          title="Pushes the branch, opens a pull request, and retires the agent."
+          onClick={onAccept}
+        >
+          {pending === "accept" ? (
+            <Spinner aria-hidden className="size-3" />
+          ) : (
+            <Check aria-hidden className="size-3" />
+          )}
+          {pending === "accept" ? "Accepting..." : "Accept"}
         </Button>
         <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-[11px]" title="Sends feedback back to the agent, which keeps working. Nothing is destroyed.">
           <Undo2 aria-hidden className="size-3" />
@@ -524,12 +565,14 @@ export function TicketCard({
   /**
    * The one path every wired button on this card takes. The guard is belt to the buttons'
    * braces: they are all disabled while a write runs, but a click already dispatched — or a
-   * keyboard repeat — must not start a second POST either, and for Plan a second POST is a
-   * second paid agent.
+   * keyboard repeat — must not start a second POST either. For Plan and Start a second POST is
+   * a second paid agent; for Accept it is a second pull request, which nothing can take back.
    *
    * The refresh is deliberately AFTER the await and only on success: the board is the source
    * of truth for where a ticket now is, and reading it back is what makes the card agree with
-   * the server rather than with an optimistic guess this component made.
+   * the server rather than with an optimistic guess this component made. On failure there is
+   * no refresh and no guess to undo, so a failed Accept simply stays on an In Review card with
+   * the message on it — which is where the server rolled its claim back to anyway.
    */
   const runAction = async (kind: Exclude<PendingAction, null>, write: () => Promise<void>) => {
     if (pending !== null) return;
@@ -691,6 +734,8 @@ export function TicketCard({
             pending={pending}
             onPlan={() => void runAction("plan", () => startPlanning(ticket.id))}
             onMove={(to) => void runAction("move", () => moveTicket(ticket.id, to))}
+            onStart={() => void runAction("start", () => spawnAgent(ticket.id))}
+            onAccept={() => void runAction("accept", () => acceptTicket(ticket.id))}
             onCancel={() => setConfirmCancel(true)}
             previewState={previewState}
             onTogglePreview={handleTogglePreview}

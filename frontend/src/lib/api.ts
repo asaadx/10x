@@ -2,8 +2,8 @@ import { ALL_PROJECTS } from "@/lib/board.ts";
 import type { BoardResponse, Playbook, Project, Status, Ticket } from "@/types.ts";
 
 /**
- * The board's whole HTTP seam: the two GETs it renders from, and the three writes Plan mode
- * needs. Nothing else is wired yet — Start, Cancel, Accept, Reject and the two deletes still
+ * The board's whole HTTP seam: the two GETs it renders from, and the writes behind every
+ * button that has one. Nothing else is wired yet — Cancel, Reject and the two deletes still
  * have no caller here, deliberately, so a bug in one of those is a missing function rather
  * than a half-working button.
  *
@@ -192,4 +192,25 @@ export async function moveTicket(id: string, to: Status): Promise<void> {
  */
 export async function startPlanning(id: string): Promise<void> {
   await request<unknown>("POST", `/tickets/${encodeURIComponent(id)}/plan`);
+}
+
+/**
+ * Starts the implementation agent: `todo -> in_progress`, and the worktree, branch, port block
+ * and agent are all created before the call answers. Two failures are its own and both must
+ * reach the card — `409 not_in_todo` when the ticket moved underneath the click, and
+ * `409 port_pool_exhausted` when every slot in the pool is held — because the server hands the
+ * claim back to `todo` in both cases, so the only trace left is the message.
+ */
+export async function spawnAgent(id: string): Promise<void> {
+  await request<unknown>("POST", `/tickets/${encodeURIComponent(id)}/spawn`);
+}
+
+/**
+ * Accepts the work: `in_review -> done`, pushing the branch and opening the pull request before
+ * it answers. The push or the PR call failing rolls the claim back to `in_review`, so the
+ * refresh that follows a success is exactly what must NOT happen on failure — the card would
+ * otherwise read as accepted with no pull request behind it.
+ */
+export async function acceptTicket(id: string): Promise<void> {
+  await request<unknown>("POST", `/tickets/${encodeURIComponent(id)}/accept`);
 }
