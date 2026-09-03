@@ -11,6 +11,7 @@
     "dev": "pnpm -r --parallel dev",
     "dev:api": "pnpm --filter @10x/backend dev",
     "dev:web": "pnpm --filter @10x/frontend dev",
+    "start": "pnpm build && node backend/src/server.ts",
     "build": "pnpm --filter @10x/frontend build",
     "typecheck": "tsc --noEmit && pnpm --filter @10x/frontend typecheck",
     "test": "pnpm -r test",
