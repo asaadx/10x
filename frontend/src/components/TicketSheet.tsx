@@ -459,7 +459,7 @@ export function TicketSheet({
             </p>
           )}
 
-          {/* Off unless VITE_DIAGNOSTICS=true; see frontend/.env.example. */}
+          {/* Off unless VITE_DIAGNOSTICS=true; see .env.example at the repo root. */}
           {!creating && import.meta.env["VITE_DIAGNOSTICS"] === "true" && ticket.diagnostics && (
             <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 border-t pt-2 font-mono text-[11px] text-muted-foreground">
               {Object.entries(ticket.diagnostics).map(([k, v]) => (
