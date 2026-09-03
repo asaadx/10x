@@ -20,4 +20,14 @@ herdr-api.schema.json
 test-results/
 playwright-report/
 blob-report/
-.playwright/
+# `.playwright/*` rather than `.playwright/`: git never descends into an excluded directory, so
+# a negation inside one is dead. Excluding the contents keeps the re-include below alive.
+.playwright/*
+# The agent-cli's browser config IS checked in: without it the CLI defaults to the `chrome`
+# channel, which is absent on a machine carrying only Playwright's own browsers, and every run
+# dies with "Chromium distribution 'chrome' is not found".
+!.playwright/cli.config.json
+
+# playwright agent-cli: session state, and demo recordings it writes to the cwd
+.playwright-cli/
+*.webm
