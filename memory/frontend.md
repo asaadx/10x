@@ -2,160 +2,184 @@
 
 **Node:** frontend · Parent: [INDEX.md](./INDEX.md)
 
-The board's browser half — everything under `frontend/`. The server that serves it, the HTTP surface
-it calls and the database behind that are in [architecture](./architecture.md).
+The board's browser half — everything under `frontend/`. The server that serves it, the HTTP
+surface it calls and the database behind that are in [architecture](./architecture.md).
 
-## 1. Four layers, five modules
+## 1. The stack
 
-Native ES modules, no framework, no build step, no bundler. Line counts are `wc -l`, current as of
-this node.
+**React 19 + Vite 8 + Tailwind v4 + shadcn-style components, all TypeScript** *(verified —
+`frontend/package.json`)*. There is a build step and a bundler; nothing here is loaded as a bare
+script. From the repo root: `pnpm dev:web` (Vite on 5173), `pnpm build` (the bundle the backend
+then serves), and `pnpm typecheck`, whose second half is the frontend's `tsc --build` *(verified —
+root `package.json`)*.
 
-| Layer | File | Lines | Rule |
-| --- | --- | --- | --- |
-| transport | `js/api.js` | 88 | one `api()` wrapper — it never throws and never swallows, so a network failure and a 500 arrive in the same `{ok, status, body}` shape — plus a named function per endpoint the UI uses. **No DOM.** |
-| state | `js/state.js` | 103 | the `state` object, `actionErrors`, `pendingActions`, `copyConfirms`, and the derivations (`isBusy`, `cardIsProtected`, `attachCommandFor`, `prMetaFor`). **No DOM, no `fetch`.** |
-| rendering | `js/render.js` | 459 | **every `document` reference in the frontend.** Reads state, writes markup, decides nothing. |
-| wiring | `js/app.js` | 276 | what a click means, and the poll loop. **Touches no DOM.** |
+- `frontend/index.html` — 14 lines: `<div id="root">` and `<script type="module" src="/src/main.tsx">`.
+- `frontend/src/main.tsx` — `createRoot` under `<StrictMode>`, imports `index.css`.
+- `frontend/src/App.tsx` — the only stateful shell. Board-wide state lives here (theme, steer mode,
+  selected project, search query, sort order, which ticket the sheet has open) and every component
+  below it takes props.
+- `frontend/src/components/` — `NavBar`, `BoardToolbar`, `Column`, `TicketCard`, `TicketSheet`,
+  `DeleteTicketDialog`.
+- `frontend/src/components/ui/` — the shadcn primitives. Imported today: `button`, `input`,
+  `checkbox`, `separator`, `spinner`, `sheet`, `alert-dialog`, `dropdown-menu`, `native-select`.
+  `badge.tsx` and `card.tsx` are present but imported by nothing *(verified — no
+  `@/components/ui/badge` or `/card` import exists in `frontend/src`)*. Radix (`radix-ui`) is the
+  behaviour under the overlay ones.
+- `frontend/src/lib/` — `api.ts` (the HTTP seam), `use-board.ts` (the poll), `board.ts` (pure
+  derivations), `theme.ts` and `steer-mode.ts` (`localStorage`-backed prefs), `utils.ts`
+  (`cn` = `clsx` + `tailwind-merge`).
+- `frontend/src/index.css` — `@import "tailwindcss"` plus the shadcn token block. Dark mode is a
+  **class on `<html>`**, declared with Tailwind v4's `@custom-variant dark`, because the board has
+  an explicit toggle that must beat the OS preference *(verified)*.
+- Icons come from **two** packages: `lucide-react` and `@tabler/icons-react` *(verified — both are
+  imported in `NavBar.tsx`)*.
 
-Three files sit outside the layering. `js/icons.js` (50) is a table, not a layer: the eight icons JS
-renders — steer, finished, died, worktree, busy, and the three PR states — in one map.
-`index.html` (93) is markup only: the landmarks, the composer drawer, the unowned panel and the
-four columns. `styles.css` (688) is all styling and is read by nothing.
+`@/` resolves to `frontend/src` — aliased in both `vite.config.ts` and `frontend/tsconfig.json`,
+so a change to one needs the other *(verified)*.
 
-**The Done card's PR meta is the worked example of the layering.** `prMetaFor(ticket)` in
-`state.js` decides *whether* there is anything to show and returns `{url, number, state, additions,
-deletions}` or `null`; `render.js` only draws it. The state travels as `data-pr-state` on the
-container, never as a class, and is **absent when `prState` is `null`** — null means "no webhook has
-told us", which is not the same as `open`, so the card shows no icon rather than guessing one. The
-±LOC pair renders only when both halves are non-null, with a real U+2212 minus.
+`frontend/src/lib/board.ts` holds the derivations: `matchesProject`, `matchesSearch`, `sortTickets`,
+`ticketsForColumn`, `columnIsWorking`, `runFailed` — **pure, no DOM, no `fetch`**, and the only
+place that decides what a column contains, which is why it is the part worth unit-testing.
+`ALL_PROJECTS = "all:projects"` is the picker's sentinel, safe because a project id is a slug and
+cannot contain a colon *(verified)*.
 
-The split exists so that **a redesign is layout, colours and icons only** — a change to
-`styles.css` and to the templates in `render.js` cannot alter what the board does.
+## 2. Types come from the backend, not from here
 
-`api.js` covers eleven of the fourteen endpoints. The frontend only *reads* projects
-(`GET /projects`); project creation, renaming and deletion are not wired into the UI, though those
-three endpoints exist.
+`frontend/src/types.ts` is **re-exports plus two frontend-local things**, and nothing else
+*(verified)*. `@10x/backend/types` maps to `backend/src/types.ts` through the backend's `exports`
+map, and that file is the single source of truth for the shared vocabulary. Frontend-local:
+`SortOrder` and `COLUMNS` (five entries in state-machine order: backlog, todo, in_progress,
+in_review, done).
 
-## 2. The render/wiring seam
+**`PLAYBOOKS` crosses as a runtime `export {}` while everything else is `import type`.** That reads
+like an inconsistency and is not: a vocabulary is data, and `PLAYBOOKS` is the exact list the backend
+validates against, so re-stating it here is the drift this arrangement exists to prevent. The type
+imports are erased by `verbatimModuleSyntax` (set in the root `tsconfig.json`), and the value import
+is safe **because `backend/src/types.ts` has no imports at all** *(verified — grep for `^import` in
+that file returns nothing)*. That import-freeness is load-bearing: it is what keeps `node:sqlite` and
+every other backend module out of the browser bundle. **Adding an import to `backend/src/types.ts`
+would drag it into the frontend build** *(inferred — not attempted)*.
 
-Behaviour crosses it as a **`handlers` object**. `render.js` reads a button's `data-act` and
-forwards it verbatim — it has no idea what `"spawn"` does — and `app.js` owns the `CARD_ACTIONS`
-dispatch table, guarded by `Object.hasOwn` so an unknown action is dropped rather than thrown.
-Cards are reconciled in place through the `cardEls` map, because a card mid-edit must survive a
-poll landing underneath it; `cardIsProtected` is what holds such a card back for a cycle.
+`Status` is *both* imported and re-exported, because `COLUMNS` needs it in local scope for its
+`satisfies` clause *(verified)*.
 
-## 3. Classes style, attributes carry state
+### `Ticket` here means `BoardTicket`
 
-Two rules, both load-bearing, both stated at the top of `render.js`.
+`export type { BoardTicket as Ticket }`. The board renders **the `GET /tickets` response shape, never
+the stored row** *(verified)*. The backend's `Ticket` deliberately lacks `branch`, `agentName`,
+`agentStatus`, `hasWorktree`, `worktreePath`, `paneId`, `workspaceId`, `busy` and `diagnostics` — all
+of those live only on `BoardTicket`. A component typed against the backend's `Ticket` **compiles and
+then renders nothing** for them, which is the whole failure mode this alias removes. Type against
+`Ticket` from `@/types.ts`; never reach past it into `@10x/backend/types` for a ticket.
 
-**Nothing is located by class.** Every lookup is `document.getElementById`, a `[data-*]` selector or
-a role. There is no class-based `querySelector`, no `classList` read, no `className` read and no
-`closest()` anywhere in `frontend/js/`. *(Verified.)* The one hit for
-`git grep -nE 'classList|className|closest\(' frontend/js/` is `el.className = "card"` in
-`renderColumn` — a **write** of a constant, which is the rule rather than an exception to it.
+## 3. The data layer
 
-**State leaves as an attribute, never as a class:** `data-busy` / `data-blocked` / `data-died` on a
-card, `data-status` on a badge and on each column, `data-icon` on a badge icon, `data-pr-state` on
-a Done card's PR meta, `data-flagged` and `data-race-tag` in diagnostics, `data-empty` on the
-empty-column placeholder, and the native `hidden` attribute on the unowned panel and the
-board-error banner. The composer drawer is the one exception, and only because the platform owns
-it: a `<dialog>`'s `open` is set by `showModal()`/`close()`, never by us.
+**Real data is the default.** `MOCK_MODE` in `frontend/src/lib/api.ts` is
+`import.meta.env["VITE_MOCK_MODE"] === "true"` — only that exact string turns fixtures on, so an
+unset or misspelled variable serves the real board rather than silently serving plausible-looking
+fixtures *(verified)*.
 
-`render.js` *does* emit class names — `card`, `badge`, `primary`, `danger`, `ghost`, `card-top` and
-some thirty in total — but every one is a **static styling handle that JS only ever writes**. None
-is read back, computed from state, or used to find an element. So renaming or deleting a class can
-change how the board looks and **cannot** change what it does, and that single property is what
-makes a restyle reviewable as a restyle. The behaviour hooks are attributes instead: `data-id` and
-`data-act` on cards and buttons, `data-field` on the two edit inputs, `data-empty` on the
-placeholder.
+- `lib/api.ts` is the **whole HTTP seam** — every request the board makes goes through one
+  `request(method, path, body?)` helper, so a read failure and a write failure read the same:
+  method, path, status, and the backend's own error code. It parses the `{error, message?}` JSON
+  envelope every route answers with, and falls back to the status text for a body that is not one
+  (the dev proxy's own 404, an HTML error page). Losing that code would make every failed write
+  read as the same dead button — `transition_has_side_effects` names a caller bug,
+  `not_in_backlog` a race, `operation_in_flight` a double-click *(verified)*.
+  Reads: `getBoard(projectId)` → `/tickets`, where the `ALL_PROJECTS` sentinel is expressed by
+  *omitting* `?project=`, which is how the backend spells "every project"; and `getProjects()` →
+  `/projects`. Writes are being added here one button at a time, so **read the file rather than
+  trusting a list of them** — a button with no wiring is a missing function here, never a
+  half-working handler in a component *(verified: the file's own header states this)*.
+  One write still bypasses the seam: a bare `fetch("/tickets/:id/focus", {method: "POST"})` in
+  `TicketCard.tsx`'s `SteerButton` *(verified)*. `docs/wiring-checklist.md` tracks what is left.
+- `lib/use-board.ts` owns the only timer: `POLL_MS = 1000`, `setInterval`, both GETs in one
+  `Promise.all`. An in-flight tick is **skipped, not queued** — `GET /tickets` does real Herdr work
+  per call (an `agent.list` plus a `worktree.list` per repo), so overlapping polls multiply load for
+  no extra freshness. A failed poll **keeps the last good board** and hangs the message off it as
+  `error`; `App.tsx` renders that as a one-line `role="status"` stale-data banner above the columns,
+  never as an overlay. `current` and the in-flight guard are effect-scoped, keyed on `projectId`,
+  so a stale response cannot overwrite a newer selection. `useBoard` also returns a **`refresh()`**
+  so a write can force an immediate re-read instead of waiting up to a second for the next tick
+  *(verified)*.
+- **Polling is a placeholder, not the design.** The backend already holds a long-lived Herdr
+  subscription and knows the instant anything changes; only the browser is behind. SSE is the
+  intended replacement and is parked with a sketch under *Push board updates with SSE instead of
+  polling* in [parking-lot](./parking-lot.md). Do not re-argue it here.
+- `frontend/src/mock.ts` is retained for design work: fixtures covering every visual state the board
+  can reach, typed against the real response shape so they cannot drift from it *(verified)*.
+  `MOCK_MODE` returns them as a static board and starts no timer.
 
-The mirror problem was fixed too: `#composer-form` was styled by the id JS needs, so the id stayed
-the behaviour hook and `.composer-form` became the styling hook.
+**The Vite dev proxy is what makes any of this same-origin.** `vite.config.ts` proxies `/tickets`,
+`/projects` and `/webhooks` to `http://127.0.0.1:4010`; in production the backend serves the built
+bundle itself. Paths in `api.ts` are therefore relative on purpose, no origin is ever configured, and
+**the zero-dependency backend needs no CORS handling — because it never sees a cross-origin request**
+*(verified)*. `build.outDir` is `dist` with the default asset layout, which matters because the
+backend's static handler allow-lists only `.html/.css/.js/.svg`.
 
-### What adding a column actually cost
+## 4. Two layout rules that are easy to destroy
 
-In Review was the first real test of these seams, and it landed in **four edits and no stylesheet
-change**: a `<div class="column" role="region" aria-labelledby data-status>` in `index.html`, one
-`renderColumn(...)` line in `renderBoard`, one `else if` in the card's action list, and nothing
-else. Done, the fourth column, cost the same shape plus **two lines of CSS**: 4 lines of
-`index.html`, 20 of `render.js`, 4 of `api.js`, 2 of `app.js`, 2 of `styles.css` *(verified from
-the commit diffstat)*. No layout change either time.
+Both are commented at their site; both fail as "the whole page scrolls" rather than as an error.
 
-Two reasons it was that cheap, both worth preserving. `main.board` is a **flex row of `flex: 1;
-min-width: 0` columns**, so an n-th column shares the width without any per-column rule to add or
-a grid template to renumber. And `renderColumn(containerId, countId, status, handlers)` was already
-parameterised by status, so a column is data rather than code.
+**`grid-rows-[minmax(0,1fr)]` on `<main>` in `App.tsx`** *(verified)*. A grid's implicit row is
+`auto`, so without it the row sizes to the tallest column, the columns grow past the viewport, and
+the **page** scrolls instead of each column scrolling inside itself. `min-h-0` on the same element
+does the same job one level up, letting the grid shrink below its content. The column's own
+`min-h-0 flex-1 overflow-y-auto` list in `Column.tsx` depends on both.
 
-The one thing the seams did **not** decide is what a card in a new column may offer. That was a
-real bug found by the exercise: the action list branched `backlog` / `else`, so a ticket in review
-inherited In Progress's Cancel — a button whose endpoint answers 409 from there. **One branch per
-status, never an `else`**, so a new status renders no action rather than the wrong one.
+**`min-h-0` on the sheet body in `TicketSheet.tsx`** *(verified)*. `SheetContent` is a flex column
+and a flex child defaults to `min-height: auto`, so without it the body refuses to shrink and **the
+sheet grows past the viewport** instead of its body scrolling.
 
-## 4. Design tokens
+## 5. The ARIA contracts the e2e suite depends on
 
-`styles.css` declares **77 custom properties, all of them on `:root`** — every colour, space,
-radius and type value in the design. The spacing scale is **named by its current pixel value**
-(`--space-9: 9px`): the design uses fourteen distinct spacings, enumerating them is the finding, and
-a name that lied about its value would make collapsing the list harder rather than easier. Two icons
-live in `:root` rather than in `icons.js` — `--icon-disclosure-closed` and
-`--icon-disclosure-open`, the diagnostics disclosure triangles — because they are CSS `content` and
-JS never renders them.
+UI assertions use accessible semantics only, so a restyle lands without touching a spec. These are
+the four the suite actually locates by; widening any of them into classes or text layout breaks that.
 
-**Adding a token means adding a line, never rewriting the block.** A missing custom property fails
-**silently** — `var(--gone)` resolves to nothing and the element quietly inherits, with no console
-rules hundreds of lines below `:root` (the idle/done badge, the completion checkmark, a card
-accent), so dropping them while adding `--purple` broke three unrelated surfaces and the only
-symptom was a green `+412` rendering purple. Verified in the browser, not by review.
+**Exactly one `<header>`** — in `NavBar.tsx`, and the only one in `frontend/src` *(verified)*. It
+contains the project picker, named solely by `aria-label="Project"` (the visible "Project" text is
+gone). `e2e/board.spec.ts` locates it as
+`page.getByRole("banner").getByRole("combobox", { name: "Project" })`; scoping to the landmark is
+what separates it from the `TicketSheet`'s own `Project` field.
 
-## 5. It polls
+**That picker must stay a native `<select>`.** `ui/native-select.tsx`, not Radix `Select`
+*(verified)*. `board.spec.ts` asserts `picker.getByRole("option", { name })` **without opening
+anything**, and Radix portals its options and mounts them only while open — swapping in `Select`
+makes that assertion find zero options.
 
-`setInterval(loadTickets, 1000)` and `setInterval(loadProjects, 5000)`. A failed poll keeps the
-last-known board on screen and shows the board-error banner with the actual message rather than
-blanking it.
-The 1 s poll is a **placeholder**: the backend already learns of `pane.agent_status_changed` the
-instant it fires, so only the browser is behind. SSE is parked, with a sketch, in
-[parking-lot](./parking-lot.md).
+**Columns are `<section aria-labelledby={`${status}-heading`} data-status={status}>`** in
+`Column.tsx`, so the region's accessible name carries the live count ("Backlog 2") with no duplicated
+string to drift. Two things inside it are contracts, not styling:
 
-## 6. The attach command is built client-side
+- **The count stays inside the `h2`.** Styling it as a pill is safe; moving it out of the heading
+  breaks every `getByRole("region", { name: "Backlog 1" })` in the suite.
+- **The literal `{" "}` between the label and the count is load-bearing.** Flex `gap` is drawn, not
+  text, so without a real whitespace node the accessible name computes as **`Backlog2`** and every
+  column locator misses. **This has regressed once already.**
+- A control belonging to a column goes **outside** the `h2`'s subtree — the New ticket button lives
+  in the column footer for exactly this reason, or it would append its label to the region name.
 
-```js
-const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]", "::1", ""]);
-const host = location.hostname;
-const prefix = LOOPBACK.has(host) ? "herdr" : `herdr --remote ${host}`;
-return `${prefix} agent attach ${ticket.agentName}`;
-```
+**Cards are `<article aria-label={ticket.id}>`** in `TicketCard.tsx` *(verified)*. This is now **the
+only place a ticket id is exposed to assistive tech**, because the id, branch and worktree are
+icon-only copy buttons with no visible text. `resilience.spec.ts` and `spawn.spec.ts` locate a
+specific ticket as `getByRole("region", {name: /^In Review/}).getByRole("article", {name: id})` and
+then `getByTitle` inside it — the badges' `title` is their accessible handle, so which column a card
+is in is part of the contract.
 
-It lives in `state.js`, not on the server, because it needs `location.hostname` — which the server
-cannot know — so a server-side copy would be unreachable duplication. The board is always served
-*from* the Herdr host (the backend needs Herdr's unix socket), so `location.hostname` is always the
-right host: open it on the host and you are already there, so a bare `herdr agent attach` is correct
-and `--remote` would make herdr SSH to itself; open it over the tailnet and that same hostname is
-the one to pass. Zero configuration, correct from either machine. (`--remote` is a global flag, so
-it precedes the subcommand.)
+**Three places the suite is out of date with the board** *(all verified against the working tree,
+none fixed here)*: `board.spec.ts` enumerates **four** column names
+(`["Backlog 1", "In Progress 0", "In Review 0", "Done 0"]`) while `COLUMNS` has five — To Do is
+missing. `board.spec.ts` also asserts a **`Start` button on a Backlog ticket**, but `RunActions` in
+`TicketCard.tsx` scopes Backlog to *Plan* and *To Do* and Start to `todo`. And `spawn.spec.ts`'s
+first test still scopes by `#in-progress-cards [data-id="<id>"]` — DOM structure plus an element id,
+neither of which the React board renders (`resilience.spec.ts` already documents the accessible
+replacement). All three are spec-side work; see [testing](./testing.md).
 
-## 7. What the e2e suite is allowed to locate
+## 6. `capitalize` lies to `textContent`
 
-**UI assertions use accessible semantics only** — a redesign is planned, and this is the contract
-that lets one land without touching the specs. It held: the light re-palette, removing the
-connection pill and moving the composer into a drawer were **18/18 green with no spec edited**.
-The `<header>` is the `banner` landmark, and scoping to it is what separates the board's project
-combobox from the drawer's identically labelled one — now doubly unambiguous, since a closed
-`<dialog>` is out of the accessibility tree entirely.
-Each **column is a `region` labelled by its own heading** via `aria-labelledby`, so its accessible
-name carries the live count (`"Backlog 1"`) with no duplicated string to drift, and the heading
-itself is still assertable. **A control belonging to a column goes beside that heading, never
-inside it** — the New ticket button nested in the `h2` would have made the region's name
-`"Backlog 1 New ticket"`.
-
-**A card is an `article` named by its ticket id**, which is how a spec says "*this* ticket shows the
-finished badge": `getByRole("region", {name: /^In Review/}).getByRole("article", {name: id})`,
-then `getByTitle` inside it — the badges' `title` is their accessible handle. `resilience.spec.ts`
-and the completion test in `spawn.spec.ts` use exactly that, and **which column a card is in is now
-part of the contract**: a settled turn moves the ticket to In Review by itself, so the locator's
-column is the assertion.
-
-**`spawn.spec.ts`'s first test has not been migrated and still scopes by
-`#in-progress-cards [data-id="<id>"]`** — DOM structure plus an element id, which is why
-`id="in-progress-cards"` and the cards' `data-id` must both stay until it is. It is the last place
-the suite breaks its own rule; port it to the locator above. Do not widen any of these into
-asserting on classes or text layout.
+The steer-mode button renders `<span className="capitalize">{steerMode}</span>` over the persisted
+lowercase union member `"local"` / `"remote"` *(verified — `NavBar.tsx`)*. CSS `text-transform`
+changes rendering, not the DOM, so **`textContent` reports `local` while the screen correctly shows
+`Local`**. Asserting on text content here produces a false defect report; this cost real time. Assert
+the accessible name (`aria-label`, which spells the capitalised form explicitly) or take the
+screenshot — never `textContent` on a `capitalize`d node.

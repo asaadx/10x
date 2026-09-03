@@ -189,3 +189,91 @@ A worktree was created on branch `tkt/probe-1`, an OMP agent started in its root
 prompt *"add an exported `subtract(a, b)` to src/index.ts, then commit"* was sent. Result:
 commit `f61fb69` on `tkt/probe-1` containing exactly that function; `main` untouched. Event
 stream captured `working` at 01:41:52 → `done` at 01:42:07.
+
+---
+
+## Result shapes are schema-proven — read them, never infer them (verified)
+
+`schemas.success_response` is `{id, result}`, and `result` is `ResponseResult`: a **58-variant
+discriminated `oneOf`**, every variant keyed by a `type` const (`workspace_created`,
+`worktree_opened`, `pane_list`, `workspace_list`, `agent_started`, `ok`, …) and carrying its
+full property list. A result shape is therefore a schema fact. Read it:
+
+```
+schemas.success_response.$defs.ResponseResult.oneOf[].properties.type.const   ← variant names
+schemas.success_response.$defs.<TypeName>.properties                          ← field types
+```
+
+What the schema does **not** state is which method returns which variant. That mapping — and
+only that — is what a runtime probe is for.
+
+### The false inference this removes
+
+`WorkspaceInfo` carries **no `pane_id`**. That is true, and it is exactly what misleads:
+**`workspace_created` is not a `WorkspaceInfo`.** It wraps `workspace`, `tab` and `root_pane`,
+and `root_pane` is a full `PaneInfo`. So "`WorkspaceInfo` has no `pane_id`, therefore
+`pane.list` is needed after `workspace.create`" is wrong, and it cost this project a
+design round trip. Verified live — one `workspace.create {cwd, label, focus: false}`:
+
+```
+workspace.create → {type: "workspace_created",
+                    workspace: {workspace_id: "wAP", label: …},
+                    tab:       {tab_id: "wAP:t1"},
+                    root_pane: {pane_id: "wAP:p1", cwd: …}}
+pane.list {workspace_id: "wAP"} → the identical single pane
+```
+
+`worktree.create` behaves the same way and `runner.ts` already relies on it
+(`created.root_pane.pane_id`). **Take the pane off the create response.**
+
+**`pane.list` is still required after `worktree.open`** — `worktree_opened` carries
+`workspace` and `worktree` and genuinely has no pane, which is why runner.ts calls it on that
+branch only. That is not dead code; do not delete it by analogy with the create path.
+
+Also verified: `workspace.close {workspace_id}` → `{type: "ok"}`, and the workspace is really
+gone from `workspace.list` afterwards. That is the proven close path for both the failed-start
+rollback and the plan sweep below.
+
+---
+
+## Planning agents — a second, worktree-less sequence
+
+Plan is the Backlog conversation: an agent that talks to the human about what a ticket should
+say, writes the ticket by PATCHing the API, and implements nothing. `backend/src/planner.ts`
+owns it, deliberately apart from `runner.ts`, because almost everything `spawn` does is wrong
+here.
+
+| # | Call | Send | Get back |
+|---|---|---|---|
+| 1 | `agent.get` | `target: <plan name>` | the planner, or `agent_not_found` |
+| 2 | `workspace.create` | `cwd: <project repoPath>`, `label: <plan name>`, `focus: false` | `workspace.workspace_id`, `root_pane.pane_id` |
+| 3 | `agent.start` | `name`, `kind: "omp"`, `pane_id`, `args` | `agent_started` |
+| 4 | `agent.focus` | `target: <plan name>` | `ok` → **return HTTP 200 here** |
+
+What it does **not** do, each for a reason:
+
+- **No worktree, no branch, no port slot.** The planner reads the codebase the human is
+  working in and commits nothing, so a worktree would be an empty branch nobody ever uses, and
+  a port block would spend a tenth of a ten-wide pool on a conversation. `reservePortSlot` is
+  called by `/spawn` and nowhere else.
+- **No `agent.prompt`, no `--wait`, no readiness poll.** The prompt file is the whole
+  instruction and the planner's first act is to ask the human a question. Anything that waited
+  for it to settle would block until the conversation ended. The readiness poll exists only to
+  keep `agent.prompt` off an agent reporting `unknown`; with no prompt there is nothing to
+  lose.
+- **No status write.** Promoting the ticket out of backlog is the human deciding the plan is
+  ready; `prompts/plan.md` tells the agent so explicitly.
+
+What it keeps from `spawn`, and must:
+
+- **The `agent_pane_busy` retry.** `workspace.create` hands over a pane whose shell may not
+  have reached its interactive prompt, which is the same 2-in-6 failure measured above.
+  Without the retry Plan fails about a third of the time.
+- **Step 2 before step 3, and the rollback between them.** If `agent.start` fails after the
+  workspace exists, `workspace.close` it before returning the error — the sweep that would
+  otherwise collect it only runs at boot.
+- **Idempotence at step 1.** A live planner is re-focused, never replaced: Herdr keeps panes
+  and agents alive across a backend restart, so a second Plan click must resume the
+  conversation rather than destroy its context. Only `agent_not_found` counts as absent
+  ([agent names are session-wide](./naming.md)); any other code is a fault, because reading a
+  Herdr hiccup as absence starts a rival planner beside a live conversation.
