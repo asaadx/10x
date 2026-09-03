@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getBoard, getProjects, MOCK_MODE } from "@/lib/api.ts";
 import { MOCK_PROJECTS, MOCK_TICKETS } from "@/mock.ts";
@@ -32,8 +32,18 @@ const MOCK_BOARD: Board = {
   error: null,
 };
 
-export function useBoard(projectId: string): Board {
+/**
+ * `refresh` is how a write gets its own result on screen: a mutation awaits its POST and then
+ * asks for the board immediately, instead of leaving the card up to a whole poll interval
+ * behind the state it just changed.
+ */
+export function useBoard(projectId: string): Board & { refresh: () => void } {
   const [board, setBoard] = useState<Board>({ tickets: [], projects: [], unowned: [], error: null });
+  // Written by the effect below and read by `refresh`, so a manual refresh runs the effect's
+  // OWN poll — the current project's, sharing its in-flight guard — rather than a second
+  // request that would race it. A no-op until the first effect run, which is also what makes
+  // the mock board's `refresh` inert with nothing to special-case.
+  const poll = useRef<(manual: boolean) => Promise<void>>(async () => {});
 
   useEffect(() => {
     // Fixtures are static, so there is nothing to poll for and no timer is started.
@@ -49,11 +59,25 @@ export function useBoard(projectId: string): Board {
     // first read behind a response nobody will use.
     let inFlight = false;
 
-    const poll = async () => {
-      // Skip the tick instead of queueing behind the one still running. `GET /tickets` does
-      // real Herdr work per call — an `agent.list` plus a `worktree.list` per repo — so
-      // overlapping polls multiply that load for no extra freshness.
-      if (inFlight) return;
+    // A manual refresh that arrived while a request was already running, to be served the
+    // moment that one lands. One bit, not a queue: two refreshes waiting on the same response
+    // want the same single re-read.
+    let queued = false;
+
+    /**
+     * `manual` is the whole difference between the two callers. A timer tick that lands on a
+     * request still running is DROPPED: `GET /tickets` does real Herdr work per call — an
+     * `agent.list` plus a `worktree.list` per repo — so overlapping polls multiply that load
+     * for no extra freshness. A refresh asked for by a write is instead QUEUED and run as soon
+     * as the current request lands, because dropping it would put the write's own result up to
+     * a full second away, which is the wait it exists to remove. Either way exactly one
+     * request is ever in flight, which is the guarantee the guard is here for.
+     */
+    const run = async (manual: boolean) => {
+      if (inFlight) {
+        if (manual) queued = true;
+        return;
+      }
       inFlight = true;
       try {
         const [response, projects] = await Promise.all([getBoard(projectId), getProjects()]);
@@ -70,15 +94,21 @@ export function useBoard(projectId: string): Board {
       } finally {
         inFlight = false;
       }
+      if (queued && current) {
+        queued = false;
+        await run(false);
+      }
     };
 
-    void poll();
-    const timer = setInterval(() => void poll(), POLL_MS);
+    poll.current = run;
+    void run(false);
+    const timer = setInterval(() => void run(false), POLL_MS);
     return () => {
       current = false;
       clearInterval(timer);
     };
   }, [projectId]);
 
-  return MOCK_MODE ? MOCK_BOARD : board;
+  const refresh = useCallback(() => void poll.current(true), []);
+  return { ...(MOCK_MODE ? MOCK_BOARD : board), refresh };
 }

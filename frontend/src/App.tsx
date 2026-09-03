@@ -8,12 +8,13 @@ import { ALL_PROJECTS, matchesProject, ticketsForColumn } from "@/lib/board.ts";
 import { initialSteerMode, storeSteerMode, type SteerMode } from "@/lib/steer-mode.ts";
 import { applyTheme, initialTheme, type Theme } from "@/lib/theme.ts";
 import { useBoard } from "@/lib/use-board.ts";
-import { COLUMNS, type SortOrder, type Ticket } from "@/types.ts";
+import { COLUMNS, type SortOrder, type Status, type Ticket } from "@/types.ts";
 
 /**
- * Read path only: the board renders live data from `useBoard`, and no button does anything
- * yet. The write path is still unwired and is the next step — deliberately separate, so a bug
- * in the redesign cannot be confused with a bug in the plumbing.
+ * The write path is wired only as far as Plan mode needs: the composer creates, and a card's
+ * Plan, To Do and Backlog buttons act. Start, Cancel, Accept, Reject and the two deletes are
+ * still inert on purpose — each has a route, none has a caller — so a button that does
+ * nothing is a missing handler rather than a broken one.
  */
 export function App() {
   const [theme, setTheme] = useState<Theme>(() => initialTheme());
@@ -25,11 +26,16 @@ export function App() {
   const [order, setOrder] = useState<SortOrder>("newest");
   const [sheetOpen, setSheetOpen] = useState(false);
   const [sheetTicket, setSheetTicket] = useState<Ticket | null>(null);
+  // Which column's New ticket button opened the composer. A ticket is always CREATED in
+  // `backlog` — `INSERT_TICKET` hardcodes it, because a new ticket is a raw idea — so this is
+  // what lets the To Do footer's button do what it looks like it does instead of dropping the
+  // card in a different column.
+  const [createInto, setCreateInto] = useState<Status>("backlog");
 
   useEffect(() => applyTheme(theme), [theme]);
   useEffect(() => storeSteerMode(steerMode), [steerMode]);
 
-  const { tickets, projects, error } = useBoard(projectId);
+  const { tickets, projects, error, refresh } = useBoard(projectId);
 
   // The backend already filters when a project is selected; this also covers the sentinel and
   // the tick between a picker change and its first response.
@@ -79,6 +85,7 @@ export function App() {
               status === "backlog" || status === "todo"
                 ? () => {
                     setSheetTicket(null);
+                    setCreateInto(status);
                     setSheetOpen(true);
                   }
                 : undefined
@@ -87,6 +94,7 @@ export function App() {
               setSheetTicket(ticket);
               setSheetOpen(true);
             }}
+            onTicketChanged={refresh}
           />
         ))}
       </main>
@@ -99,6 +107,8 @@ export function App() {
         projects={projects}
         defaultProjectId={projectId === ALL_PROJECTS ? "" : projectId}
         ticket={sheetTicket}
+        createInto={createInto}
+        onCreated={refresh}
       />
     </div>
   );
