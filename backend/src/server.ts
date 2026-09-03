@@ -12,6 +12,12 @@
  *    request and never stored (memory/reconciliation.md, memory/naming.md). The board therefore cannot drift from reality;
  *    at worst it is a second stale.
  */
+// FIRST IMPORT, AND THE POSITION IS LOAD-BEARING. This one loads the repo-root `.env`, and
+// ESM evaluates imports in order: `db.ts` below reads `STATE_DIR` and `DB_PATH` at module
+// load and opens the database right there, so an `./env.ts` moved beneath it would read the
+// defaults and silently open `~/.10x/10x.db` instead of the configured one — no error, just
+// the wrong database. `env.test.ts` fails if this line stops being the first import.
+import "./env.ts";
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";
 import { readFile, realpath, stat } from "node:fs/promises";

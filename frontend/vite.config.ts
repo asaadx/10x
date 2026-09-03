@@ -8,9 +8,9 @@ export default defineConfig({
   resolve: {
     alias: { "@": path.resolve(import.meta.dirname, "./src") },
   },
-  // One .env for the whole repo, at the root, so the backend's `node --env-file=.env` and
-  // Vite read the same file. Without this, `envDir` defaults to the Vite root (this
-  // directory) and the client half drifts into a second file.
+  // One .env for the whole repo, at the root, so the backend (which loads it itself, in
+  // `backend/src/env.ts`) and Vite read the same file. Without this, `envDir` defaults to
+  // the Vite root (this directory) and the client half drifts into a second file.
   //
   // Safe despite GITHUB_TOKEN living in that file: Vite exposes only VITE_-prefixed
   // variables to client code, and inlines only those into the bundle. Everything else in

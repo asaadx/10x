@@ -97,8 +97,9 @@ why transient statuses were rejected, never pointing 10x at its own repo, and ha
 **[architecture](./architecture.md)** — how the 10x **server** is built: zero dependencies, the
 module map, **stored vs derived**, the database schema with its monotonic ticket counter and
 port-slot pool, all sixteen endpoints plus the static asset route, the spawn request lifecycle,
-and what is deliberately not persisted.
-`node:sqlite · schema · next_number · endpoints · RunSpec · stored vs derived · port slots · MAX_PORT_SLOTS · port_pool_exhausted · static route · realpath containment · prompts/ · loadPrompt · import.meta.dirname`
+what is deliberately not persisted, and how `.env` is loaded (`env.ts`, the first import in
+`server.ts`, no `--env-file` anywhere).
+`node:sqlite · schema · next_number · endpoints · RunSpec · stored vs derived · port slots · MAX_PORT_SLOTS · port_pool_exhausted · static route · realpath containment · prompts/ · loadPrompt · import.meta.dirname · env.ts · loadEnvFile · .env`
 
 **[github](./github.md)** — publishing a branch as a PR (token redaction on every error path,
 `owner/repo` read from `origin`, an existing PR is adopted not failed), and the facts the unbuilt

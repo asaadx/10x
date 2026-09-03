@@ -25,7 +25,7 @@ forgotten new spec merely runs slower under `e2e:full` and never spawns unexpect
 
 **The glob matters and so do the quotes.** `node --test src` does not pick up `.ts` files —
 verified: it reports `✖ src (40ms) 'test failed'`. Quote the glob so the shell hands it to Node
-rather than expanding it. Current state: **118 tests, 27 suites, 0 failures**, `duration_ms` ≈ 400.
+rather than expanding it. Current state: **197 tests, 44 suites, 0 failures**, `duration_ms` ≈ 1050.
 
 | Target | Why it is tested |
 | --- | --- |
@@ -41,6 +41,7 @@ rather than expanding it. Current state: **118 tests, 27 suites, 0 failures**, `
 | `pullRequestUpdate` | The webhook's whole decision surface, and pure, so it costs nothing to pin. Derives state from `merged` + `state` rather than `action`, so pinning **closed-but-unmerged → `closed`, not `merged`** is what stops the delete guard later reading a rejected PR as a safe one. Also pins that a missing LOC pair still yields a valid update, and that a non-`pull_request` body yields `null` instead of throwing. |
 | `setPullRequestState` | Matched by `pr_url`, because PR numbers collide across repos. Pins that an unknown URL returns `false` and leaves every row untouched — a webhook for somebody else's repo is normal traffic, not an error. |
 | `killDevServers` | Killing by port alone would shoot a stranger that happens to share the ticket's range, so the containment check — the process's `/proc/<pid>/cwd` must resolve inside this worktree — is the whole safety property. Pinned against **real listeners** in temp dirs: the in-worktree one is killed, the out-of-worktree one is reported in `skipped` and left **alive**. Falsifiable: drop the containment check and the stranger dies. `parseListeners` is pinned separately against captured `ss -lptnH` output, including that a Node listener reports its process name as `MainThread` — so nothing may filter on the name. |
+| the `./env.ts` import position | `env.ts` loads the repo-root `.env` and only works as the **first import in `server.ts`**: `db.ts` reads `STATE_DIR` and `DB_PATH` at module load and opens the database there, so an import moved below it opens `~/.10x/10x.db` with **no error at all**. The failure is silent and there is no linter to catch a human tidying the imports, so `env.test.ts` reads `server.ts` and fails unless that line is the first `import`. Falsifiable: moving it below the `db.ts` import reddens the test (verified). It also pins the bare side-effect form — a named export would have to be *called*, after the imports, which is already too late. |
 
 The tests deliberately cover the three things that have actually broken — event-name normalisation,
 the idle-or-done readiness predicate, and the CAS — plus the naming invariants that guard them.

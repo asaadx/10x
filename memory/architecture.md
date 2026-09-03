@@ -64,13 +64,25 @@ So: no constructor parameter properties, no `enum`. `HerdrError` in `backend/src
 
 `tsconfig.json` sets `erasableSyntaxOnly`, so `pnpm typecheck` rejects a parameter property or an `enum` instead of letting Node discover it at load time. The typechecker is the guard, not convention.
 
+### The backend loads `.env` itself
+
+`backend/src/env.ts` calls `process.loadEnvFile` on the **repo-root `.env`** and is the **first import in `server.ts`**. There is no `--env-file` flag on any script, so there is none to forget: plain `node backend/src/server.ts` — and `pnpm dev:api`, whose `dev` script never passed one — sees the file. It is a bare side-effect import rather than a `loadEnv()` someone calls, because a call would run after the import block, which is already too late. The path comes from `import.meta.dirname`, never `process.cwd()`: the server is started from the repo root (e2e, `plan.test.ts`, every real run) and from `backend/` (`pnpm dev:api`). Three properties of `loadEnvFile`, all verified on `v24.19.0`, shape the module:
+
+- **It does not override a variable already in the environment** — so the unit suite and `e2e/fixtures.ts` keep winning with the `STATE_DIR`, `DB_PATH` and `PORT` they pass, while `.env` still supplies `GITHUB_TOKEN`. *(Verified end to end: a `.env` setting `STATE_DIR` did not displace one passed to the child, and no directory was created at the file's path.)*
+- **Every failed open is reported as `ENOENT`, `EACCES` included** — a `.env` with mode `000` throws `ENOENT` where `readFileSync` throws `EACCES`. So the error code alone cannot distinguish "no `.env`" from "a `.env` we may not read", and `existsSync` decides: absent is swallowed (a fresh clone and CI have none, and both must boot), present-but-unopenable throws with its own message rather than Node's misleading "no such file". *(Verified: mode `000` → exit 1 at boot; file removed → boots with `GITHUB_TOKEN` unset.)*
+- **Import order is load-bearing and its failure is silent.** `db.ts` reads `STATE_DIR` and `DB_PATH` at module load and opens the database right there, and `ports.ts` reads its pool configuration at load too, so an `./env.ts` moved below either reads the defaults — opening `~/.10x/10x.db` instead of the configured file, with no error at all. `env.test.ts` reads `server.ts` and fails unless that import is the first one; the guard is a **test** because this repo has no linter and nothing else would notice a human tidying the imports. *(Verified falsifiable: moving the import below the `db.ts` one reddens that test.)*
+
+A malformed line is **not** an error to `loadEnvFile`: a line with no `=`, or a stray `NUL`, is skipped, and `A="unterminated` yields the literal `"unterminated`. Nothing in the code can catch that, so `.env.example` is the only guard against a typo.
+
+The unit suite never imports `env.ts` — only `server.ts` does — so `pnpm test` still runs with no `.env` loaded and cannot drift onto the real `~/.10x/10x.db`.
+
 ## 2. Module map
 
 Line counts are `wc -l`, current as of this node.
 
 | File | Lines | Responsibility | I/O |
 | --- | --- | --- | --- |
-| `backend/src/server.ts` | 743 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
+| `backend/src/server.ts` | 844 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
 | `backend/src/runner.ts` | 525 | `spawn` / `teardown` / `retireAgent` for one ticket; the readiness guard; event-stream reopen | Herdr socket, fs, `git` via `execFile` |
 | `backend/src/db.ts` | 361 | Schema + in-place migration, connection, row types, the status and PR-state parse boundaries, `claimTicket` CAS, port-slot reserve/release, `setPullRequest`, `setPullRequestState` | SQLite (opens DB at import) |
 | `backend/src/ticket-store.ts` | 294 | Ticket persistence + `/tickets` handler bodies, input narrowing | SQLite |
@@ -95,6 +107,8 @@ Line counts are `wc -l`, current as of this node.
 | `backend/src/herdr.test.ts` | 107 | Tests for `onClose`, against a real unix socket | `node:net` (temp socket) |
 | `backend/src/diagnostics.ts` | 40 | **Pure.** Per-run diagnostics record + `freshDiagnostics()` | none |
 | `backend/src/panes.ts` | 39 | `focusAgent`, `paneLocation`, `attachCommand` | Herdr socket (`attachCommand` is pure) |
+| `backend/src/env.ts` | 38 | Loads the repo-root `.env` via `process.loadEnvFile`; the first import in `server.ts` | fs (one read) |
+| `backend/src/env.test.ts` | 35 | Guards that the `./env.ts` import stays first in `server.ts` | fs (read only) |
 | `frontend/` | 1630 | The board's browser half: markup, stylesheet, five ES modules — see [frontend](./frontend.md) | `fetch` |
 
 `lifecycle.ts`, `ports.ts` and `diagnostics.ts` are the only import-free modules, deliberately: they hold the logic that has actually broken, or that would break silently, so it must be testable without a Herdr session. A port collision surfaces as an `EADDRINUSE` inside somebody's worktree, never as an error on the board, which is exactly why the allocation policy lives apart from the SQL that stores it. `panes.ts` exports only `focusAgent`: the attach command is built in the frontend instead, because it needs `location.hostname` — which the server cannot know — so a server-side copy would be unreachable duplication ([frontend](./frontend.md)).
