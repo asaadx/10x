@@ -12,8 +12,12 @@
  * (`planAgentNameFor`, whose suffix is what keeps Start from adopting a planner) and the
  * prompt loader.
  *
- * No `agent.prompt` and no `--wait` anywhere: the planner's first act is to ask the human a
- * question, so anything that waited for it to settle would block until the conversation ends.
+ * The one thing it must do that looks like `runner.ts`: send an opening `agent.prompt` after
+ * the start. `--append-system-prompt` installs a system prompt, it does not create a turn, so
+ * an agent that is only started sits there saying nothing. What is forbidden is *waiting* on
+ * that message — no `--wait`, no completion subscription, nothing that blocks on the
+ * conversation — because the planner's first act is to ask the human a question and the
+ * answer may be hours away. Send it and return.
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -22,6 +26,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { HerdrError, request } from "./herdr.ts";
 import { AGENT_NAME_RE, planAgentNameFor } from "./lifecycle.ts";
 import { loadPrompt } from "./prompts.ts";
+import type { ChecklistItem, Playbook } from "./types.ts";
 
 /** Same resolution as runner.ts: the prompt file must live outside any repo the agent sees. */
 const STATE_DIR = process.env.STATE_DIR ?? join(homedir(), ".10x");
@@ -29,11 +34,30 @@ const STATE_DIR = process.env.STATE_DIR ?? join(homedir(), ".10x");
 /** How long a fresh pane may take to become an available shell before we give up. */
 const PANE_WAIT_MS = 15_000;
 
-/** What a plan run needs. `repoPath` is the project's main checkout — there is no worktree. */
+/**
+ * The opening prompt's retry bounds, mirrored from runner.ts rather than re-tuned. An
+ * `agent.prompt` sent before Herdr has registered the freshly started agent fails
+ * `agent_not_ready` (memory/spawn.md), and that race is the same one for both agent kinds.
+ */
+const PROMPT_ATTEMPTS = 40;
+const PROMPT_RETRY_MS = 250;
+
+/**
+ * What a plan run needs. `repoPath` is the project's main checkout — there is no worktree.
+ *
+ * The ticket's own fields are carried for the opening message, not for the system prompt.
+ * `prompts/plan.md` tells the agent to skip anything already filled in and use it as context,
+ * and it can only obey that if it is handed the card as it stands.
+ */
 export type PlanSpec = {
   ticketId: string;
   projectId: string;
   number: number;
+  title: string;
+  description: string;
+  playbook: Playbook;
+  taskBreakdown: ChecklistItem[];
+  acceptanceCriteria: ChecklistItem[];
   repoPath: string;
 };
 
@@ -77,8 +101,11 @@ async function livePlanner(name: string): Promise<AgentRecord | undefined> {
  * Every other code is a real fault (bad name, missing pane, agent kind not installed) and
  * surfaces immediately: a fatal error retried is just a slower error.
  *
- * runner.ts's readiness poll is deliberately NOT mirrored. It exists so `agent.prompt` is not
- * sent to an agent reporting `unknown`, and this module never prompts.
+ * runner.ts's readiness poll is still NOT mirrored, but the reason has changed now that this
+ * module prompts. That poll exists to keep `agent.prompt` off an agent reporting `unknown`;
+ * here the same race is absorbed where it actually surfaces, by the `agent_not_ready` retry in
+ * `promptPlanAgent`, on runner.ts's own bounds. A planner has no completion subscription to
+ * arm before its first turn, so knowing the moment it became ready buys nothing else.
  */
 async function startPlanAgent(name: string, paneId: string, promptFile: string): Promise<void> {
   const deadline = Date.now() + PANE_WAIT_MS;
@@ -108,6 +135,58 @@ async function startPlanAgent(name: string, paneId: string, promptFile: string):
 }
 
 /**
+ * The opening message: the card as it stands, and nothing else.
+ *
+ * Everything about how to behave lives in `prompts/plan.md` — duplicating any of it here would
+ * make two places to change. This is context plus a go signal. Empty fields are named as empty
+ * rather than omitted, so a ticket created with only a title sends the agent straight to the
+ * description instead of asking about one it can see is blank.
+ */
+function openingMessage(spec: PlanSpec): string {
+  // An empty list joins to "", so the `|| "(empty)"` below names it rather than leaving a
+  // heading with nothing under it.
+  const checked = (item: ChecklistItem) => `- [${item.done ? "x" : " "}] ${item.text}`;
+
+  return [
+    `TICKET ${spec.projectId.toUpperCase()}-${spec.number}: ${spec.title}`,
+    "",
+    "Description:",
+    spec.description.trim() || "(empty)",
+    "",
+    `Playbook: ${spec.playbook}`,
+    "",
+    "Task breakdown:",
+    spec.taskBreakdown.map(checked).join("\n") || "(empty)",
+    "",
+    "Acceptance criteria:",
+    spec.acceptanceCriteria.map(checked).join("\n") || "(empty)",
+    "",
+    "That is the whole ticket. Start the conversation.",
+  ].join("\n");
+}
+
+/**
+ * Send the opening turn, and return the moment Herdr has taken it.
+ *
+ * `agent_not_ready` from `agent.prompt` means the agent is not registered yet — the fresh-pane
+ * race (memory/gotchas.md), expected immediately after `agent.start` and never a reason to
+ * fail the Plan. Same 40 attempts at 250ms the implementation path uses. Every other code is a
+ * real fault and surfaces at once.
+ */
+async function promptPlanAgent(name: string, text: string): Promise<void> {
+  for (let attempt = 1; attempt <= PROMPT_ATTEMPTS; attempt++) {
+    try {
+      await request("agent.prompt", { target: name, text });
+      return;
+    } catch (err) {
+      const notReady = err instanceof HerdrError && err.code === "agent_not_ready";
+      if (!notReady || attempt === PROMPT_ATTEMPTS) throw err;
+      await delay(PROMPT_RETRY_MS);
+    }
+  }
+}
+
+/**
  * Start (or re-join) the planning conversation for one ticket, and leave the user looking at
  * it. The caller owns the status guard: Plan is the Backlog conversation and never writes a
  * status of its own.
@@ -130,6 +209,11 @@ export async function startPlanning(spec: PlanSpec, apiUrl: string): Promise<Pla
 
   const existing = await livePlanner(name);
   if (existing) {
+    // Focus only — never a second prompt. This mirrors runner.ts's re-attach guard: the
+    // conversation is already under way, and re-prompting would restart it mid-flight and
+    // discard the context the human has spent the last ten minutes supplying. `agent.prompt`
+    // would usually refuse anyway, because an agent waiting on a human question is `blocked`
+    // and a blocked agent is refused with `agent_blocked` (memory/agent-status.md).
     await request("agent.focus", { target: name });
     return {
       agentName: name,
@@ -165,21 +249,27 @@ export async function startPlanning(spec: PlanSpec, apiUrl: string): Promise<Pla
 
   try {
     await startPlanAgent(name, paneId, promptFile);
+    await promptPlanAgent(name, openingMessage(spec));
   } catch (err) {
     // A failed Plan must not leave a pane behind: the sweep that would collect it only runs
     // at boot, and until then the user is looking at an empty workspace that a retry cannot
-    // reuse. Reported and swallowed — the start failure is the error worth returning.
+    // reuse. The opening prompt sits inside this guard for a second reason — a planner that
+    // started but never got its first turn is mute, and the re-focus path above deliberately
+    // does not prompt, so leaving it alive would make every later click land on a dead agent.
+    // Reported and swallowed — the failure that got us here is the error worth returning.
     await request("workspace.close", { workspace_id: workspaceId }).catch((closeErr: unknown) =>
       console.warn(
-        `[${name}] agent.start failed and workspace ${workspaceId} could not be closed:`,
+        `[${name}] plan start failed and workspace ${workspaceId} could not be closed:`,
         closeErr,
       ),
     );
     throw err;
   }
 
-  // The point of the button: the user lands in the conversation. This is the second place in
-  // 10x that deliberately steals focus (see panes.ts), and for the same reason.
+  // Focus last, and only once the agent has been given something to do. The point of the
+  // button is that the user lands in a live conversation; focusing first would drop them into
+  // a pane that looks dead for as long as the prompt takes to land. This is the second place
+  // in 10x that deliberately steals focus (see panes.ts), and for the same reason.
   await request("agent.focus", { target: name });
 
   return { agentName: name, workspaceId, paneId, reused: false };

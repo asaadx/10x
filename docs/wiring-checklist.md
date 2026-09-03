@@ -37,11 +37,12 @@ Without these a ticket cannot travel Backlog to Done for real.
       `/status` remains the only door.
 
 - [x] **`Plan` starts the planning agent.** `startPlanning(id)` POSTs `/tickets/:id/plan`, which
-      creates a workspace, a pane and an agent before it answers — so the button shows a spinner
-      and reads `Planning...` for the whole call and is disabled throughout, alongside `To Do`.
-      A second POST would answer 409 `operation_in_flight`, and a planner that really did start
-      twice would be a second paid agent. Plan never changes the ticket's status: the planner
-      PATCHes its task breakdown and acceptance criteria onto the ticket, and a human promotes.
+      creates a workspace and a pane, starts the agent and sends it the ticket as its opening
+      message before it answers — so the button shows a spinner and reads `Planning...` for the
+      whole call and is disabled throughout, alongside `To Do`. A second POST would answer 409
+      `operation_in_flight`, and a planner that really did start twice would be a second paid
+      agent. Plan never changes the ticket's status: the planner PATCHes its task breakdown and
+      acceptance criteria onto the ticket, and a human promotes.
 
 - [x] **`To Do` is primary exactly when the ticket has a plan**, defined as `taskBreakdown` and
       `acceptanceCriteria` both non-empty. That is the whole readiness signal — the agent

@@ -52,10 +52,12 @@ normalised. The CLI is *not* a thin wrapper over this API.
 
 **[spawn](./spawn.md)** — the four-call sequence, and the single most important implementation
 detail in the project: **`agent.start` does not wait for readiness; the CLI does.** Includes the
-strace evidence, the 6-trial race table, the required guard, and measured timings. Also the
-**planning** sequence — a worktree-less, portless, promptless agent — and the proof that
-**result shapes are schema-proven**, `workspace_created` carrying its own `root_pane`.
-`worktree.create · agent.start · agent.prompt · agent_pane_busy · interactive_ready · readiness guard · plan · workspace.create · root_pane · ResponseResult`
+strace evidence, the 6-trial race table, the required guard, and measured timings. Also
+**`--append-system-prompt` starts no turn, so every started agent needs an opening
+`agent.prompt`**; the **planning** sequence — a worktree-less, portless agent that is prompted
+but never waited on; and the proof that **result shapes are schema-proven**, `workspace_created`
+carrying its own `root_pane`.
+`worktree.create · agent.start · agent.prompt · opening prompt · agent_pane_busy · interactive_ready · readiness guard · plan · workspace.create · root_pane · ResponseResult`
 
 **[agent-status](./agent-status.md)** — `idle` and `done` are the **same** state; the first `idle`
 arrives *before* the prompt; a turn ending is not the ticket succeeding; a prose question is

@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 // Type-only, so it erases at runtime and hoisting it above the env assignments is harmless.
 import type { PlanTicket } from "./reconcile.ts";
+import type { PlanSpec } from "./planner.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "10x-plan-test-"));
 const socketPath = join(dir, "herdr.sock");
@@ -129,6 +130,7 @@ function liveHerdr(options: { startFails?: { code: string; message: string } } =
         started.add(String(p["name"]));
         return { result: { type: "agent_started", agent: { name: p["name"] } } };
       },
+      "agent.prompt": () => ({ result: { type: "agent_prompted" } }),
       "agent.focus": () => ({ result: { type: "ok" } }),
       "workspace.close": () => ({ result: { type: "ok" } }),
     } satisfies Record<string, Handler>,
@@ -162,6 +164,23 @@ const planTicket = (id: string, number: number, status: PlanTicket["status"]): P
   projectId: PROJECT_ID,
   number,
   status,
+});
+
+/**
+ * A `PlanSpec` for a card in the state Plan is usually clicked on: a title and nothing else.
+ * The opening message is built from these, so the empty fields are the interesting default.
+ */
+const planSpec = (ticketId: string, number: number, over: Partial<PlanSpec> = {}): PlanSpec => ({
+  ticketId,
+  projectId: PROJECT_ID,
+  number,
+  title: `ticket ${ticketId}`,
+  description: "",
+  playbook: "Fullstack",
+  taskBreakdown: [],
+  acceptanceCriteria: [],
+  repoPath: REPO_PATH,
+  ...over,
 });
 
 // ---------------------------------------------------------------------------
@@ -229,21 +248,21 @@ after(async () => {
 // ---------------------------------------------------------------------------
 
 describe("startPlanning", () => {
-  test("starts a workspace, then the agent, then focuses — and prompts nothing", async () => {
+  test("starts a workspace, starts the agent, prompts it, then focuses", async () => {
     const fake = liveHerdr();
     reset(fake.handlers);
 
-    const result = await startPlanning(
-      { ticketId: "t-seq", projectId: PROJECT_ID, number: 1, repoPath: REPO_PATH },
-      API_URL,
-    );
+    const result = await startPlanning(planSpec("t-seq", 1), API_URL);
 
-    // The order IS the contract: the pane must exist before the agent, and the user must be
-    // moved only once there is something to look at.
+    // The order IS the contract. The pane must exist before the agent; the agent must be
+    // prompted before the user is moved, because `--append-system-prompt` configures an agent
+    // without starting a turn — focus-then-prompt lands the human in a silent pane, and
+    // prompt-less lands them in one that never speaks at all.
     assert.deepEqual(sequence(), [
       "agent.get",
       "workspace.create",
       "agent.start",
+      "agent.prompt",
       "agent.focus",
     ]);
     assert.deepEqual(result, {
@@ -275,19 +294,53 @@ describe("startPlanning", () => {
     const prompt = await readFile(promptFile, "utf8");
     assert.match(prompt, new RegExp(`PATCH ${API_URL}/tickets/t-seq`));
     assert.doesNotMatch(prompt, /\{\{/);
+
+    // Exactly one opening turn, carrying the card as it stands. `prompts/plan.md` tells the
+    // agent to skip anything already filled in, which it can only do having been shown the
+    // fields — and an empty description must read as empty, not as a question to ask.
+    assert.equal(calls.filter((c) => c.method === "agent.prompt").length, 1);
+    const opening = paramsOf("agent.prompt") as { target: string; text: string };
+    assert.equal(opening.target, "ticket-plantest-1-plan");
+    assert.match(opening.text, /^TICKET PLANTEST-1: ticket t-seq$/m);
+    assert.match(opening.text, /Description:\n\(empty\)$/m);
+  });
+
+  test("the opening message carries the whole card, not just the title", async () => {
+    const fake = liveHerdr();
+    reset(fake.handlers);
+
+    await startPlanning(
+      planSpec("t-full", 6, {
+        title: "Rate limit the API",
+        description: "429 after 100 req/min",
+        playbook: "Backend",
+        taskBreakdown: [{ text: "pick a bucket", done: true }],
+        acceptanceCriteria: [{ text: "101st request is refused", done: false }],
+      }),
+      API_URL,
+    );
+
+    const { text } = paramsOf("agent.prompt") as { text: string };
+    assert.match(text, /^TICKET PLANTEST-6: Rate limit the API$/m);
+    assert.match(text, /Description:\n429 after 100 req\/min$/m);
+    assert.match(text, /^Playbook: Backend$/m);
+    assert.match(text, /^Task breakdown:\n- \[x\] pick a bucket$/m);
+    assert.match(text, /^Acceptance criteria:\n- \[ \] 101st request is refused$/m);
   });
 
   test("a second Plan re-focuses the live planner instead of starting a rival", async () => {
     const fake = liveHerdr();
     reset(fake.handlers);
-    const spec = { ticketId: "t-again", projectId: PROJECT_ID, number: 2, repoPath: REPO_PATH };
+    const spec = planSpec("t-again", 2);
 
     await startPlanning(spec, API_URL);
     calls = [];
 
     const again = await startPlanning(spec, API_URL);
 
-    // Nothing created and nothing restarted: the conversation and its context survive.
+    // Nothing created and nothing restarted, and above all nothing prompted: re-prompting
+    // would restart the conversation mid-flight, and a planner waiting on a human is
+    // `blocked`, which `agent.prompt` refuses outright.
     assert.deepEqual(sequence(), ["agent.get", "agent.focus"]);
     assert.deepEqual(again, {
       agentName: "ticket-plantest-2-plan",
@@ -305,10 +358,7 @@ describe("startPlanning", () => {
     });
 
     await assert.rejects(
-      startPlanning(
-        { ticketId: "t-fault", projectId: PROJECT_ID, number: 3, repoPath: REPO_PATH },
-        API_URL,
-      ),
+      startPlanning(planSpec("t-fault", 3), API_URL),
       /agent_pane_not_found/,
     );
     assert.deepEqual(sequence(), ["agent.get"]);
@@ -319,10 +369,7 @@ describe("startPlanning", () => {
     reset(fake.handlers);
 
     await assert.rejects(
-      startPlanning(
-        { ticketId: "t-fail", projectId: PROJECT_ID, number: 4, repoPath: REPO_PATH },
-        API_URL,
-      ),
+      startPlanning(planSpec("t-fail", 4), API_URL),
       /agent_kind_not_installed/,
     );
 
@@ -349,10 +396,7 @@ describe("startPlanning", () => {
       },
     });
 
-    const result = await startPlanning(
-      { ticketId: "t-busy", projectId: PROJECT_ID, number: 5, repoPath: REPO_PATH },
-      API_URL,
-    );
+    const result = await startPlanning(planSpec("t-busy", 5), API_URL);
     assert.equal(result.reused, false);
     assert.equal(attempts, 2);
     assert.deepEqual(sequence(), [
@@ -360,7 +404,51 @@ describe("startPlanning", () => {
       "workspace.create",
       "agent.start",
       "agent.start",
+      "agent.prompt",
       "agent.focus",
+    ]);
+  });
+
+  test("agent_not_ready on the opening prompt is retried, not surfaced as a failed Plan", async () => {
+    // `agent.start` returns before Herdr has registered the agent (memory/spawn.md), so the
+    // first prompt after a start routinely lands too early. Same bounds as runner.ts: 40
+    // attempts at 250ms.
+    const fake = liveHerdr();
+    let attempts = 0;
+    reset({
+      ...fake.handlers,
+      "agent.prompt": () => {
+        attempts++;
+        if (attempts <= 2) return { error: { code: "agent_not_ready", message: "not yet" } };
+        return fake.handlers["agent.prompt"]();
+      },
+    });
+
+    const result = await startPlanning(planSpec("t-notready", 7), API_URL);
+
+    assert.equal(result.reused, false);
+    assert.equal(attempts, 3);
+    // The Plan succeeds and the user is still focused into it.
+    assert.equal(sequence().at(-1), "agent.focus");
+  });
+
+  test("an opening prompt that really fails closes the workspace", async () => {
+    // A planner that started but never got its first turn is mute for good: the re-focus path
+    // deliberately does not prompt, so every later click would land on a dead agent.
+    const fake = liveHerdr();
+    reset({
+      ...fake.handlers,
+      "agent.prompt": () => ({ error: { code: "agent_pane_not_found", message: "gone" } }),
+    });
+
+    await assert.rejects(startPlanning(planSpec("t-mute", 8), API_URL), /agent_pane_not_found/);
+
+    assert.deepEqual(sequence(), [
+      "agent.get",
+      "workspace.create",
+      "agent.start",
+      "agent.prompt",
+      "workspace.close",
     ]);
   });
 });
@@ -495,6 +583,13 @@ describe("POST /tickets/:id/plan", () => {
     assert.equal(storedSlot(id), null);
     // No worktree anywhere in the sequence — the planner runs in the main checkout.
     assert.deepEqual(sequence().filter((m) => m.startsWith("worktree.")), []);
+
+    // The route is where the ticket's fields come from, so this is what catches a PlanSpec
+    // that compiles but hands the planner an empty card.
+    const opening = paramsOf("agent.prompt") as { target: string; text: string };
+    assert.equal(opening.target, "ticket-plantest-31-plan");
+    assert.match(opening.text, /^TICKET PLANTEST-31: ticket route-plan$/m);
+    assert.match(opening.text, /^Playbook: Fullstack$/m);
   });
 
   test("clicking Plan twice re-focuses instead of creating a second workspace", async () => {
@@ -509,6 +604,9 @@ describe("POST /tickets/:id/plan", () => {
     assert.equal(second.body["reused"], true);
     assert.equal(sequence().filter((m) => m === "workspace.create").length, 1);
     assert.equal(sequence().filter((m) => m === "agent.start").length, 1);
+    // Re-prompting a live planner would restart its conversation, and it is very likely
+    // `blocked` on a question anyway — which `agent.prompt` refuses outright.
+    assert.equal(sequence().filter((m) => m === "agent.prompt").length, 1);
   });
 
   test("a Herdr failure is a 500 that says what broke, and leaves the ticket alone", async () => {

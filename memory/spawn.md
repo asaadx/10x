@@ -176,6 +176,14 @@ Why the split (verified): passing the ticket as an `omp` positional arg makes OM
 during startup, which races Herdr's readiness detection. Keeping startup and the first turn
 separate is why `agent.start` reliably returned `interactive_ready: true` in 3.1 s.
 
+**`--append-system-prompt` configures an agent; it does not start a turn.** A started agent with
+a system prompt and no `agent.prompt` sits idle and says nothing: it has been told *how* to
+behave and never been asked to do anything. **Every started agent needs an opening
+`agent.prompt`,** planner as much as implementer. Sending that message is not the same as
+waiting for it, and only the waiting is ever optional. *(Verified on the live board: Plan
+created the workspace, started the agent with only `--append-system-prompt`, focused the pane —
+and the agent never spoke. `spawn` never hit this because it prompts at step 4.)*
+
 Useful OMP flags for unattended runs: `--append-system-prompt`, `--auto-approve`,
 `--approval-mode`, `--max-time` (bounds a runaway agent), `--cwd`.
 
@@ -248,7 +256,8 @@ here.
 | 1 | `agent.get` | `target: <plan name>` | the planner, or `agent_not_found` |
 | 2 | `workspace.create` | `cwd: <project repoPath>`, `label: <plan name>`, `focus: false` | `workspace.workspace_id`, `root_pane.pane_id` |
 | 3 | `agent.start` | `name`, `kind: "omp"`, `pane_id`, `args` | `agent_started` |
-| 4 | `agent.focus` | `target: <plan name>` | `ok` → **return HTTP 200 here** |
+| 4 | `agent.prompt` | `target`, `text: <the ticket as it stands>` | `agent_prompted` |
+| 5 | `agent.focus` | `target: <plan name>` | `ok` → **return HTTP 200 here** |
 
 What it does **not** do, each for a reason:
 
@@ -256,11 +265,14 @@ What it does **not** do, each for a reason:
   working in and commits nothing, so a worktree would be an empty branch nobody ever uses, and
   a port block would spend a tenth of a ten-wide pool on a conversation. `reservePortSlot` is
   called by `/spawn` and nowhere else.
-- **No `agent.prompt`, no `--wait`, no readiness poll.** The prompt file is the whole
-  instruction and the planner's first act is to ask the human a question. Anything that waited
-  for it to settle would block until the conversation ended. The readiness poll exists only to
-  keep `agent.prompt` off an agent reporting `unknown`; with no prompt there is nothing to
-  lose.
+- **No `--wait` and no completion subscription.** The opening prompt is sent and the route
+  returns; the planner's first act is to ask the human a question, so anything that waited for
+  it to settle would block until the conversation ended. Prompting is required, *waiting* is
+  the thing that is forbidden — do not collapse the two, which is how the planner shipped mute.
+- **No readiness poll.** It exists in `spawn` to keep `agent.prompt` off an agent reporting
+  `unknown`; here the same race is absorbed by the `agent_not_ready` retry on the prompt
+  itself, 40 attempts at 250 ms, runner.ts's bounds. A planner has no subscription to arm
+  before its first turn, so the exact readiness moment buys nothing else.
 - **No status write.** Promoting the ticket out of backlog is the human deciding the plan is
   ready; `prompts/plan.md` tells the agent so explicitly.
 
@@ -277,3 +289,7 @@ What it keeps from `spawn`, and must:
   conversation rather than destroy its context. Only `agent_not_found` counts as absent
   ([agent names are session-wide](./naming.md)); any other code is a fault, because reading a
   Herdr hiccup as absence starts a rival planner beside a live conversation.
+- **Prompt before focus, and no prompt on re-focus.** Focusing first drops the human into a
+  pane that looks dead until the prompt lands. A second Plan click focuses only: re-prompting
+  would restart a live conversation, and a planner waiting on a human question is `blocked`,
+  which `agent.prompt` refuses with `agent_blocked` ([agent-status](./agent-status.md)).
