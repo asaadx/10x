@@ -14,9 +14,14 @@
  */
 
 /**
- * `backlog` holds raw ideas and `todo` holds work that is ready to start; the only move
- * between them is a Plan. Splitting them is what keeps guesswork out of `in_progress` — an
- * implementation agent inherits a plan rather than deriving one.
+ * `backlog` holds raw ideas and `todo` holds work that is ready to start; both moves between
+ * them are a human clicking a button: a plan is accepted, or a ticket is sent back to be
+ * re-planned. Splitting them is what keeps guesswork out of `in_progress` — an implementation
+ * agent inherits a plan rather than deriving one.
+ *
+ * `transitions.ts` is the authoritative table of which moves are legal and which route owns
+ * each one. Read it there rather than here: a second copy of the machine is how this comment
+ * went stale in the first place.
  *
  * `in_review` is reached automatically when the agent's turn completes, and the ticket keeps
  * both its live agent and its port block while it sits there — a Reject has to be able to

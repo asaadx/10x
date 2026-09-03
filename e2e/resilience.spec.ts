@@ -99,9 +99,9 @@ test("a finished ticket survives a backend restart on the same state dir", async
   // ticket to Backlog" — belongs to the in-memory store and is gone.
   const again = await api(board, "POST", `/tickets/${id}/spawn`);
   expect(again.status).toBe(409);
-  expect(again.body["error"]).toBe("not_in_backlog");
+  expect(again.body["error"]).toBe("not_in_todo");
 
-  // DELETE, not cancel: cancel claims `in_progress → backlog` and answers 409 from review, and
+  // DELETE, not cancel: cancel claims `in_progress → todo` and answers 409 from review, and
   // this ticket is only being disposed of, not tested.
   expect((await api(board, "DELETE", `/tickets/${id}`)).status).toBe(200);
 });
@@ -139,7 +139,7 @@ test("closing the pane after the turn finished keeps the ticket finished", async
   await expect(card.getByTitle("finished")).toBeVisible();
   await expect(card.getByTitle("run died")).toHaveCount(0);
 
-  // DELETE, not cancel: cancel claims `in_progress → backlog` and answers 409 from review.
+  // DELETE, not cancel: cancel claims `in_progress → todo` and answers 409 from review.
   expect((await api(board, "DELETE", `/tickets/${id}`)).status).toBe(200);
 });
 
@@ -159,12 +159,12 @@ test("two concurrent spawns of one ticket: exactly one claim wins", async () => 
   const loser = first.status === 409 ? first : second;
   /*
    * Both codes are correct rejections of the same race, and which one appears depends on
-   * whether the winner had reached its in-flight guard yet: `not_in_backlog` means the
+   * whether the winner had reached its in-flight guard yet: `not_in_todo` means the
    * conditional UPDATE matched no row, `operation_in_flight` means the per-ticket guard
    * caught it first. What matters is that the loser is REJECTED rather than queued
    * (memory/operations.md).
    */
-  expect(["not_in_backlog", "operation_in_flight"]).toContain(loser.body["error"]);
+  expect(["not_in_todo", "operation_in_flight"]).toContain(loser.body["error"]);
 
   // Claim-then-work is the invariant: one claim means one worktree and one agent.
   const branches = await liveWorktreeBranches(repoPath);

@@ -65,56 +65,92 @@ function rowOf(id: string): TicketRow {
 }
 
 describe("claimTicket", () => {
-  test("a first claim from backlog to in_progress wins and moves the row", () => {
-    seed("t-win", "backlog");
-    assert.equal(claimTicket("t-win", "backlog", "in_progress"), true);
+  test("a first claim from todo to in_progress wins and moves the row", () => {
+    seed("t-win", "todo");
+    assert.equal(claimTicket("t-win", "todo", "in_progress"), true);
     assert.equal(readString("t-win", "status"), "in_progress");
   });
 
   // The whole reason the CAS exists: the second of two clicks must lose, not spawn a
   // second agent onto the same branch.
   test("an immediate identical second claim loses", () => {
-    seed("t-double", "backlog");
-    assert.equal(claimTicket("t-double", "backlog", "in_progress"), true);
-    assert.equal(claimTicket("t-double", "backlog", "in_progress"), false);
+    seed("t-double", "todo");
+    assert.equal(claimTicket("t-double", "todo", "in_progress"), true);
+    assert.equal(claimTicket("t-double", "todo", "in_progress"), false);
     assert.equal(readString("t-double", "status"), "in_progress");
   });
 
   test("a claim whose `from` does not match the current status loses", () => {
     seed("t-mismatch", "in_progress");
-    assert.equal(claimTicket("t-mismatch", "backlog", "in_progress"), false);
+    assert.equal(claimTicket("t-mismatch", "todo", "in_progress"), false);
     assert.equal(readString("t-mismatch", "status"), "in_progress");
   });
 
   test("cancel is the same lock in reverse", () => {
     seed("t-cancel", "in_progress");
-    assert.equal(claimTicket("t-cancel", "in_progress", "backlog"), true);
-    assert.equal(claimTicket("t-cancel", "in_progress", "backlog"), false);
-    assert.equal(readString("t-cancel", "status"), "backlog");
+    assert.equal(claimTicket("t-cancel", "in_progress", "todo"), true);
+    assert.equal(claimTicket("t-cancel", "in_progress", "todo"), false);
+    assert.equal(readString("t-cancel", "status"), "todo");
   });
 
   test("a claim on an unknown ticket id loses instead of throwing", () => {
-    assert.equal(claimTicket("t-nonexistent", "backlog", "in_progress"), false);
+    assert.equal(claimTicket("t-nonexistent", "todo", "in_progress"), false);
   });
 
   test("a claim does not touch any other ticket", () => {
-    seed("t-target", "backlog");
-    seed("t-bystander", "backlog");
-    assert.equal(claimTicket("t-target", "backlog", "in_progress"), true);
-    assert.equal(readString("t-bystander", "status"), "backlog");
+    seed("t-target", "todo");
+    seed("t-bystander", "todo");
+    assert.equal(claimTicket("t-target", "todo", "in_progress"), true);
+    assert.equal(readString("t-bystander", "status"), "todo");
     assert.equal(readString("t-bystander", "updated_at"), ANCIENT);
   });
 
   test("a winning claim bumps updated_at; a losing one leaves it alone", () => {
-    seed("t-stamp", "backlog");
-    assert.equal(claimTicket("t-stamp", "backlog", "in_progress"), true);
+    seed("t-stamp", "todo");
+    assert.equal(claimTicket("t-stamp", "todo", "in_progress"), true);
 
     const bumped = readString("t-stamp", "updated_at");
     assert.ok(bumped > ANCIENT, `expected updated_at past ${ANCIENT}, got ${bumped}`);
     assert.equal(new Date(bumped).toISOString(), bumped, "updated_at must be an ISO instant");
 
-    assert.equal(claimTicket("t-stamp", "backlog", "in_progress"), false);
+    assert.equal(claimTicket("t-stamp", "todo", "in_progress"), false);
     assert.equal(readString("t-stamp", "updated_at"), bumped);
+  });
+});
+
+/**
+ * The two moves `POST /tickets/:id/status` makes itself: legal, and pure status writes, so the
+ * claim is the only thing that happens at all (transitions.ts). They take the same lock as
+ * everything else — a Plan racing a send-back has to resolve to one winner too.
+ */
+describe("claimTicket for the manual Backlog/To Do moves", () => {
+  test("accepting a plan claims backlog to todo", () => {
+    seed("t-plan", "backlog");
+    assert.equal(claimTicket("t-plan", "backlog", "todo"), true);
+    assert.equal(readString("t-plan", "status"), "todo");
+  });
+
+  test("sending a ticket back to be re-planned claims todo to backlog", () => {
+    seed("t-replan", "todo");
+    assert.equal(claimTicket("t-replan", "todo", "backlog"), true);
+    assert.equal(readString("t-replan", "status"), "backlog");
+  });
+
+  test("a second Plan on a ticket already in To Do loses", () => {
+    seed("t-plan-twice", "backlog");
+    assert.equal(claimTicket("t-plan-twice", "backlog", "todo"), true);
+    assert.equal(claimTicket("t-plan-twice", "backlog", "todo"), false);
+    assert.equal(readString("t-plan-twice", "status"), "todo");
+  });
+
+  // A rollback undoes the claim that just won, so its target is that claim's source. A spawn
+  // that fails after claiming `todo → in_progress` puts the ticket back in To Do; Backlog would
+  // demote a planned ticket to a raw idea and Start would then refuse it.
+  test("a failed spawn rolls the claim back to todo", () => {
+    seed("t-rollback", "todo");
+    assert.equal(claimTicket("t-rollback", "todo", "in_progress"), true);
+    assert.equal(claimTicket("t-rollback", "in_progress", "todo"), true);
+    assert.equal(readString("t-rollback", "status"), "todo");
   });
 });
 
@@ -141,11 +177,11 @@ describe("claimTicket across in_review", () => {
     assert.equal(readString("t-resettle", "updated_at"), moved);
   });
 
-  // Why an In Review card offers no Cancel: the endpoint claims `in_progress → backlog` and
+  // Why an In Review card offers no Cancel: the endpoint claims `in_progress → todo` and
   // matches no row from here, so the button would be one that cannot work.
   test("a cancel cannot claim a ticket that has moved to review", () => {
     seed("t-review-cancel", "in_review");
-    assert.equal(claimTicket("t-review-cancel", "in_progress", "backlog"), false);
+    assert.equal(claimTicket("t-review-cancel", "in_progress", "todo"), false);
     assert.equal(readString("t-review-cancel", "status"), "in_review");
   });
 

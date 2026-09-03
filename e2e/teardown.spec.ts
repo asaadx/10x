@@ -77,10 +77,11 @@ test("removing only the worktree reclaims the disk and keeps the branch", async 
   expect(await branchExists(repoPath, run.branch), `branch ${run.branch} was destroyed`).toBe(true);
   expect(res.body["branchKept"]).toBe(run.branch);
 
-  // Back in Backlog, and still carrying the branch it will reuse on the next dispatch —
-  // only `sessionDir` is cleared, because that transcript really is gone.
+  // Back in To Do — the same edge cancel takes, since the run is over either way — and still
+  // carrying the branch it will reuse on the next dispatch: only `sessionDir` is cleared,
+  // because that transcript really is gone.
   expect(storedTicket(board, id)).toEqual({
-    status: "backlog",
+    status: "todo",
     branch: run.branch,
     agentName: run.agentName,
     sessionDir: null,

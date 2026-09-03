@@ -409,6 +409,13 @@ export async function postSpawn(
   };
   spawns.push(entry);
 
+  // Start is a `todo → in_progress` move, so the ticket has to be promoted first: `POST
+  // /tickets` lands a ticket in Backlog, which is right — a new ticket is a raw idea — while
+  // every spawn in this suite is a ticket that has been planned. Deliberately best-effort and
+  // unasserted: a ticket already past To Do answers 409 here, which is exactly the state a
+  // caller testing a rejected spawn has put it in.
+  await api(board, "POST", `/tickets/${encodeURIComponent(ticketId)}/status`, { to: "todo" });
+
   const started = Date.now();
   const res = await api(board, "POST", `/tickets/${encodeURIComponent(ticketId)}/spawn`);
   const elapsedMs = Date.now() - started;

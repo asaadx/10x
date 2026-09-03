@@ -115,9 +115,9 @@ test("the pool is capped, and cancel returns the block to it", async () => {
   expect(refused.status).toBe(409);
   expect(refused.body["error"]).toBe("port_pool_exhausted");
   expect(refused.body["cap"]).toBe(1);
-  // And the refusal is complete: the claim was handed back, so the ticket never left Backlog
-  // and no half-configured agent exists.
-  expect(storedTicket(board, second).status).toBe("backlog");
+  // And the refusal is complete: the claim was handed back, so the ticket is where the spawn
+  // found it — To Do, the column Start works from — and no half-configured agent exists.
+  expect(storedTicket(board, second).status).toBe("todo");
 
   expect((await api(board, "POST", `/tickets/${first}/cancel`)).status).toBe(200);
 

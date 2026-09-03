@@ -50,6 +50,37 @@ export const branchFor = (projectId: string, number: number) => `ticket/${projec
 export const agentNameFor = (projectId: string, number: number) => `ticket-${projectId}-${number}`;
 
 /**
+ * A planning agent's name: the ticket's agent name plus a suffix, derived from
+ * `agentNameFor` rather than rebuilt so the two can never drift apart.
+ *
+ * THE SUFFIX IS LOAD-BEARING — do not "simplify" it away. `runner.ts` catches
+ * `agent_name_taken` from `agent.start` and silently re-attaches, treating whatever it finds
+ * as the implementation agent and deliberately sending it no ticket text. If a planner held
+ * the plain ticket name, Start would adopt the planner and leave a ticket reading In Progress
+ * with no worktree, no branch and no instruction — and no error anywhere.
+ *
+ * It costs 5 of the 32-character budget, so a plan name fits only while
+ * `len(slug) + len(number) <= 19` — `agentNameFor` alone allows 24. `startPlanning` checks
+ * the result against `AGENT_NAME_RE` rather than assuming, because the slug regex is laxer.
+ */
+const PLAN_SUFFIX = "-plan";
+
+export const planAgentNameFor = (projectId: string, number: number) =>
+  `${agentNameFor(projectId, number)}${PLAN_SUFFIX}`;
+
+/**
+ * Does this Herdr label name a planning agent? The sweep in `reconcile.ts` has nothing else
+ * to go on: a planner has no worktree and no branch, so the branch-based identity every other
+ * lookup uses cannot see it (memory/naming.md).
+ *
+ * Anchored on the whole shape `planAgentNameFor` produces, not just the suffix: a workspace a
+ * human labelled `refactor-plan` is not ours, and the sweep closes what it matches.
+ */
+const PLAN_AGENT_NAME_RE = new RegExp(`^ticket-[a-z0-9][a-z0-9-]*-\\d+${PLAN_SUFFIX}$`);
+
+export const isPlanAgentName = (label: string) => PLAN_AGENT_NAME_RE.test(label);
+
+/**
  * Herdr's emitted event names are inconsistently separated: `pane.agent_status_changed`
  * arrives dotted while `pane_closed` arrives underscored, and the schema declares both
  * with underscores. Matching either form literally silently drops half the events — a

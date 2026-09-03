@@ -18,10 +18,11 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import { request, HerdrError } from "./herdr.ts";
 import { extname, join, sep } from "node:path";
 import { freshDiagnostics } from "./diagnostics.ts";
-import { agentNameFor, branchFor, isSettled } from "./lifecycle.ts";
+import { agentNameFor, branchFor, isSettled, planAgentNameFor } from "./lifecycle.ts";
 import { focusAgent } from "./panes.ts";
+import { startPlanning } from "./planner.ts";
 import { createProject, deleteProject, listProjects, getProject, updateProject } from "./projects.ts";
-import { findOrphans, listWorktrees, reconcileTickets } from "./reconcile.ts";
+import { findOrphans, listWorktrees, reconcileTickets, sweepPlanWorkspaces } from "./reconcile.ts";
 import { retireAgent, spawn, teardown, type RunSpec, type RunState } from "./runner.ts";
 import {
   createTicket,
@@ -39,6 +40,7 @@ import {
   setPullRequest,
   setPullRequestState,
 } from "./db.ts";
+import { isTransitionStatus, planStatusMove, STATUSES } from "./transitions.ts";
 import type {
   BoardResponse,
   BoardTicket,
@@ -52,6 +54,12 @@ import { blockFor } from "./ports.ts";
 import { killDevServers } from "./dev-server.ts";
 
 const PORT = Number(process.env.PORT ?? 4010);
+/**
+ * What the planning agent is told to PATCH the ticket at. `localhost` and not the Tailscale
+ * host the board is reached from: the planner runs in a pane on THIS machine, beside this
+ * process. Derived from `PORT` so a backend moved off 4010 does not hand out a dead URL.
+ */
+const API_URL = `http://localhost:${PORT}`;
 // The frontend is its own workspace package and is served from its BUILD, not its source.
 // In development you do not come here at all — `pnpm dev` runs Vite on :5173, which proxies
 // the API back to this process. This path matters when the board is being used rather than
@@ -102,6 +110,30 @@ const specFor = (t: Ticket, p: Project): RunSpec => ({
   repoPath: p.repoPath,
   base: p.baseBranch,
 });
+
+/**
+ * Which agent this ticket's card and its Focus button are about.
+ *
+ * A backlog ticket's only possible agent is its PLANNER: `/spawn` claims from `todo`, and
+ * every route back to `todo` tears the implementation agent down first, so no run can be live
+ * under a backlog card. Resolving the plan name there is what lets a live planning
+ * conversation show up through the existing agent chip and spinner instead of needing a second
+ * status vocabulary — the two names are deliberately different (memory/naming.md), so a join
+ * on the implementation name alone reports `null` for the whole planning run.
+ *
+ * Keyed on status rather than "whichever of the two names Herdr knows", on purpose: the boot
+ * sweep is the only thing that collects a planner whose ticket was promoted
+ * (memory/reconciliation.md), so until the next boot a `todo` ticket can still have a live
+ * planner — and reporting that as the ticket's status would show work happening on a card that
+ * nobody has started.
+ *
+ * The persisted name still wins everywhere else (db.ts rule 1): a ticket dispatched under an
+ * older scheme keeps pointing at the agent that actually exists.
+ */
+const liveAgentNameFor = (t: Ticket) =>
+  t.status === "backlog"
+    ? planAgentNameFor(t.projectId, t.number)
+    : (t.agentName ?? agentNameFor(t.projectId, t.number));
 
 type Reply = { status: number; body: string };
 const json = (body: unknown, status = 200): Reply => ({
@@ -163,7 +195,7 @@ async function board(projectFilter: string | undefined): Promise<Reply> {
   // format, and without it a field added or dropped here diverged from the frontend silently.
   const live = tickets.map((t): BoardTicket => {
     const branch = t.branch ?? branchFor(t.projectId, t.number);
-    const agentName = t.agentName ?? agentNameFor(t.projectId, t.number);
+    const agentName = liveAgentNameFor(t);
     const agent = byAgentName.get(agentName);
     const worktree = byBranch.get(branch);
     return {
@@ -237,7 +269,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     return json({ ok: true, matched });
   }
 
-  const m = /^\/tickets\/([^/]+)(\/spawn|\/cancel|\/worktree|\/focus|\/accept|\/reject)?$/.exec(path);
+  const m = /^\/tickets\/([^/]+)(\/spawn|\/cancel|\/status|\/worktree|\/focus|\/accept|\/reject|\/plan)?$/.exec(path);
   if (!m?.[1]) return json({ error: "not_found", path }, 404);
   const id = decodeURIComponent(m[1]);
   const action = m[2];
@@ -312,13 +344,90 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
   }
 
   if (action === "/focus" && method === "POST") {
-    return json(await focusAgent(ticket.agentName ?? agentNameFor(ticket.projectId, ticket.number)));
+    // The same resolution the card was drawn from, or the Focus button on a planning card
+    // would target an implementation agent that does not exist.
+    return json(await focusAgent(liveAgentNameFor(ticket)));
+  }
+
+  if (action === "/plan" && method === "POST") {
+    /*
+     * Plan is the `backlog -> todo` conversation, so it belongs to backlog and nowhere else:
+     * a planner told to shape a ticket that is already being implemented would be discussing
+     * work an agent has half-finished, and `prompts/plan.md` tells it to overwrite the
+     * ticket's fields as it goes. Refused in the style of the neighbouring handlers, naming
+     * the status it found.
+     *
+     * It never claims the ticket. Plan writes NO status — promoting is a human clicking the
+     * button that moves it — so there is nothing to CAS and nothing to hand back on failure.
+     * `inFlight` (checked above, like every other action) is the whole concurrency guard:
+     * without it two fast clicks race between `agent.get` finding nothing and `agent.start`
+     * taking the name, and the loser leaves an orphan workspace behind.
+     *
+     * No port slot either. A planner starts no dev server, so reserving one would spend a
+     * tenth of the pool on a conversation (memory/architecture.md, port pool).
+     */
+    if (ticket.status !== "backlog") {
+      return json(
+        {
+          error: "not_in_backlog",
+          message: `plan is the backlog conversation; this ticket is ${ticket.status}`,
+          status: ticket.status,
+        },
+        409,
+      );
+    }
+
+    inFlight.add(id);
+    try {
+      const plan = await startPlanning(
+        {
+          ticketId: ticket.id,
+          projectId: ticket.projectId,
+          number: ticket.number,
+          repoPath: project.repoPath,
+        },
+        API_URL,
+      );
+      return json({ ok: true, ...plan });
+    } catch (err) {
+      return json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    } finally {
+      inFlight.delete(id);
+    }
+  }
+
+  if (action === "/status" && method === "POST") {
+    const to = (body as { to?: unknown } | undefined)?.to;
+    if (!isTransitionStatus(to)) {
+      return json(
+        { error: "invalid_input", field: "to", message: `to must be one of ${STATUSES.join(", ")}` },
+        400,
+      );
+    }
+
+    // The table in transitions.ts is the whole guard, and it separates two different mistakes:
+    // a pair the machine does not have at all, and a real move that belongs to a route because
+    // it has side effects. Making the bare status write for the second kind would put a card in
+    // In Progress with no worktree, no branch, no port block and no agent behind it, so the
+    // refusal names the route that owns the move instead.
+    const plan = planStatusMove(ticket.status, to);
+    if (!plan.ok) {
+      return json({ error: plan.error, message: plan.message, from: ticket.status, to, owner: plan.owner }, 409);
+    }
+
+    // There is no work to do after the claim — that is what makes the move pure — but the CAS
+    // is still what resolves two concurrent moves to one winner (memory/operations.md), and
+    // nothing may `await` between reading `ticket.status` and writing it.
+    if (!claimTicket(id, ticket.status, to)) {
+      return json({ error: "not_in_status", expected: ticket.status, status: getTicket(id)?.status ?? null }, 409);
+    }
+    return json(getTicket(id));
   }
 
   if (action === "/spawn" && method === "POST") {
     // Claim first, work second. No `await` between the check and the write (memory/operations.md).
-    if (!claimTicket(id, "backlog", "in_progress")) {
-      return json({ error: "not_in_backlog", status: ticket.status }, 409);
+    if (!claimTicket(id, "todo", "in_progress")) {
+      return json({ error: "not_in_todo", status: ticket.status }, 409);
     }
 
     // Reserved BEFORE the agent starts, because the block is written into the worktree the
@@ -326,7 +435,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     // consequence is that the cap is also a cap on concurrent in-progress tickets.
     const reserved = reservePortSlot(id);
     if (!reserved.ok) {
-      claimTicket(id, "in_progress", "backlog");
+      claimTicket(id, "in_progress", "todo");
       return json(
         {
           error: "port_pool_exhausted",
@@ -429,7 +538,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     } catch (err) {
       // Release the claim AND the block. Any worktree left behind surfaces via `unowned`
       // (memory/reconciliation.md); a slot left behind would just silently shrink the pool.
-      claimTicket(id, "in_progress", "backlog");
+      claimTicket(id, "in_progress", "todo");
       releasePortSlot(id);
       const message = err instanceof Error ? err.message : String(err);
       return json({ error: message, diagnostics: state.diagnostics }, 500);
@@ -439,7 +548,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
   }
 
   if (action === "/cancel" && method === "POST") {
-    if (!claimTicket(id, "in_progress", "backlog")) {
+    if (!claimTicket(id, "in_progress", "todo")) {
       return json({ error: "not_in_progress", status: ticket.status }, 409);
     }
     inFlight.add(id);
@@ -466,7 +575,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       const state = runStateFor(ticket);
       await teardown(specFor(ticket, project), state, false);
       runs.delete(id);
-      claimTicket(id, "in_progress", "backlog");
+      claimTicket(id, "in_progress", "todo");
       setRunFields(id, { sessionDir: null, finished: false, died: false });
       return json({ ok: true, branchKept: ticket.branch });
     } catch (err) {
@@ -691,6 +800,21 @@ createServer(async (req, res) => {
    */
   const reclaimed = reclaimStalePortSlots();
   if (reclaimed > 0) console.log(`  reclaimed ${reclaimed} stale port slot(s)`);
+
+  /*
+   * Collect plan workspaces whose conversation is over. Before the projects check and keyed
+   * on tickets rather than projects, because the case with nothing left to key on — a ticket
+   * deleted, or its whole project deleted, while its planner was open — is exactly the one
+   * that leaks a pane. `listTickets()` unfiltered is required: a label missing from that list
+   * reads as deleted, so one project's tickets would sweep every other project's planners.
+   *
+   * A live conversation is spared, and the log says which, because Herdr keeps panes alive
+   * across this restart and "still in backlog" is indistinguishable from "the user is typing
+   * in it right now".
+   */
+  for (const d of await sweepPlanWorkspaces(listTickets())) {
+    console.log(`  plan sweep ${d.close ? "closed" : "spared"} ${d.label}: ${d.reason}`);
+  }
   const projects = listProjects();
   if (projects.length === 0) {
     console.log("no projects yet — POST /projects { id, name, repoPath } to add one");

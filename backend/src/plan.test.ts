@@ -1,0 +1,598 @@
+/**
+ * Tests for Plan mode: the planner's Herdr call sequence (planner.ts), the boot sweep that
+ * collects finished plan workspaces (reconcile.ts), and the `POST /tickets/:id/plan` route.
+ *
+ * Herdr is faked the way herdr.test.ts fakes it — a real unix socket speaking real NDJSON —
+ * rather than by stubbing a module. The whole subject here IS the wire conversation: which
+ * methods are called, in what order, with what params. A stubbed client would assert against
+ * the stub instead of against `herdr.ts`, and the ordering claim is the one that matters
+ * (a workspace created after a failed start is a leaked pane).
+ *
+ * The route half spawns `backend/src/server.ts` as a child, exactly as `e2e/fixtures.ts`
+ * does, so the route regex and the guards are exercised for real. It binds a throwaway port,
+ * never 4010 (a live board) or 4310 (the e2e suite).
+ */
+import { test, describe, after } from "node:test";
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { createServer, type Server, type Socket } from "node:net";
+import { mkdtempSync, rmSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+// Type-only, so it erases at runtime and hoisting it above the env assignments is harmless.
+import type { PlanTicket } from "./reconcile.ts";
+
+const dir = mkdtempSync(join(tmpdir(), "10x-plan-test-"));
+const socketPath = join(dir, "herdr.sock");
+const PORT = 4319;
+process.env.STATE_DIR = dir;
+process.env.DB_PATH = join(dir, "10x.db");
+process.env.HERDR_SOCKET_PATH = socketPath;
+
+// Dynamic imports, for the same reason port-slots.test.ts and herdr.test.ts use them: both
+// `DB_PATH` and `HERDR_SOCKET_PATH` are read at module load, and a static import would hoist
+// above the assignments and open the real database against the real Herdr socket.
+const { db, nowIso } = await import("./db.ts");
+const { startPlanning } = await import("./planner.ts");
+const { decidePlanSweep, sweepPlanWorkspaces } = await import("./reconcile.ts");
+const { planAgentNameFor } = await import("./lifecycle.ts");
+
+const PROJECT_ID = "plantest";
+const REPO_PATH = "/tmp/plan-test-repo";
+const API_URL = `http://localhost:${PORT}`;
+
+// ---------------------------------------------------------------------------
+// The fake Herdr: one request per connection, NDJSON, connection closed after the reply.
+// ---------------------------------------------------------------------------
+
+type Frame = { result?: unknown; error?: { code: string; message: string } };
+type Handler = (params: Record<string, unknown>) => Frame;
+
+/** Replaced per test. A method with no handler answers `unknown_method`, never silence. */
+let handlers: Record<string, Handler> = {};
+/** Every request the fake received, in order. This is the assertion surface. */
+let calls: { method: string; params: Record<string, unknown> }[] = [];
+
+const NOT_FOUND: Frame = { error: { code: "agent_not_found", message: "no such agent" } };
+
+const sockets: Socket[] = [];
+const herdr: Server = createServer((socket) => {
+  sockets.push(socket);
+  let buf = "";
+  socket.on("data", (chunk) => {
+    buf += chunk.toString();
+    const nl = buf.indexOf("\n");
+    if (nl === -1) return;
+    const line = buf.slice(0, nl);
+    buf = "";
+
+    const parsed: unknown = JSON.parse(line);
+    if (typeof parsed !== "object" || parsed === null || !("method" in parsed)) {
+      socket.end(JSON.stringify({ error: { code: "bad_frame", message: line } }) + "\n");
+      return;
+    }
+    const method = String(parsed.method);
+    // Narrowed to a non-null object above; the only writer is this repo's own client.
+    const params =
+      "params" in parsed && typeof parsed.params === "object" && parsed.params !== null
+        ? (parsed.params as Record<string, unknown>)
+        : {};
+    calls.push({ method, params });
+
+    const handler = handlers[method];
+    const frame: Frame = handler
+      ? handler(params)
+      : { error: { code: "unknown_method", message: method } };
+    socket.end(JSON.stringify({ id: "fake", ...frame }) + "\n");
+  });
+});
+{
+  const { promise, resolve } = Promise.withResolvers<void>();
+  herdr.listen(socketPath, resolve);
+  await promise;
+}
+
+/** The methods seen so far, so a test can assert the whole sequence in one line. */
+const sequence = () => calls.map((c) => c.method);
+const paramsOf = (method: string) => calls.find((c) => c.method === method)?.params;
+
+function reset(next: Record<string, Handler>): void {
+  calls = [];
+  handlers = next;
+}
+
+/**
+ * A Herdr that behaves the way a real one does across a Plan: the agent does not exist until
+ * `agent.start` names it, and exists from then on. That statefulness is what makes the
+ * idempotent re-focus testable at all.
+ */
+function liveHerdr(options: { startFails?: { code: string; message: string } } = {}) {
+  const started = new Set<string>();
+  return {
+    started,
+    handlers: {
+      "agent.get": (p) =>
+        started.has(String(p["target"]))
+          ? { result: { agent: { pane_id: "wZZ:p1", workspace_id: "wZZ" } } }
+          : NOT_FOUND,
+      "workspace.create": () => ({
+        result: {
+          type: "workspace_created",
+          workspace: { workspace_id: "wZZ" },
+          root_pane: { pane_id: "wZZ:p1" },
+        },
+      }),
+      "agent.start": (p) => {
+        if (options.startFails) return { error: options.startFails };
+        started.add(String(p["name"]));
+        return { result: { type: "agent_started", agent: { name: p["name"] } } };
+      },
+      "agent.focus": () => ({ result: { type: "ok" } }),
+      "workspace.close": () => ({ result: { type: "ok" } }),
+    } satisfies Record<string, Handler>,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The store. Seeded directly, bypassing every code path under test (port-slots.test.ts).
+// ---------------------------------------------------------------------------
+
+const ANCIENT = "2020-01-01T00:00:00.000Z";
+db.prepare(
+  "INSERT INTO projects (id, name, repo_path, base_branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+).run(PROJECT_ID, "Plan Test", REPO_PATH, "main", nowIso(), nowIso());
+
+function seed(id: string, number: number, status = "backlog"): string {
+  db.prepare(
+    "INSERT INTO tickets (id, project_id, number, title, description, status, created_at, updated_at) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(id, PROJECT_ID, number, `ticket ${id}`, "", status, ANCIENT, ANCIENT);
+  return id;
+}
+
+const storedSlot = (id: string) =>
+  db.prepare("SELECT port_slot FROM tickets WHERE id = ?").get(id)?.["port_slot"] ?? null;
+const storedStatus = (id: string) =>
+  db.prepare("SELECT status FROM tickets WHERE id = ?").get(id)?.["status"] ?? null;
+
+const planTicket = (id: string, number: number, status: PlanTicket["status"]): PlanTicket => ({
+  id,
+  projectId: PROJECT_ID,
+  number,
+  status,
+});
+
+// ---------------------------------------------------------------------------
+// The server child, for the route tests.
+// ---------------------------------------------------------------------------
+
+const child = spawn(process.execPath, [join(import.meta.dirname, "server.ts")], {
+  env: {
+    ...process.env,
+    PORT: String(PORT),
+    STATE_DIR: dir,
+    DB_PATH: join(dir, "10x.db"),
+    HERDR_SOCKET_PATH: socketPath,
+  },
+  stdio: ["ignore", "pipe", "pipe"],
+});
+let serverLog = "";
+child.stdout.on("data", (c: unknown) => {
+  serverLog += String(c);
+});
+child.stderr.on("data", (c: unknown) => {
+  serverLog += String(c);
+});
+
+// Boot talks to the fake (reconciliation, the plan sweep), so it needs answers before the
+// first probe rather than after the first test sets its own.
+reset({
+  "workspace.list": () => ({ result: { type: "workspace_list", workspaces: [] } }),
+  "agent.list": () => ({ result: { type: "agent_list", agents: [] } }),
+  "worktree.list": () => ({ result: { type: "worktree_list", worktrees: [] } }),
+});
+
+{
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    try {
+      await fetch(`${API_URL}/projects`).then((r) => r.text());
+      break;
+    } catch (err) {
+      if (Date.now() > deadline) throw new Error(`server never came up: ${serverLog}\n${err}`);
+      await delay(100);
+    }
+  }
+}
+
+async function api(method: string, path: string, body?: unknown) {
+  const res = await fetch(`${API_URL}${path}`, {
+    method,
+    headers: { "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+}
+
+after(async () => {
+  child.kill("SIGTERM");
+  for (const socket of sockets) socket.destroy();
+  const { promise, resolve } = Promise.withResolvers<void>();
+  herdr.close(() => resolve());
+  await promise;
+  db.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("startPlanning", () => {
+  test("starts a workspace, then the agent, then focuses — and prompts nothing", async () => {
+    const fake = liveHerdr();
+    reset(fake.handlers);
+
+    const result = await startPlanning(
+      { ticketId: "t-seq", projectId: PROJECT_ID, number: 1, repoPath: REPO_PATH },
+      API_URL,
+    );
+
+    // The order IS the contract: the pane must exist before the agent, and the user must be
+    // moved only once there is something to look at.
+    assert.deepEqual(sequence(), [
+      "agent.get",
+      "workspace.create",
+      "agent.start",
+      "agent.focus",
+    ]);
+    assert.deepEqual(result, {
+      agentName: "ticket-plantest-1-plan",
+      workspaceId: "wZZ",
+      paneId: "wZZ:p1",
+      reused: false,
+    });
+
+    // No worktree, no branch, and the pane comes off the create response rather than a
+    // second `pane.list` round trip (`workspace_created` carries a full `root_pane`).
+    assert.deepEqual(paramsOf("workspace.create"), {
+      cwd: REPO_PATH,
+      label: "ticket-plantest-1-plan",
+      focus: false,
+    });
+
+    const promptFile = join(dir, "prompts", "plantest-1-plan.md");
+    assert.deepEqual(paramsOf("agent.start"), {
+      name: "ticket-plantest-1-plan",
+      kind: "omp",
+      pane_id: "wZZ:p1",
+      timeout_ms: 60_000,
+      args: ["--append-system-prompt", promptFile, "--auto-approve"],
+    });
+
+    // The prompt is what makes the planner able to write the ticket at all, so an
+    // unsubstituted marker is a silently useless run.
+    const prompt = await readFile(promptFile, "utf8");
+    assert.match(prompt, new RegExp(`PATCH ${API_URL}/tickets/t-seq`));
+    assert.doesNotMatch(prompt, /\{\{/);
+  });
+
+  test("a second Plan re-focuses the live planner instead of starting a rival", async () => {
+    const fake = liveHerdr();
+    reset(fake.handlers);
+    const spec = { ticketId: "t-again", projectId: PROJECT_ID, number: 2, repoPath: REPO_PATH };
+
+    await startPlanning(spec, API_URL);
+    calls = [];
+
+    const again = await startPlanning(spec, API_URL);
+
+    // Nothing created and nothing restarted: the conversation and its context survive.
+    assert.deepEqual(sequence(), ["agent.get", "agent.focus"]);
+    assert.deepEqual(again, {
+      agentName: "ticket-plantest-2-plan",
+      workspaceId: "wZZ",
+      paneId: "wZZ:p1",
+      reused: true,
+    });
+  });
+
+  test("a Herdr fault while looking for the planner is not read as 'no planner'", async () => {
+    // Only `agent_not_found` means absent. A timeout treated as absence would start a second
+    // planner beside a live conversation.
+    reset({
+      "agent.get": () => ({ error: { code: "agent_pane_not_found", message: "boom" } }),
+    });
+
+    await assert.rejects(
+      startPlanning(
+        { ticketId: "t-fault", projectId: PROJECT_ID, number: 3, repoPath: REPO_PATH },
+        API_URL,
+      ),
+      /agent_pane_not_found/,
+    );
+    assert.deepEqual(sequence(), ["agent.get"]);
+  });
+
+  test("a failed agent.start closes the workspace instead of leaking a pane", async () => {
+    const fake = liveHerdr({ startFails: { code: "agent_kind_not_installed", message: "no omp" } });
+    reset(fake.handlers);
+
+    await assert.rejects(
+      startPlanning(
+        { ticketId: "t-fail", projectId: PROJECT_ID, number: 4, repoPath: REPO_PATH },
+        API_URL,
+      ),
+      /agent_kind_not_installed/,
+    );
+
+    assert.deepEqual(sequence(), [
+      "agent.get",
+      "workspace.create",
+      "agent.start",
+      "workspace.close",
+    ]);
+    assert.deepEqual(paramsOf("workspace.close"), { workspace_id: "wZZ" });
+  });
+
+  test("agent_pane_busy is retried — a fresh pane's shell is not ready yet", async () => {
+    // Measured at 2 of 6 trials on a freshly created pane (memory/spawn.md), so without the
+    // retry Plan fails about a third of the time.
+    const fake = liveHerdr();
+    let attempts = 0;
+    reset({
+      ...fake.handlers,
+      "agent.start": (p) => {
+        attempts++;
+        if (attempts === 1) return { error: { code: "agent_pane_busy", message: "shell busy" } };
+        return fake.handlers["agent.start"](p);
+      },
+    });
+
+    const result = await startPlanning(
+      { ticketId: "t-busy", projectId: PROJECT_ID, number: 5, repoPath: REPO_PATH },
+      API_URL,
+    );
+    assert.equal(result.reused, false);
+    assert.equal(attempts, 2);
+    assert.deepEqual(sequence(), [
+      "agent.get",
+      "workspace.create",
+      "agent.start",
+      "agent.start",
+      "agent.focus",
+    ]);
+  });
+});
+
+describe("decidePlanSweep", () => {
+  const workspace = (id: string, label: string | null) => ({ workspace_id: id, label });
+  const label = planAgentNameFor(PROJECT_ID, 9);
+
+  test("spares a backlog ticket's planner — the user may be mid-conversation", () => {
+    // Herdr keeps panes and agents alive across a restart of this process, so a plan
+    // workspace surviving a boot is the NORMAL state of an ongoing conversation.
+    const decisions = decidePlanSweep(
+      [workspace("w1", label)],
+      [planTicket("t-9", 9, "backlog")],
+    );
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0]?.close, false);
+    assert.match(decisions[0]?.reason ?? "", /still in backlog/);
+  });
+
+  test("closes a planner whose ticket has left backlog", () => {
+    for (const status of ["todo", "in_progress", "in_review", "done"] as const) {
+      const decisions = decidePlanSweep(
+        [workspace("w1", label)],
+        [planTicket("t-9", 9, status)],
+      );
+      assert.deepEqual(
+        decisions.map((d) => [d.workspaceId, d.close]),
+        [["w1", true]],
+        `status ${status}`,
+      );
+    }
+  });
+
+  test("closes a planner whose ticket is gone", () => {
+    const decisions = decidePlanSweep([workspace("w1", label)], []);
+    assert.equal(decisions[0]?.close, true);
+    assert.match(decisions[0]?.reason ?? "", /no ticket owns/);
+  });
+
+  test("a workspace we did not label is never a candidate", () => {
+    // Not "spared": outside the set the sweep will even consider, the same structural
+    // ownership test findOrphans applies to a branch namespace.
+    const decisions = decidePlanSweep(
+      [
+        workspace("w1", "10x"),
+        workspace("w2", "refactor-plan"),
+        workspace("w3", "ticket-plantest-9"),
+        workspace("w4", null),
+      ],
+      [],
+    );
+    assert.deepEqual(decisions, []);
+  });
+});
+
+describe("sweepPlanWorkspaces", () => {
+  test("closes only the workspaces it decided to close", async () => {
+    seed("t-sweep-live", 20, "backlog");
+    seed("t-sweep-done", 21, "done");
+    reset({
+      "workspace.list": () => ({
+        result: {
+          type: "workspace_list",
+          workspaces: [
+            { workspace_id: "wLIVE", label: planAgentNameFor(PROJECT_ID, 20) },
+            { workspace_id: "wDONE", label: planAgentNameFor(PROJECT_ID, 21) },
+            { workspace_id: "wGONE", label: planAgentNameFor(PROJECT_ID, 22) },
+            { workspace_id: "wMINE", label: "10x" },
+          ],
+        },
+      }),
+      "workspace.close": () => ({ result: { type: "ok" } }),
+    });
+
+    const decisions = await sweepPlanWorkspaces([
+      planTicket("t-sweep-live", 20, "backlog"),
+      planTicket("t-sweep-done", 21, "done"),
+    ]);
+
+    assert.deepEqual(
+      decisions.map((d) => [d.workspaceId, d.close]),
+      [
+        ["wLIVE", false],
+        ["wDONE", true],
+        ["wGONE", true],
+      ],
+    );
+    assert.deepEqual(
+      calls.filter((c) => c.method === "workspace.close").map((c) => c.params["workspace_id"]),
+      ["wDONE", "wGONE"],
+    );
+  });
+
+  test("a Herdr that is down does not stop the boot", async () => {
+    reset({});
+    assert.deepEqual(await sweepPlanWorkspaces([]), []);
+  });
+});
+
+describe("POST /tickets/:id/plan", () => {
+  test("a non-backlog ticket is refused, and nothing is started", async () => {
+    const id = seed("route-todo", 30, "todo");
+    const fake = liveHerdr();
+    reset(fake.handlers);
+
+    const res = await api("POST", `/tickets/${id}/plan`);
+    assert.equal(res.status, 409);
+    assert.equal(res.body["error"], "not_in_backlog");
+    assert.equal(res.body["status"], "todo");
+    assert.deepEqual(sequence(), []);
+  });
+
+  test("a backlog ticket gets a planner, and keeps its status and no port slot", async () => {
+    const id = seed("route-plan", 31, "backlog");
+    const fake = liveHerdr();
+    reset(fake.handlers);
+
+    const res = await api("POST", `/tickets/${id}/plan`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, {
+      ok: true,
+      agentName: "ticket-plantest-31-plan",
+      workspaceId: "wZZ",
+      paneId: "wZZ:p1",
+      reused: false,
+    });
+
+    // Plan never promotes: a human clicks the button that does. And a planner starts no dev
+    // server, so spending a tenth of the port pool on a conversation would be pure loss.
+    assert.equal(storedStatus(id), "backlog");
+    assert.equal(storedSlot(id), null);
+    // No worktree anywhere in the sequence — the planner runs in the main checkout.
+    assert.deepEqual(sequence().filter((m) => m.startsWith("worktree.")), []);
+  });
+
+  test("clicking Plan twice re-focuses instead of creating a second workspace", async () => {
+    const id = seed("route-twice", 32, "backlog");
+    const fake = liveHerdr();
+    reset(fake.handlers);
+
+    assert.equal((await api("POST", `/tickets/${id}/plan`)).status, 200);
+    const second = await api("POST", `/tickets/${id}/plan`);
+
+    assert.equal(second.status, 200);
+    assert.equal(second.body["reused"], true);
+    assert.equal(sequence().filter((m) => m === "workspace.create").length, 1);
+    assert.equal(sequence().filter((m) => m === "agent.start").length, 1);
+  });
+
+  test("a Herdr failure is a 500 that says what broke, and leaves the ticket alone", async () => {
+    const id = seed("route-broken", 33, "backlog");
+    const fake = liveHerdr({ startFails: { code: "agent_kind_not_installed", message: "no omp" } });
+    reset(fake.handlers);
+
+    const res = await api("POST", `/tickets/${id}/plan`);
+    assert.equal(res.status, 500);
+    assert.match(String(res.body["error"]), /agent_kind_not_installed/);
+    assert.equal(storedStatus(id), "backlog");
+    assert.equal(storedSlot(id), null);
+    // The pane it half-created is closed rather than left for the next boot to find.
+    assert.deepEqual(paramsOf("workspace.close"), { workspace_id: "wZZ" });
+  });
+
+  test("plan on a ticket that does not exist is a 404, not a started agent", async () => {
+    reset({});
+    const res = await api("POST", "/tickets/nope/plan");
+    assert.equal(res.status, 404);
+    assert.equal(res.body["error"], "no_such_ticket");
+  });
+});
+
+describe("a live planner on the board", () => {
+  /** `agent.list` reporting one live planner, plus the empty worktree reads `board()` does. */
+  function boardHerdr(agentName: string) {
+    return {
+      "agent.list": () => ({
+        result: {
+          type: "agent_list",
+          agents: [
+            {
+              name: agentName,
+              agent_status: "working",
+              pane_id: "wZZ:p1",
+              workspace_id: "wZZ",
+            },
+          ],
+        },
+      }),
+      "worktree.list": () => ({ result: { type: "worktree_list", worktrees: [] } }),
+      "agent.focus": () => ({ result: { type: "ok" } }),
+    } satisfies Record<string, Handler>;
+  }
+
+  test("a backlog ticket reports its planner through the ordinary agent fields", async () => {
+    // The planner's name differs from the implementation agent's by design, so a board that
+    // joined only on `agentNameFor` reported null for the whole planning run: no agent chip
+    // and no column spinner, with a live conversation sitting in Herdr.
+    const id = seed("board-planning", 34, "backlog");
+    reset(boardHerdr(planAgentNameFor(PROJECT_ID, 34)));
+
+    const res = await api("GET", "/tickets?project=" + PROJECT_ID);
+    const ticket = (res.body["tickets"] as Record<string, unknown>[]).find((t) => t["id"] === id);
+
+    assert.equal(ticket?.["agentName"], "ticket-plantest-34-plan");
+    assert.equal(ticket?.["agentStatus"], "working");
+    assert.equal(ticket?.["paneId"], "wZZ:p1");
+    assert.equal(ticket?.["workspaceId"], "wZZ");
+    // No new status vocabulary, and no worktree: a planner has neither.
+    assert.equal(ticket?.["status"], "backlog");
+    assert.equal(ticket?.["hasWorktree"], false);
+  });
+
+  test("a promoted ticket does not inherit its stale planner's status", async () => {
+    // The sweep only runs at boot, so a planner can outlive the promotion. Reporting it would
+    // show work happening on a card nobody has started.
+    const id = seed("board-promoted", 35, "todo");
+    reset(boardHerdr(planAgentNameFor(PROJECT_ID, 35)));
+
+    const res = await api("GET", "/tickets?project=" + PROJECT_ID);
+    const ticket = (res.body["tickets"] as Record<string, unknown>[]).find((t) => t["id"] === id);
+
+    assert.equal(ticket?.["agentName"], "ticket-plantest-35");
+    assert.equal(ticket?.["agentStatus"], null);
+  });
+
+  test("Focus on a backlog card targets the planner, not a nonexistent run", async () => {
+    const id = seed("board-focus", 36, "backlog");
+    reset(boardHerdr(planAgentNameFor(PROJECT_ID, 36)));
+
+    const res = await api("POST", `/tickets/${id}/focus`);
+    assert.deepEqual(res.body, { ok: true });
+    assert.deepEqual(paramsOf("agent.focus"), { target: "ticket-plantest-36-plan" });
+  });
+});
