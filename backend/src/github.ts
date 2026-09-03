@@ -9,7 +9,7 @@ import type { PullRequestState } from "./types.ts";
 
 const run = promisify(execFile);
 
-export type PullRequest = { number: number; url: string };
+export type PullRequest = { number: number; url: string; state: PullRequestState; additions: number | null; deletions: number | null };
 
 /**
  * The push URL embeds the token, so a failed push puts the secret into an error
@@ -65,10 +65,29 @@ const stringField = (value: unknown, key: string): string | undefined =>
 const numberField = (value: unknown, key: string): number | undefined =>
   field(value, key, (v): v is number => typeof v === "number");
 
+/**
+ * GitHub's `merged` + `state` fields collapse to our three-value model. Every caller that reads
+ * a PR resource — the create response, a single-PR fetch, and the `pull_request` webhook
+ * payload, all the same shape — derives state exactly this way, so this is the one place that
+ * does it.
+ */
+function pullRequestState(value: unknown): PullRequestState {
+  const merged = field(value, "merged", (v): v is boolean => typeof v === "boolean");
+  const rawState = stringField(value, "state");
+  return merged === true ? "merged" : rawState === "closed" ? "closed" : "open";
+}
+
 function toPullRequest(value: unknown): PullRequest | undefined {
   const number = numberField(value, "number");
   const url = stringField(value, "html_url");
-  return number !== undefined && url !== undefined ? { number, url } : undefined;
+  if (number === undefined || url === undefined) return undefined;
+  return {
+    number,
+    url,
+    state: pullRequestState(value),
+    additions: numberField(value, "additions") ?? null,
+    deletions: numberField(value, "deletions") ?? null,
+  };
 }
 
 /** True when a 422 from POST /pulls is GitHub's "a pull request already exists" complaint. */
@@ -139,12 +158,18 @@ export const openPullRequest = async (
 export const needsLiveCheck = (state: PullRequestState | null): boolean =>
   state !== "merged" && state !== "closed";
 
-/** Reads a PR's current state. Throws on any non-200, with the token redacted. */
-export const fetchPullRequestState = async (
+export type PullRequestSnapshot = { state: PullRequestState; additions: number | null; deletions: number | null };
+
+/**
+ * Reads a PR's current state, additions and deletions in one call — the same
+ * `GET /repos/{owner}/{repo}/pulls/{n}` response carries all three, on the create call and on
+ * this one. Throws on any non-200, with the token redacted.
+ */
+export const fetchPullRequestSnapshot = async (
   repoPath: string,
   prNumber: number,
   token: string,
-): Promise<PullRequestState> => {
+): Promise<PullRequestSnapshot> => {
   const { owner, repo } = await originOwnerRepo(repoPath);
   const headers = {
     Authorization: `Bearer ${token}`,
@@ -158,9 +183,11 @@ export const fetchPullRequestState = async (
     throw new Error(redact(`GitHub API error (${response.status}): ${message}`, token));
   }
 
-  const merged = field(parsed, "merged", (v): v is boolean => typeof v === "boolean");
-  const rawState = stringField(parsed, "state");
-  return merged === true ? "merged" : rawState === "closed" ? "closed" : "open";
+  return {
+    state: pullRequestState(parsed),
+    additions: numberField(parsed, "additions") ?? null,
+    deletions: numberField(parsed, "deletions") ?? null,
+  };
 };
 
 export type PullRequestUpdate = {
@@ -180,9 +207,7 @@ export const pullRequestUpdate = (payload: unknown): PullRequestUpdate | null =>
   const pr = typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>).pull_request : undefined;
   const url = stringField(pr, "html_url");
   if (url === undefined) return null;
-  const merged = field(pr, "merged", (v): v is boolean => typeof v === "boolean");
-  const rawState = stringField(pr, "state");
-  const state: PullRequestState = merged === true ? "merged" : rawState === "closed" ? "closed" : "open";
+  const state = pullRequestState(pr);
   return {
     url,
     state,
