@@ -1,11 +1,10 @@
 /**
  * Spawn and teardown for one ticket.
  *
- * The point of this file is the readiness guard in `startAgentAndWait`. See
- * memory/herdr-omp-lifecycle.md memory/spawn.md: the raw `agent.start` socket method returns
- * BEFORE the agent is usable, and the `herdr` CLI is what does the waiting
- * (strace shows agent.start x2 then agent.get x24). A socket client that trusts
- * the return value loses the prompt.
+ * The agent boot — `agent.start`, the readiness guard, the opening prompt — is not here: it
+ * is `agent-boot.ts`, shared with the planner, and its header is where the reason that
+ * sequence has the shape it has is written down. Read it before touching anything below that
+ * talks to `agent.start`.
  */
 import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
@@ -13,11 +12,17 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import {
+  bootAgent,
+  reattachAgent,
+  type AgentEnvelope,
+  type BootedAgent,
+} from "./agent-boot.ts";
 import { HerdrError, request, subscribe } from "./herdr.ts";
-import { agentNameFor, branchFor, isAgentReady, normalizeEvent } from "./lifecycle.ts";
-import type { Diagnostics } from "./types.ts";
+import { agentNameFor, branchFor, normalizeEvent } from "./lifecycle.ts";
 import { ENV_FILE, envFileFor, type PortBlock } from "./ports.ts";
 import { loadPrompt } from "./prompts.ts";
+import type { Diagnostics } from "./types.ts";
 
 /**
  * Everything a run needs, passed explicitly so this module never touches the store.
@@ -46,10 +51,6 @@ export type RunState = {
 const run = promisify(execFile);
 const STATE_DIR = process.env.STATE_DIR ?? join(homedir(), ".10x");
 
-/** How long a fresh pane may take to become an available shell before we give up. */
-const PANE_WAIT_MS = 15_000;
-/** How long the agent may take to become interactive after start. Normally ~3s. */
-const READY_WAIT_MS = 60_000;
 /** Backoff for reopening a dropped event stream. Bounded: give up loudly rather than spin. */
 const STREAM_REOPEN_DELAYS_MS = [250, 500, 1000, 2000, 4000] as const;
 
@@ -61,29 +62,18 @@ type WorktreeCreated = {
   worktree: WorktreeInfo;
 };
 type WorktreeOpened = { workspace: { workspace_id: string }; worktree: WorktreeInfo };
-type AgentRecord = {
-  name?: string;
-  agent_status?: string;
-  interactive_ready?: boolean;
-  agent_session?: { value?: string };
-  pane_id?: string;
-  workspace_id?: string;
-};
-type AgentEnvelope = { agent?: AgentRecord };
-
 
 /**
- * Mirror of the CLI's readiness loop. Returns once the agent is genuinely
- * interactive, or throws. Records what happened so the UI can show whether the
- * race fired on this run.
+ * Boot the ticket's implementation agent: write its system prompt, run the shared boot
+ * (`agent-boot.ts` — start, readiness guard, opening turn), then keep what the rest of the run
+ * needs off the agent record. Returns the pane the agent is actually in.
  */
-async function startAgentAndWait(
+async function bootTicketAgent(
   spec: RunSpec,
   block: PortBlock,
   state: RunState,
   paneId: string,
-  diag: Diagnostics,
-) {
+): Promise<string> {
   const name = agentNameFor(spec.projectId, spec.number);
   const promptFile = join(STATE_DIR, "prompts", `${spec.projectId}-${spec.number}.md`);
   await mkdir(dirname(promptFile), { recursive: true });
@@ -100,111 +90,44 @@ async function startAgentAndWait(
   const prompt = await loadPrompt("implementation", { portStart: block.start, portEnd: block.end });
   await writeFile(promptFile, prompt, "utf8");
 
-  const started = Date.now();
-  let record: AgentRecord | undefined;
+  // The opening turn: the ticket, and nothing about how to work on it — that is the system
+  // prompt's job, and saying it twice would make two places to change.
+  const text = [
+    `TICKET ${spec.projectId.toUpperCase()}-${spec.number}: ${spec.title}`,
+    "",
+    spec.description,
+  ].join("\n");
 
-  // Phase 1 — get agent.start to accept the pane at all.
-  //
-  // `agent_pane_busy` is the ONLY transient failure: it means the pane's shell has not
-  // reached its interactive prompt yet. Every other error is a real fault (bad name,
-  // missing pane, agent kind not installed) and must surface immediately rather than
-  // being retried for 10 seconds — a fatal error retried is just a slower error.
-  //
-  // Bound by a deadline, not an attempt count, and back off so a slow shell does not
-  // get hammered: 250ms doubling to a 2s ceiling.
-  const startDeadline = Date.now() + PANE_WAIT_MS;
-  let backoff = 250;
-  for (let attempt = 1; ; attempt++) {
-    try {
-      const res = await request<AgentEnvelope>("agent.start", {
-        name,
-        kind: "omp",
-        pane_id: paneId,
-        timeout_ms: 60_000,
-        args: ["--append-system-prompt", promptFile, "--auto-approve"],
-      });
-      diag.startAttempts = attempt;
-      record = res.agent;
-      diag.startReturnedStatus = record?.agent_status ?? null;
-      diag.startReturnedReady = record?.interactive_ready ?? null;
-      diag.startReturnedAfterMs = Date.now() - started;
-      break;
-    } catch (err) {
-      // The agent for this ticket is already live — the usual cause is a 10x backend
-      // restart, since Herdr keeps panes and agents running while our in-memory ticket
-      // store resets. Reuse it: killing a working agent would throw away its context.
-      if (err instanceof HerdrError && err.code === "agent_name_taken") {
-        diag.startAttempts = attempt;
-        diag.reusedExistingAgent = true;
-        const existing = await request<AgentEnvelope>("agent.get", { target: name });
-        record = existing.agent;
-        diag.startReturnedStatus = record?.agent_status ?? null;
-        diag.startReturnedReady = record?.interactive_ready ?? null;
-        diag.startReturnedAfterMs = Date.now() - started;
-        break;
-      }
-      const transient = err instanceof HerdrError && err.code === "agent_pane_busy";
-      if (!transient) {
-        diag.startAttempts = attempt;
-        throw err; // e.g. agent_pane_not_found, invalid_agent_name — unrecoverable
-      }
-      if (Date.now() + backoff > startDeadline) {
-        diag.startAttempts = attempt;
-        throw new HerdrError(
-          "agent_pane_busy",
-          `pane ${paneId} never became an available shell within ${PANE_WAIT_MS}ms ` +
-            `(${diag.paneBusyRetries} retries)`,
-        );
-      }
-      diag.paneBusyRetries++;
-      await delay(backoff);
-      backoff = Math.min(backoff * 2, 2_000);
-    }
+  let booted: BootedAgent;
+  try {
+    booted = await bootAgent({
+      name,
+      paneId,
+      args: ["--append-system-prompt", promptFile, "--auto-approve"],
+      prompt: text,
+      diagnostics: state.diagnostics,
+    });
+  } catch (err) {
+    // The agent for this ticket is already live — the usual cause is a 10x backend restart,
+    // since Herdr keeps panes and agents running while our in-memory ticket store resets.
+    // Reuse it: killing a working agent would throw away its context.
+    //
+    // Re-attaching is SILENT, which is why it cannot go through `bootAgent`. The agent is
+    // already running this ticket (memory/teardown.md re-dispatch), so re-sending the ticket
+    // text would make it redo work it may already have done. A deliberate "work on this
+    // again" is a separate action, and no such action exists yet — see memory/parking-lot.md.
+    if (!(err instanceof HerdrError) || err.code !== "agent_name_taken") throw err;
+    booted = await reattachAgent({ name, paneId, diagnostics: state.diagnostics });
   }
 
-  // Phase 2 — agent.start returning is NOT readiness (memory/spawn.md). Poll until the record actually
-  // reports ready. 125ms mirrors the cadence the herdr CLI itself uses, and the whole wait
-  // is normally ~3s, so this is short-lived.
-  //
-  // `idle` and `done` are the SAME underlying ready state (memory/agent-status.md): `done` just means it
-  // settled while the tab was unseen. Accepting only `idle` hangs for the full timeout on
-  // any agent that finished a turn unobserved — which is every reused agent.
-
-  diag.neededReadinessPoll = !isAgentReady(record);
-
-  const readyDeadline = Date.now() + READY_WAIT_MS;
-  while (!isAgentReady(record)) {
-    if (Date.now() > readyDeadline) {
-      throw new HerdrError(
-        "agent_not_ready",
-        `agent ${name} never became interactive within ${READY_WAIT_MS}ms ` +
-          `(last status: ${record?.agent_status ?? "unknown"})`,
-      );
-    }
-    await delay(125);
-    diag.readinessPolls++;
-    try {
-      const got = await request<AgentEnvelope>("agent.get", { target: name });
-      record = got.agent;
-    } catch (err) {
-      // Expected while the agent is still registering; only worth noting if it persists.
-      if (diag.readinessPolls % 20 === 0) {
-        console.warn(`[${name}] agent.get still failing after ${diag.readinessPolls} polls:`, err);
-      }
-    }
-  }
-
-  // The loop only exits when isReady() passed, so a record exists — but express that for
-  // the type system rather than asserting it.
-  if (!record) throw new HerdrError("agent_not_ready", `agent ${name} disappeared while starting`);
-
-  diag.readyAfterMs = Date.now() - started;
   // Canonical location, not a diagnostic: teardown needs it and diagnostics get reset.
-  state.sessionDir = record.agent_session?.value ? dirname(record.agent_session.value) : null;
+  state.sessionDir = booted.record.agent_session?.value
+    ? dirname(booted.record.agent_session.value)
+    : null;
 
   // A reused agent may live in a different pane than the one we resolved from the
   // worktree, so report the authoritative pane back for the subscription to follow.
-  return { reused: diag.reusedExistingAgent, paneId: record.pane_id ?? paneId };
+  return booted.paneId;
 }
 
 /**
@@ -366,48 +289,15 @@ export async function spawn(
   };
   watch(paneId);
 
-  // 4. Start, with the readiness guard.
-  const { reused, paneId: actualPane } = await startAgentAndWait(
-    spec,
-    block,
-    state,
-    paneId,
-    state.diagnostics,
-  );
+  // 4. Start, with the readiness guard, and send the ticket — the shared boot in
+  //    `agent-boot.ts`, whose header is the authority on why that order is not negotiable.
+  const actualPane = await bootTicketAgent(spec, block, state, paneId);
 
   // A reused agent can sit in a different pane than the worktree's first pane, so follow it.
+  // Only reuse can move it: a fresh start happens in the pane we handed `agent.start`.
   if (actualPane !== paneId) {
     paneId = actualPane;
     watch(paneId);
-  }
-
-  // 5. Prompt — but ONLY for a fresh start.
-  //
-  // Reuse means we re-attached to an agent that is already running this ticket (memory/teardown.md
-  // re-dispatch). Re-sending the ticket text would make it redo work it may have already
-  // done, so re-attaching is silent. A deliberate "work on this again" is a separate
-  // action. No such action exists yet — see memory/parking-lot.md.
-  if (reused) return { workspaceId, paneId, worktreePath, branch };
-
-  const text = [
-    `TICKET ${spec.projectId.toUpperCase()}-${spec.number}: ${spec.title}`,
-    "",
-    spec.description,
-  ].join("\n");
-
-  for (let attempt = 1; attempt <= 40; attempt++) {
-    try {
-      await request("agent.prompt", { target: agentNameFor(spec.projectId, spec.number), text });
-      state.diagnostics.promptAttempts = attempt;
-      break;
-    } catch (err) {
-      if (err instanceof HerdrError && err.code === "agent_not_ready" && attempt < 40) {
-        state.diagnostics.promptNotReadyRetries++;
-        await delay(250);
-        continue;
-      }
-      throw err;
-    }
   }
 
   return { workspaceId, paneId, worktreePath, branch };

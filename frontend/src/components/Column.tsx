@@ -32,7 +32,8 @@ type Props = {
   tickets: Ticket[];
   steerMode: SteerMode;
   onNewTicket?: () => void;
-  onOpenTicket: (ticket: Ticket) => void;
+  /** The card hands over its last failed action so the sheet can show the full message. */
+  onOpenTicket: (ticket: Ticket, actionError: string | null) => void;
   /** Passed straight to each card: a write landed, so re-read the board now. */
   onTicketChanged: () => void;
 };
@@ -101,7 +102,7 @@ export function Column({
             key={t.id}
             ticket={t}
             steerMode={steerMode}
-            onOpen={() => onOpenTicket(t)}
+            onOpen={(actionError) => onOpenTicket(t, actionError)}
             onChanged={onTicketChanged}
           />
         ))}

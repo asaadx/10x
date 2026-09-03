@@ -6,6 +6,7 @@ import {
   Ban,
   Bot,
   Check,
+  CircleAlert,
   ExternalLink,
   GitBranch,
   GitMerge,
@@ -519,7 +520,11 @@ export function TicketCard({
 }: {
   ticket: Ticket;
   steerMode: SteerMode;
-  onOpen: () => void;
+  /**
+   * Opens this ticket's sheet, handing it the last failed action so the full message is
+   * readable there — the card itself only shows a one-word chip (see `actionError` below).
+   */
+  onOpen: (actionError: string | null) => void;
   /** Refreshes the board now that a write landed, instead of waiting out the poll interval. */
   onChanged: () => void;
 }) {
@@ -539,10 +544,17 @@ export function TicketCard({
   const [previewState, setPreviewState] = useState<PreviewState>("idle");
   const previewTimer = useRef<number | undefined>(undefined);
   const [pending, setPending] = useState<PendingAction>(null);
-  // The last write that failed, or null. Shown on the card rather than in a toast: the failure
-  // belongs to THIS ticket — `not_in_backlog` means someone else's click already moved it,
-  // `transition_has_side_effects` means the button asked for a move it does not own — and a
-  // banner elsewhere would not say which card it was about.
+  // The last write that failed, or null. The failure belongs to THIS ticket — `not_in_backlog`
+  // means someone else's click already moved it, `transition_has_side_effects` means the button
+  // asked for a move it does not own — so a banner elsewhere would not say which card it was
+  // about. The card shows a one-word chip for it and hands the text to the sheet, which is the
+  // only surface with room to read it.
+  //
+  // Component state, deliberately: the message does NOT survive a reload, and it does not
+  // survive this card remounting — which happens when a ticket changes column, because each
+  // column renders its own list. It is feedback for a click that just happened rather than a
+  // record of it, so losing it either way is accepted here rather than persisted or held in a
+  // store.
   const [actionError, setActionError] = useState<string | null>(null);
 
   // A card unmounts on every poll that changes it, and a pending timer would then set state on
@@ -599,7 +611,7 @@ export function TicketCard({
         onClick={(e) => {
           // Every interactive child already has its own job; only bare card surface opens the sheet.
           if ((e.target as HTMLElement).closest("button, a, input, select, [role='menu']")) return;
-          onOpen();
+          onOpen(actionError);
         }}
         className="group cursor-pointer rounded-md border bg-card p-3 text-card-foreground shadow-xs transition-colors data-[died]:border-destructive/60"
       >
@@ -642,7 +654,7 @@ export function TicketCard({
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={onOpen}>Open</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onOpen(actionError)}>Open</DropdownMenuItem>
               {/*
                 Not column-scoped: Accept keeps the worktree and the branch, so a worktree can
                 exist on a ticket in any column, and manual removal is the only thing that
@@ -666,7 +678,7 @@ export function TicketCard({
         <h3 className="mt-2 text-sm leading-snug font-medium">
           <button
             type="button"
-            onClick={onOpen}
+            onClick={() => onOpen(actionError)}
             title={ticket.title}
             className="block w-full truncate text-left hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none underline-offset-2"
           >
@@ -682,27 +694,34 @@ export function TicketCard({
         */}
         <div className="mt-1 flex h-4 items-center gap-2">
           {/*
-            A failed write takes over this line rather than adding one: the row is a fixed
-            `h-4` and every card is the same height, so an extra line would make one card taller
-            than its neighbours exactly when something has gone wrong. The description is the
-            least urgent thing on the card and the full message stays in the `title`. `role`
-            announces it, because the click that caused it gave no other feedback.
+            The line is reserved whether or not there is text, so an empty description fills it
+            with a dimmed "n/a" rather than leaving a gap that reads as a rendering fault.
 
-            Otherwise the line is reserved whether or not there is text, so an empty description
-            fills it with a dimmed "n/a" rather than leaving a gap that reads as a rendering fault.
+            A failed write no longer takes this over. The description is what identifies the
+            ticket, and hiding it exactly when something has gone wrong is when the card is
+            hardest to place; the failure is a chip on the right instead, and the sheet has the
+            text.
           */}
-          {actionError !== null ? (
-            <p className="min-w-0 flex-1 truncate text-xs leading-4 text-destructive" role="status" title={actionError}>
-              {actionError}
-            </p>
-          ) : (
-            <p
-              className={`min-w-0 flex-1 truncate text-xs leading-4 text-muted-foreground${ticket.description ? "" : " italic opacity-70"}`}
-              title={ticket.description || undefined}
-            >
-              {ticket.description || "n/a"}
-            </p>
-          )}
+          <p
+            className={`min-w-0 flex-1 truncate text-xs leading-4 text-muted-foreground${ticket.description ? "" : " italic opacity-70"}`}
+            title={ticket.description || undefined}
+          >
+            {ticket.description || "n/a"}
+          </p>
+          {/*
+            Two chip slots, and never a third: the row is a fixed `h-4` on a five-column card,
+            so a third word would squeeze the description away — and `blocked`, `died` and a
+            failed action can all hold at once. Which two win is chosen so that nothing only
+            this row can say is dropped.
+
+            `blocked` keeps the first slot over the elapsed timer: it is Herdr-actionable and
+            the timer is the least urgent thing on the card.
+
+            `failed` takes the second slot from `died`, because a dead run is already said twice
+            more — this card's destructive border and the sheet's dead-run notice — while a
+            failed click has no other feedback at all. Both are destructive-toned, so the slot
+            reads the same either way.
+          */}
           <div className="flex shrink-0 items-center gap-2">
             <PullRequestLine ticket={ticket} />
             {blocked ? (
@@ -716,11 +735,27 @@ export function TicketCard({
             ) : (
               running && ticket.startedAt !== null && <RunTimer since={ticket.startedAt} />
             )}
-            {failed && (
-              <span className="inline-flex items-center gap-1 text-[11px] text-destructive" title="The pane exited before the agent finished.">
-                <Unplug aria-hidden className="size-3" />
-                died
+            {actionError !== null ? (
+              // `role` is what the full-text line this replaces carried, and the click that
+              // caused the failure gave no other feedback. The visible word is only "failed",
+              // so the message itself is announced from an `sr-only` span — absolutely
+              // positioned, so it is not a flex item and costs this fixed row no width.
+              <span
+                role="status"
+                className="inline-flex items-center gap-1 text-[11px] text-destructive"
+                title={actionError}
+              >
+                <CircleAlert aria-hidden className="size-3" />
+                failed
+                <span className="sr-only">: {actionError}. Open the ticket to read it.</span>
               </span>
+            ) : (
+              failed && (
+                <span className="inline-flex items-center gap-1 text-[11px] text-destructive" title="The pane exited before the agent finished.">
+                  <Unplug aria-hidden className="size-3" />
+                  died
+                </span>
+              )
             )}
           </div>
         </div>

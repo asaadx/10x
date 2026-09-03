@@ -33,7 +33,11 @@ with the symptom it produces when violated. These are the traps to design agains
 - **`agent_not_ready`** — two causes. From `agent.start`: the agent was blocked during startup, and
   the name stays usable for `agent.read` / `agent.send_keys`. From `agent.prompt`: the agent is not
   registered yet, i.e. the fresh-pane race ([spawn](./spawn.md)). Both mean "wait for idle, then
-  prompt" — retry, do not fail the ticket.
+  prompt" — retry, do not fail the ticket. **Retrying the prompt is the fallback, not the fix:**
+  the wait is `agent.get` polled until ready, and 10x does it in one place,
+  `backend/src/agent-boot.ts`. Skipping it and leaning on the retry is a shipped bug, with the
+  giveaway being a running but *unnamed* agent in the pane while `agent.get <name>` answers
+  `agent_not_found` ([spawn](./spawn.md)).
 - **`agent.start` startup timeout** defaults to 30 s; accepts `timeout_ms` between 3,000 and
   300,000.
 - **Reading agent output:** prefer `--source recent-unwrapped` for logs and transcripts. If

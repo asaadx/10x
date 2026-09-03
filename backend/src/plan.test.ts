@@ -105,19 +105,62 @@ function reset(next: Record<string, Handler>): void {
 }
 
 /**
- * A Herdr that behaves the way a real one does across a Plan: the agent does not exist until
- * `agent.start` names it, and exists from then on. That statefulness is what makes the
- * idempotent re-focus testable at all.
+ * A Herdr that behaves the way a real one does across a Plan.
+ *
+ * Two pieces of realism, both load-bearing:
+ *
+ *  - The agent does not exist until `agent.start` names it, and exists from then on. That
+ *    statefulness is what makes the idempotent re-focus testable at all.
+ *  - **`agent.start` returns before the agent is usable** (memory/spawn.md). Its reply carries
+ *    no `agent_status` and no `interactive_ready`, exactly as the real premature return does,
+ *    and `agent.prompt` is REFUSED with `agent_not_ready` until the agent is ready — which is
+ *    the production failure this fake exists to reproduce.
+ *
+ * Readiness advances with `agent.get` polls rather than with the wall clock, so a boot that
+ * never polls never becomes ready. That is deliberate: it makes deleting the readiness guard a
+ * hard test failure instead of a slow pass, and it needs no sleeps to be deterministic.
  */
-function liveHerdr(options: { startFails?: { code: string; message: string } } = {}) {
+function liveHerdr(
+  options: {
+    startFails?: { code: string; message: string };
+    /**
+     * How many `agent.get` polls after the start answer `agent_not_found` — the observable
+     * symptom of a premature start: an unnamed omp agent running in the pane, and no agent of
+     * that name for Herdr to answer about.
+     */
+    namelessGets?: number;
+    /** How many polls after those report `agent_status: "unknown"` with no `interactive_ready`. */
+    unreadyGets?: number;
+  } = {},
+) {
+  const nameless = options.namelessGets ?? 0;
+  const unready = options.unreadyGets ?? 0;
   const started = new Set<string>();
+  /** `agent.get` calls for an agent that has been started. */
+  let polls = 0;
+  /** Prompts Herdr refused because the agent was not registered yet. The guard keeps this 0. */
+  const refused = { prompts: 0 };
+
   return {
     started,
+    refused,
     handlers: {
-      "agent.get": (p) =>
-        started.has(String(p["target"]))
-          ? { result: { agent: { pane_id: "wZZ:p1", workspace_id: "wZZ" } } }
-          : NOT_FOUND,
+      "agent.get": (p) => {
+        if (!started.has(String(p["target"]))) return NOT_FOUND;
+        polls++;
+        if (polls <= nameless) return NOT_FOUND;
+        const ready = polls > nameless + unready;
+        return {
+          result: {
+            agent: {
+              pane_id: "wZZ:p1",
+              workspace_id: "wZZ",
+              agent_status: ready ? "idle" : "unknown",
+              ...(ready ? { interactive_ready: true } : {}),
+            },
+          },
+        };
+      },
       "workspace.create": () => ({
         result: {
           type: "workspace_created",
@@ -128,9 +171,21 @@ function liveHerdr(options: { startFails?: { code: string; message: string } } =
       "agent.start": (p) => {
         if (options.startFails) return { error: options.startFails };
         started.add(String(p["name"]));
+        // Premature on purpose: a name, and nothing that says the agent can be used.
         return { result: { type: "agent_started", agent: { name: p["name"] } } };
       },
-      "agent.prompt": () => ({ result: { type: "agent_prompted" } }),
+      "agent.prompt": () => {
+        if (polls <= nameless + unready) {
+          refused.prompts++;
+          return {
+            error: {
+              code: "agent_not_ready",
+              message: "agent ticket-plantest-1-plan is not an active named agent",
+            },
+          };
+        }
+        return { result: { type: "agent_prompted" } };
+      },
       "agent.focus": () => ({ result: { type: "ok" } }),
       "workspace.close": () => ({ result: { type: "ok" } }),
     } satisfies Record<string, Handler>,
@@ -254,14 +309,17 @@ describe("startPlanning", () => {
 
     const result = await startPlanning(planSpec("t-seq", 1), API_URL);
 
-    // The order IS the contract. The pane must exist before the agent; the agent must be
-    // prompted before the user is moved, because `--append-system-prompt` configures an agent
-    // without starting a turn — focus-then-prompt lands the human in a silent pane, and
-    // prompt-less lands them in one that never speaks at all.
+    // The order IS the contract, and the `agent.get` between the start and the prompt is the
+    // load-bearing part: `agent.start` returns before the agent is usable, so the boot polls
+    // until Herdr answers ready and only then speaks. The agent must also be prompted before
+    // the user is moved, because `--append-system-prompt` configures an agent without
+    // starting a turn — focus-then-prompt lands the human in a silent pane, and prompt-less
+    // lands them in one that never speaks at all.
     assert.deepEqual(sequence(), [
       "agent.get",
       "workspace.create",
       "agent.start",
+      "agent.get",
       "agent.prompt",
       "agent.focus",
     ]);
@@ -404,6 +462,7 @@ describe("startPlanning", () => {
       "workspace.create",
       "agent.start",
       "agent.start",
+      "agent.get",
       "agent.prompt",
       "agent.focus",
     ]);
@@ -447,9 +506,49 @@ describe("startPlanning", () => {
       "agent.get",
       "workspace.create",
       "agent.start",
+      "agent.get",
       "agent.prompt",
       "workspace.close",
     ]);
+  });
+
+  test("an agent.start that returns before the agent is gettable still lands its prompt", async () => {
+    // THE REGRESSION. Plan shipped without the readiness poll and this is what the user got:
+    // `500 agent_not_ready: agent ticket-10x-4-plan is not an active named agent`, with an
+    // unnamed omp agent running in the pane and `agent.get <name>` answering
+    // `agent_not_found`. The start had returned; the NAME had not registered.
+    const fake = liveHerdr({ namelessGets: 4, unreadyGets: 2 });
+    reset(fake.handlers);
+
+    const result = await startPlanning(planSpec("t-late", 9), API_URL);
+
+    assert.equal(result.reused, false);
+    // Polled through the whole nameless window and then through `unknown`, and only spoke
+    // after that: seven gets, then one prompt that was never refused.
+    const after = sequence().slice(sequence().indexOf("agent.start"));
+    assert.deepEqual(after, [
+      "agent.start",
+      ...Array<string>(7).fill("agent.get"),
+      "agent.prompt",
+      "agent.focus",
+    ]);
+    assert.equal(fake.refused.prompts, 0);
+  });
+
+  test("the opening turn is never sent before the readiness poll says ready", async () => {
+    // Same guarantee stated as the fake sees it: this Herdr refuses any `agent.prompt` that
+    // arrives while the agent is still `unknown`, and counts it. Deleting the poll from
+    // `agent-boot.ts` fails this test — the prompt retry is a last line of defence, not the
+    // guard, and it cannot tell "not registered yet" from "never will be".
+    const fake = liveHerdr({ unreadyGets: 3 });
+    reset(fake.handlers);
+
+    await startPlanning(planSpec("t-order", 10), API_URL);
+
+    assert.equal(fake.refused.prompts, 0);
+    assert.equal(calls.filter((c) => c.method === "agent.prompt").length, 1);
+    // Every readiness poll precedes the only prompt.
+    assert.ok(sequence().lastIndexOf("agent.get") < sequence().indexOf("agent.prompt"));
   });
 });
 
