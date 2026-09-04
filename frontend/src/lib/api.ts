@@ -264,3 +264,11 @@ export async function updateTicket(
 ): Promise<Ticket> {
   return request<Ticket>("PATCH", `/tickets/${encodeURIComponent(id)}`, fields);
 }
+
+/**
+ * Sends the reason back to the still-live agent and returns the ticket to In Progress.
+ * Nothing is deleted — the worktree, branch and agent all survive, exactly as they were.
+ */
+export async function rejectTicket(id: string, reason: string): Promise<void> {
+  await request<unknown>("POST", `/tickets/${encodeURIComponent(id)}/reject`, { reason });
+}

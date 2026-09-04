@@ -51,6 +51,7 @@ import {
   deleteTicket,
   deleteWorktree,
   moveTicket,
+  rejectTicket,
   spawnAgent,
   startPlanning,
 } from "@/lib/api.ts";
@@ -281,6 +282,7 @@ type PendingAction =
   | "move"
   | "start"
   | "accept"
+  | "reject"
   | "cancel"
   | "archive"
   | "deleteWorktree"
@@ -310,6 +312,7 @@ function RunActions({
   onMove,
   onStart,
   onAccept,
+  onReject,
   onCancel,
   onArchive,
   previewState,
@@ -322,6 +325,7 @@ function RunActions({
   onMove: (to: Status) => void;
   onStart: () => void;
   onAccept: () => void;
+  onReject: () => void;
   onCancel: () => void;
   onArchive: () => void;
   previewState: PreviewState;
@@ -465,7 +469,14 @@ function RunActions({
           )}
           {pending === "accept" ? "Accepting..." : "Accept"}
         </Button>
-        <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-[11px]" title="Sends feedback back to the agent, which keeps working. Nothing is destroyed.">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 gap-1 px-2 text-[11px]"
+          disabled={pending !== null}
+          title="Sends feedback back to the agent, which keeps working. Nothing is destroyed."
+          onClick={onReject}
+        >
           <Undo2 aria-hidden className="size-3" />
           Reject
         </Button>
@@ -571,6 +582,8 @@ export function TicketCard({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmWorktree, setConfirmWorktree] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmReject, setConfirmReject] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [previewState, setPreviewState] = useState<PreviewState>("idle");
   const previewTimer = useRef<number | undefined>(undefined);
@@ -812,6 +825,7 @@ export function TicketCard({
             onMove={(to) => void runAction("move", () => moveTicket(ticket.id, to))}
             onStart={() => void runAction("start", () => spawnAgent(ticket.id))}
             onAccept={() => void runAction("accept", () => acceptTicket(ticket.id))}
+            onReject={() => setConfirmReject(true)}
             onCancel={() => setConfirmCancel(true)}
             onArchive={() => setConfirmArchive(true)}
             previewState={previewState}
@@ -870,6 +884,45 @@ export function TicketCard({
             >
               {pending === "cancel" && <Spinner aria-hidden />}
               {pending === "cancel" ? "Discarding..." : "Discard attempt"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={confirmReject}
+        onOpenChange={(open) => {
+          setConfirmReject(open);
+          if (!open) setRejectReason("");
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reject this work?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Sends the reason below back to the agent, which keeps working on this ticket. Nothing is deleted.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <textarea
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            placeholder="What needs to change?"
+            rows={4}
+            disabled={pending !== null}
+            className="min-h-24 resize-y rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={pending !== null}>Keep in review</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={pending !== null || rejectReason.trim() === ""}
+              onClick={(e) => {
+                e.preventDefault();
+                void runAction("reject", () => rejectTicket(ticket.id, rejectReason.trim())).then((ok) => {
+                  if (ok) setConfirmReject(false);
+                });
+              }}
+            >
+              {pending === "reject" && <Spinner aria-hidden />}
+              {pending === "reject" ? "Rejecting..." : "Reject"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
