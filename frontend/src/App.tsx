@@ -116,6 +116,7 @@ export function App() {
         createInto={createInto}
         actionError={sheetError}
         onCreated={refresh}
+        onSaved={refresh}
       />
     </div>
   );

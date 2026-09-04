@@ -247,3 +247,20 @@ export async function deleteTicket(id: string): Promise<void> {
 export async function archiveTicket(id: string): Promise<void> {
   await request<unknown>("POST", `/tickets/${encodeURIComponent(id)}/archive`);
 }
+
+/**
+ * Saves edits made in the ticket sheet. Any subset of these fields may be sent; the server
+ * accepts a partial update and returns the full ticket back.
+ */
+export async function updateTicket(
+  id: string,
+  fields: {
+    title?: string;
+    description?: string;
+    playbook?: Playbook;
+    taskBreakdown?: { text: string; done: boolean }[];
+    acceptanceCriteria?: { text: string; done: boolean }[];
+  },
+): Promise<Ticket> {
+  return request<Ticket>("PATCH", `/tickets/${encodeURIComponent(id)}`, fields);
+}
