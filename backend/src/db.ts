@@ -145,6 +145,7 @@ addColumnIfMissing("tickets", "attachments", "TEXT NOT NULL DEFAULT '[]'");
 addColumnIfMissing("tickets", "screenshot_before", "TEXT");
 addColumnIfMissing("tickets", "screenshot_after", "TEXT");
 addColumnIfMissing("tickets", "started_at", "TEXT");
+addColumnIfMissing("tickets", "archived", "INTEGER NOT NULL DEFAULT 0");
 
 // A database migrated while `playbook` was briefly nullable already has the column, so
 // `addColumnIfMissing` above will not revisit it and its NOT NULL default never applies to
@@ -201,6 +202,7 @@ export type TicketRow = {
   started_at: string | null;
   created_at: string;
   updated_at: string;
+  archived: number;
 };
 
 export const toProject = (r: ProjectRow): Project => ({
@@ -238,6 +240,7 @@ export const toTicket = (r: TicketRow): Ticket => ({
   status: toStatus(r.status),
   finished: r.finished === 1,
   died: r.died === 1,
+  archived: r.archived === 1,
   branch: r.branch,
   agentName: r.agent_name,
   sessionDir: r.session_dir,

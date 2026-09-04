@@ -31,6 +31,7 @@ import { createProject, deleteProject, listProjects, getProject, updateProject }
 import { findOrphans, listWorktrees, reconcileTickets, sweepPlanWorkspaces } from "./reconcile.ts";
 import { retireAgent, spawn, teardown, type RunSpec, type RunState } from "./runner.ts";
 import {
+  archiveTicket,
   createTicket,
   deleteTicket,
   getTicket,
@@ -351,7 +352,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     return json({ ok: true, matched });
   }
 
-  const m = /^\/tickets\/([^/]+)(\/spawn|\/cancel|\/status|\/worktree|\/focus|\/accept|\/reject|\/plan)?$/.exec(path);
+  const m = /^\/tickets\/([^/]+)(\/spawn|\/cancel|\/status|\/worktree|\/focus|\/accept|\/reject|\/plan|\/archive)?$/.exec(path);
   if (!m?.[1]) return json({ error: "not_found", path }, 404);
   const id = decodeURIComponent(m[1]);
   const action = m[2];
@@ -787,6 +788,66 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       setRunFields(id, { finished: false });
       return json(getTicket(id));
     } finally {
+      inFlight.delete(id);
+    }
+  }
+
+  if (action === "/archive" && method === "POST") {
+    // Archive only ever fires from Done — refused here rather than trusting the frontend,
+    // the same posture /plan already takes for backlog-only and /status takes for its table.
+    if (ticket.status !== "done") {
+      return json(
+        { error: "not_done", message: `archive only applies to Done tickets; this one is ${ticket.status}`, status: ticket.status },
+        409,
+      );
+    }
+
+    // Same live-read guard DELETE /tickets/:id already runs, same reasoning: a stored
+    // prState is null whenever no webhook arrived, which is the common case, so trusting
+    // it would fail open exactly when it matters. Fail closed on anything unverifiable.
+    if (ticket.prNumber === null || needsLiveCheck(ticket.prState)) {
+      const token = process.env.GITHUB_TOKEN;
+      if (!token) {
+        return json(
+          { error: "pr_state_unknown", message: "GITHUB_TOKEN is not set; the PR state cannot be verified before archiving" },
+          409,
+        );
+      }
+      if (ticket.prNumber === null) {
+        return json(
+          { error: "pr_state_unknown", message: "this ticket has no recorded pull request, so archiving cannot be verified safe" },
+          409,
+        );
+      }
+      let live: PullRequestSnapshot;
+      try {
+        live = await fetchPullRequestSnapshot(project.repoPath, ticket.prNumber, token);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return json({ error: "pr_state_unknown", message }, 409);
+      }
+      if (live.state === "open") {
+        return json(
+          { error: "pr_open", message: `PR #${ticket.prNumber} is still open — merge or close it on GitHub first`, prNumber: ticket.prNumber, prUrl: ticket.prUrl },
+          409,
+        );
+      }
+      if (ticket.prUrl) {
+        setPullRequestState(ticket.prUrl, live.state, live.additions, live.deletions);
+      }
+    }
+
+    inFlight.add(id);
+    try {
+      const state = runStateFor(ticket);
+      await teardown(specFor(ticket, project), state, true);
+      runs.delete(id);
+      archiveTicket(id);
+      return json(getTicket(id));
+    } catch (err) {
+      return json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    } finally {
+      releasePortSlot(id);
       inFlight.delete(id);
     }
   }

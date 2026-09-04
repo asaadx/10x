@@ -95,6 +95,8 @@ export type Ticket = {
   finished: boolean;
   /** The pane exited. NOT the same as finished (memory/teardown.md rule 3). */
   died: boolean;
+  /** Hidden from every board read once true. No un-archive — see memory/parking-lot.md. */
+  archived: boolean;
   /** Persisted, not derived — see db.ts rule 1. Null until first spawn. */
   branch: string | null;
   agentName: string | null;
