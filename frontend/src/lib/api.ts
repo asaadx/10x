@@ -238,3 +238,12 @@ export async function deleteWorktree(id: string): Promise<void> {
 export async function deleteTicket(id: string): Promise<void> {
   await request<unknown>("DELETE", `/tickets/${encodeURIComponent(id)}`);
 }
+
+/**
+ * Hides the ticket from the board for good, after stopping the agent, force-removing the
+ * worktree, deleting the branch and the transcript — the same teardown depth as Cancel.
+ * There is no un-archive.
+ */
+export async function archiveTicket(id: string): Promise<void> {
+  await request<unknown>("POST", `/tickets/${encodeURIComponent(id)}/archive`);
+}

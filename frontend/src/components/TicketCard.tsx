@@ -44,7 +44,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.tsx";
-import { acceptTicket, cancelTicket, deleteTicket, deleteWorktree, moveTicket, spawnAgent, startPlanning } from "@/lib/api.ts";
+import {
+  acceptTicket,
+  archiveTicket,
+  cancelTicket,
+  deleteTicket,
+  deleteWorktree,
+  moveTicket,
+  spawnAgent,
+  startPlanning,
+} from "@/lib/api.ts";
 import { runFailed } from "@/lib/board.ts";
 import { REMOTE_TARGET, remoteCommand, type SteerMode } from "@/lib/steer-mode.ts";
 import type { Status, Ticket } from "@/types.ts";
@@ -273,6 +282,7 @@ type PendingAction =
   | "start"
   | "accept"
   | "cancel"
+  | "archive"
   | "deleteWorktree"
   | "deleteTicket";
 
@@ -301,6 +311,7 @@ function RunActions({
   onStart,
   onAccept,
   onCancel,
+  onArchive,
   previewState,
   onTogglePreview,
 }: {
@@ -312,6 +323,7 @@ function RunActions({
   onStart: () => void;
   onAccept: () => void;
   onCancel: () => void;
+  onArchive: () => void;
   previewState: PreviewState;
   onTogglePreview: () => void;
 }) {
@@ -501,14 +513,17 @@ function RunActions({
   if (ticket.status === "done") {
     // Done is terminal, its pull request is already linked from the description row, and
     // reclaiming the worktree lives in the overflow menu — so the single action here is
-    // Archive, which is UI ahead of the `archived` flag that does not exist yet
-    // (memory/parking-lot.md).
+    // Archive, now wired to the `archived` flag (memory/parking-lot.md). Disabled until the
+    // PR is recorded and terminal, because the server re-verifies live and answers 409
+    // otherwise — this is only so the button does not invite a click that cannot succeed.
     return (
       <Button
         size="sm"
         variant="outline"
         className="h-7 gap-1 px-2 text-[11px]"
-        title="Hides the ticket from the board. Nothing is deleted."
+        disabled={pending !== null || ticket.prNumber === null || (ticket.prState !== "merged" && ticket.prState !== "closed")}
+        title="Stops the agent, deletes the worktree, branch and transcript, and hides the ticket for good."
+        onClick={onArchive}
       >
         <Archive aria-hidden className="size-3" />
         Archive
@@ -556,6 +571,7 @@ export function TicketCard({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmWorktree, setConfirmWorktree] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmArchive, setConfirmArchive] = useState(false);
   const [previewState, setPreviewState] = useState<PreviewState>("idle");
   const previewTimer = useRef<number | undefined>(undefined);
   const [pending, setPending] = useState<PendingAction>(null);
@@ -797,6 +813,7 @@ export function TicketCard({
             onStart={() => void runAction("start", () => spawnAgent(ticket.id))}
             onAccept={() => void runAction("accept", () => acceptTicket(ticket.id))}
             onCancel={() => setConfirmCancel(true)}
+            onArchive={() => setConfirmArchive(true)}
             previewState={previewState}
             onTogglePreview={handleTogglePreview}
           />
@@ -853,6 +870,33 @@ export function TicketCard({
             >
               {pending === "cancel" && <Spinner aria-hidden />}
               {pending === "cancel" ? "Discarding..." : "Discard attempt"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={confirmArchive} onOpenChange={setConfirmArchive}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Archive this ticket?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Stops the agent, force-removes the worktree, deletes the branch and the transcript. The ticket is
+              hidden from the board for good — there is no un-archive. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={pending !== null}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={pending !== null}
+              onClick={(e) => {
+                e.preventDefault();
+                void runAction("archive", () => archiveTicket(ticket.id)).then((ok) => {
+                  if (ok) setConfirmArchive(false);
+                });
+              }}
+            >
+              {pending === "archive" && <Spinner aria-hidden />}
+              {pending === "archive" ? "Archiving..." : "Archive"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
