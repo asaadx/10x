@@ -63,6 +63,7 @@ const base: Ticket = {
   agentStatus: null,
   finished: false,
   died: false,
+  archived: false,
   sessionDir: null,
   hasWorktree: false,
   worktreePath: null,

@@ -128,6 +128,7 @@ const decode = (row: Row): Ticket =>
     status: text(row, "status"),
     finished: int(row, "finished"),
     died: int(row, "died"),
+    archived: int(row, "archived"),
     branch: maybeText(row, "branch"),
     agent_name: maybeText(row, "agent_name"),
     session_dir: maybeText(row, "session_dir"),
@@ -154,9 +155,9 @@ const decode = (row: Row): Ticket =>
 // Statements. Prepared once: db.ts has already run the schema at import time.
 // ---------------------------------------------------------------------------
 
-const SELECT_ALL = db.prepare("SELECT * FROM tickets ORDER BY project_id, number");
+const SELECT_ALL = db.prepare("SELECT * FROM tickets WHERE archived = 0 ORDER BY project_id, number");
 const SELECT_BY_PROJECT = db.prepare(
-  "SELECT * FROM tickets WHERE project_id = ? ORDER BY project_id, number",
+  "SELECT * FROM tickets WHERE archived = 0 AND project_id = ? ORDER BY project_id, number",
 );
 const SELECT_ONE = db.prepare("SELECT * FROM tickets WHERE id = ?");
 const SELECT_PROJECT_ID = db.prepare("SELECT id FROM projects WHERE id = ?");
@@ -257,6 +258,7 @@ const IMMUTABLE = [
   "agentName",
   "finished",
   "died",
+  "archived",
   "sessionDir",
 ] as const;
 
@@ -400,4 +402,11 @@ export function setRunFields(id: string, fields: RunFields): void {
   if (fields.finished !== undefined) columns.push(["finished", fields.finished ? 1 : 0]);
   if (fields.died !== undefined) columns.push(["died", fields.died ? 1 : 0]);
   writeColumns(id, columns);
+}
+
+const SET_ARCHIVED = db.prepare("UPDATE tickets SET archived = 1, updated_at = ? WHERE id = ?");
+
+/** One-way: there is no unset. Archiving hides a ticket from every board read for good. */
+export function archiveTicket(id: string): void {
+  SET_ARCHIVED.run(nowIso(), id);
 }
