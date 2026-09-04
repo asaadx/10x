@@ -17,7 +17,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet.tsx";
 import { Spinner } from "@/components/ui/spinner.tsx";
-import { createTicket, moveTicket } from "@/lib/api.ts";
+import { createTicket, moveTicket, updateTicket } from "@/lib/api.ts";
 import { runFailed } from "@/lib/board.ts";
 import { cn } from "@/lib/utils.ts";
 import { PLAYBOOKS, type Playbook, type Project, type Status, type Ticket } from "@/types.ts";
@@ -43,6 +43,8 @@ type Props = {
   actionError: string | null;
   /** A ticket was created, so the board should re-read rather than wait out the poll. */
   onCreated: () => void;
+  /** An edit was saved, so the board should re-read rather than wait out the poll. */
+  onSaved: () => void;
 };
 
 /**
@@ -188,6 +190,7 @@ export function TicketSheet({
   createInto,
   actionError,
   onCreated,
+  onSaved,
 }: Props) {
   const creating = ticket === null;
   const [title, setTitle] = useState(ticket?.title ?? "");
@@ -258,6 +261,32 @@ export function TicketSheet({
       const created = await createTicket({ projectId, title: title.trim(), description });
       if (createInto === "todo") await moveTicket(created.id, "todo");
       onCreated();
+      close(false);
+    } catch (cause) {
+      setSubmitError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  /**
+   * Saves edits to an existing ticket. `normalizeChecklistRows` appends a trailing blank input
+   * row for editing, so its output is filtered back down to only the rows with real text
+   * before either checklist reaches the PATCH body — the draft row itself is never sent.
+   */
+  const save = async () => {
+    if (submitting || ticket === null) return;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      await updateTicket(ticket.id, {
+        title: title.trim(),
+        description,
+        playbook,
+        taskBreakdown: normalizeChecklistRows(taskBreakdown).filter((row) => row.text.trim() !== ""),
+        acceptanceCriteria: normalizeChecklistRows(acceptanceCriteria).filter((row) => row.text.trim() !== ""),
+      });
+      onSaved();
       close(false);
     } catch (cause) {
       setSubmitError(cause instanceof Error ? cause.message : String(cause));
@@ -534,7 +563,10 @@ export function TicketSheet({
               {submitting ? "Adding..." : "Add"}
             </Button>
           ) : (
-            <Button disabled={title.trim() === ""}>Save</Button>
+            <Button disabled={submitting || title.trim() === ""} onClick={() => void save()}>
+              {submitting && <Spinner aria-hidden />}
+              {submitting ? "Saving..." : "Save"}
+            </Button>
           )}
         </SheetFooter>
       </SheetContent>
