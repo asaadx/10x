@@ -39,7 +39,7 @@ export type RunSpec = {
   acceptanceCriteria: ChecklistItem[];
   repoPath: string;
   base: string;
-  /** Where THIS 10x server answers, so the visual-diff skill knows where to upload to. */
+  /** Where THIS 10x server answers, so visual-diff knows where to upload and ticket-api knows where to read/PATCH. */
   apiUrl: string;
 };
 
@@ -233,6 +233,7 @@ export async function spawn(
   //    worktree before step 4, and before anything could start a server in there.
   await injectPortBlock(worktreePath, block, branch);
   await provisionSkill(worktreePath, "visual-diff");
+  await provisionSkill(worktreePath, "ticket-api");
 
   const agentName = agentNameFor(spec.projectId, spec.number);
 
