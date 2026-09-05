@@ -234,14 +234,16 @@ export function TicketSheet({
   // here: Save has no handler, so edits made in this sheet are local and lost on close.
   // Seeded from `ticket` via a `useState` initializer rather than an effect: `App.tsx` keys this
   // component by ticket id, so React remounts (and re-runs this initializer) whenever a
-  // different ticket opens — no sync needed. The `.length` check (not `??`) matters too: a
-  // persisted-but-empty array must still become one blank row, or the checklist has no input
-  // and can never be started.
+  // different ticket opens — no sync needed. Seeding goes through `normalizeChecklistRows`
+  // rather than the raw ticket array: that is what appends the trailing blank row Checklist
+  // treats as the add-new-item input, for both a persisted-but-empty array and one that
+  // already has real saved items — without it, the last real item gets mistaken for that
+  // blank row instead.
   const [taskBreakdown, setTaskBreakdown] = useState<ChecklistRow[]>(
-    ticket?.taskBreakdown.length ? ticket.taskBreakdown : [{ text: "", done: false }],
+    normalizeChecklistRows(ticket?.taskBreakdown ?? []),
   );
   const [acceptanceCriteria, setAcceptanceCriteria] = useState<ChecklistRow[]>(
-    ticket?.acceptanceCriteria.length ? ticket.acceptanceCriteria : [{ text: "", done: false }],
+    normalizeChecklistRows(ticket?.acceptanceCriteria ?? []),
   );
   const [submitting, setSubmitting] = useState(false);
   // The last failed create. The sheet stays OPEN on failure and keeps everything typed —
@@ -259,10 +261,8 @@ export function TicketSheet({
       setDescription(ticket?.description ?? "");
       setProjectId(ticket?.projectId ?? defaultProjectId);
       setPlaybook(ticket?.playbook ?? PLAYBOOKS[0]);
-      setTaskBreakdown(ticket?.taskBreakdown.length ? ticket.taskBreakdown : [{ text: "", done: false }]);
-      setAcceptanceCriteria(
-        ticket?.acceptanceCriteria.length ? ticket.acceptanceCriteria : [{ text: "", done: false }],
-      );
+      setTaskBreakdown(normalizeChecklistRows(ticket?.taskBreakdown ?? []));
+      setAcceptanceCriteria(normalizeChecklistRows(ticket?.acceptanceCriteria ?? []));
       setSubmitError(null);
     }
     onOpenChange(next);
