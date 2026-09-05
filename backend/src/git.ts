@@ -37,3 +37,14 @@ export async function excludeFromGit(worktreePath: string, entry: string): Promi
   const separator = current === "" || current.endsWith("\n") ? "" : "\n";
   await writeFile(excludeFile, `${current}${separator}${entry}\n`, "utf8");
 }
+
+/**
+ * Does the project's own history already track something at `relPath` (relative to the
+ * worktree root)? `git ls-files` reads the index, which for a freshly created worktree
+ * matches HEAD exactly — so this answers "does the base branch already commit this path",
+ * not "does a file exist there right now" (an untracked file on disk would not count).
+ */
+export async function isTracked(worktreePath: string, relPath: string): Promise<boolean> {
+  const { stdout } = await run("git", ["-C", worktreePath, "ls-files", "--", relPath]);
+  return stdout.trim() !== "";
+}

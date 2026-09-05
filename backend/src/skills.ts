@@ -12,7 +12,7 @@
  */
 import { cp } from "node:fs/promises";
 import { join } from "node:path";
-import { excludeFromGit } from "./git.ts";
+import { excludeFromGit, isTracked } from "./git.ts";
 
 /** Sibling of `prompts/`, resolved the same way — see prompts.ts's header for why. */
 const SKILLS_DIR = join(import.meta.dirname, "..", "..", "skills");
@@ -23,14 +23,22 @@ const SKILLS_DIR = join(import.meta.dirname, "..", "..", "skills");
  * templates nothing — so choosing WHICH skills a given ticket gets (a per-playbook set, later)
  * is a decision for the call site, not for this function.
  *
+ * Never overwrites a skill the target repo already tracks under that name: `.agents/skills/`
+ * is a real, ordinary part of a project's tree (this repo commits `playwright-cli` there for
+ * its own agents), so a name collision means the project chose to own that skill itself, and
+ * 10x provisioning a different copy over it would silently replace committed content the
+ * project's own history is the source of truth for. `isTracked` (git.ts) is what decides —
+ * present in the base branch, not merely present on disk — and a hit skips both the copy and
+ * the exclude entry below.
+ *
  * Excluded from git exactly like the port `.env` (git.ts): this is 10x's own tooling landing
  * in the worktree, not the project's code, and it must never surface in the agent's diff or
  * the pull request it opens. The exclude entry names this exact skill's directory, so it
- * cannot blind a project that tracks its own `.agents/skills/` — this repo tracks
- * `playwright-cli` there, and provisioning a different skill name must not touch it.
+ * cannot blind a project that tracks its own `.agents/skills/` under a different name.
  */
 export async function provisionSkill(worktreePath: string, name: string): Promise<void> {
-  const dest = join(worktreePath, ".agents", "skills", name);
-  await cp(join(SKILLS_DIR, name), dest, { recursive: true });
-  await excludeFromGit(worktreePath, `.agents/skills/${name}/`);
+  const relDest = join(".agents", "skills", name);
+  if (await isTracked(worktreePath, relDest)) return;
+  await cp(join(SKILLS_DIR, name), join(worktreePath, relDest), { recursive: true });
+  await excludeFromGit(worktreePath, `${relDest}/`);
 }

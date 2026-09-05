@@ -333,6 +333,13 @@ a skill needs (an API URL, a ticket id) goes in the **system prompt** instead
 (`prompts/implementation.md`'s `{{apiUrl}}`/`{{ticketId}}` markers), never baked into the
 skill file itself — that is what keeps the skill a plain verbatim copy with nothing to render.
 
+**Never overwrites a skill the target repo already tracks under that name.** `git.ts`'s
+`isTracked` checks `git ls-files` on the base branch before copying — present there means the
+project committed its own `.agents/skills/<name>/`, and `provisionSkill` returns without
+touching it (no copy, no exclude entry either, since it was never 10x's file to hide). A name
+collision is a real, if unlikely, possibility: nothing stops a project from carrying a skill of
+its own under the same name 10x happens to provision.
+
 **Excluded from git exactly like the port `.env`.** `git.ts` (`excludeFromGit`, extracted from
 what `injectPortBlock` used to inline) appends `.agents/skills/<name>/` to the worktree's
 shared `info/exclude`, the same file and the same reasoning as the port block: this is 10x's

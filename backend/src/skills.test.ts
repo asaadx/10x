@@ -9,7 +9,7 @@ import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { provisionSkill } from "./skills.ts";
@@ -58,5 +58,32 @@ describe("provisionSkill", () => {
     ).trim();
     const lines = readFileSync(excludeFile, "utf8").split("\n").filter((l) => l === ".agents/skills/visual-diff/");
     assert.equal(lines.length, 1);
+  });
+
+  test("never overwrites a skill the target repo already tracks under that name", async () => {
+    const tracked = join(dir, "tracked-worktree");
+    mkdirSync(tracked);
+    execFileSync("git", ["init", "-q", tracked], { stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: tracked });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: tracked });
+    const trackedSkillDir = join(tracked, ".agents", "skills", "visual-diff");
+    mkdirSync(trackedSkillDir, { recursive: true });
+    const projectsOwnContent = "# The project's own visual-diff skill, not 10x's.\n";
+    await writeFile(join(trackedSkillDir, "SKILL.md"), projectsOwnContent, "utf8");
+    execFileSync("git", ["add", "-A"], { cwd: tracked });
+    execFileSync("git", ["commit", "-q", "-m", "commit our own visual-diff skill"], { cwd: tracked });
+
+    await provisionSkill(tracked, "visual-diff");
+
+    // Untouched: still the project's content, not 10x's.
+    assert.equal(await readFile(join(trackedSkillDir, "SKILL.md"), "utf8"), projectsOwnContent);
+    // No exclude entry either — this was never 10x's file to hide.
+    const excludeFile = execFileSync(
+      "git",
+      ["-C", tracked, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"],
+      { encoding: "utf8" },
+    ).trim();
+    const excludeContent = existsSync(excludeFile) ? readFileSync(excludeFile, "utf8") : "";
+    assert.ok(!excludeContent.includes(".agents/skills/visual-diff/"));
   });
 });
