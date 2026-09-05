@@ -175,7 +175,7 @@ function ScreenshotLightbox({
             </Button>
           )}
         </div>
-        <div className="flex items-center justify-center gap-3">
+        <div className="grid justify-items-center gap-1.5">
           <span className="text-sm font-medium">{label}</span>
           {bothExist && (
             <div className="flex gap-1.5" role="group" aria-label="Screenshot">
