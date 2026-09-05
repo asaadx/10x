@@ -191,6 +191,44 @@ describe("POST /tickets/:id/screenshots/:side", () => {
     assert.equal(res.status, 400);
     assert.equal(res.body["error"], "empty_body");
   });
+
+  test("400s on a declared Content-Type other than image/png", async () => {
+    const id = seedTicket();
+    const res = await fetch(`${API_URL}/tickets/${id}/screenshots/before`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json())["error"], "invalid_content_type");
+  });
+
+  test("400s when the declared type is image/png but the bytes are not really a PNG", async () => {
+    const id = seedTicket();
+    const res = await upload(id, "before", new TextEncoder().encode("not a png"));
+    assert.equal(res.status, 400);
+    assert.equal(res.body["error"], "invalid_image");
+  });
+
+  test("413s once the body crosses the size cap, without writing a file", async () => {
+    const id = seedTicket();
+    // server.ts's MAX_SCREENSHOT_BYTES is 10 MiB and not exported; this pins that exact
+    // threshold, so a deliberate change to the cap must update this test alongside it.
+    const oversized = Buffer.alloc(10 * 1024 * 1024 + 1);
+    const res = await fetch(`${API_URL}/tickets/${id}/screenshots/before`, {
+      method: "POST",
+      headers: { "content-type": "image/png" },
+      body: oversized,
+    });
+    assert.equal(res.status, 413);
+    assert.equal((await res.json())["error"], "payload_too_large");
+
+    const ticket = (await api("GET", `/tickets?project=${PROJECT_ID}`)).body["tickets"] as Record<
+      string,
+      unknown
+    >[];
+    assert.deepEqual(ticket.find((t) => t["id"] === id)?.["screenshots"], { before: null, after: null });
+  });
 });
 
 describe("GET /screenshots/:file", () => {
@@ -209,7 +247,8 @@ describe("GET /screenshots/:file", () => {
 describe("DELETE /tickets/:id", () => {
   test("deleting a ticket reclaims its screenshot files: the served path 404s afterward", async () => {
     const id = seedTicket();
-    const up = await upload(id, "before", new Uint8Array([1, 2, 3]));
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    const up = await upload(id, "before", png);
     const path = up.body["path"] as string;
     assert.equal((await fetch(`${API_URL}${path}`)).status, 200);
 

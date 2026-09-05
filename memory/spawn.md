@@ -362,3 +362,17 @@ nothing captured can end up in the agent's own diff). Deleting a ticket deletes 
 a port slot already gets ([architecture](./architecture.md)), because they are 10x's own
 bookkeeping, never the user's work — unlike the worktree and branch that same route also tears
 down, which [teardown](./teardown.md) never removes without an explicit user action.
+
+**The upload is hardened against more than a happy-path PNG.** A running byte count aborts
+`readRawBody` past `MAX_SCREENSHOT_BYTES` (10 MiB) without destroying the connection — killing
+the socket the instant the cap trips races the client reading the 413 it was about to send, and
+that reads as a bare connection reset rather than an HTTP error; the excess is dropped, not
+buffered, and the stream is left to drain to its own `end`. A declared `Content-Type` other
+than `image/png` is `400 invalid_content_type` before the bytes are even looked at, and the
+bytes themselves are checked against the real PNG magic number (`400 invalid_image`) so a
+client that lies about its header cannot land a non-image file behind a `.png` path.
+
+**Verified live, not just in tests.** Ticket 10x-5's own Before/After panes on the real board
+carry a real light-theme and dark-theme capture of the kanban board itself, uploaded through
+this exact route against the production server — the "one real UI ticket, verified by hand"
+case this mechanism exists for.
