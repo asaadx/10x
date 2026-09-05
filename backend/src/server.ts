@@ -138,6 +138,8 @@ const specFor = (t: Ticket, p: Project): RunSpec => ({
   number: t.number,
   title: t.title,
   description: t.description,
+  taskBreakdown: t.taskBreakdown,
+  acceptanceCriteria: t.acceptanceCriteria,
   repoPath: p.repoPath,
   base: p.baseBranch,
   apiUrl: API_URL,

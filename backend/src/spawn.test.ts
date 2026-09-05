@@ -213,6 +213,8 @@ const runSpec = (over: Partial<RunSpec> = {}): RunSpec => ({
   number: 1,
   title: "Rate limit the API",
   description: "429 after 100 req/min",
+  taskBreakdown: [],
+  acceptanceCriteria: [],
   repoPath: worktree,
   base: "main",
   apiUrl: "http://localhost:4010",
@@ -276,7 +278,20 @@ describe("spawn", () => {
 
     const opening = paramsOf("agent.prompt") as { target: string; text: string };
     assert.equal(opening.target, "ticket-spawntest-1");
-    assert.equal(opening.text, "TICKET SPAWNTEST-1: Rate limit the API\n\n429 after 100 req/min");
+    assert.equal(
+      opening.text,
+      [
+        "TICKET SPAWNTEST-1: Rate limit the API",
+        "",
+        "429 after 100 req/min",
+        "",
+        "Task breakdown:",
+        "(empty)",
+        "",
+        "Acceptance criteria:",
+        "(empty)",
+      ].join("\n"),
+    );
     assert.equal(fake.refused.prompts, 0);
 
     // The port block reaches the worktree, and the session directory the teardown needs is
@@ -295,6 +310,26 @@ describe("spawn", () => {
     assert.equal(state.diagnostics.promptNotReadyRetries, 0);
     assert.equal(state.diagnostics.reusedExistingAgent, false);
     assert.ok((state.diagnostics.readyAfterMs ?? -1) >= 0);
+  });
+
+  test("the opening message includes the task breakdown and acceptance criteria", async () => {
+    const fake = liveHerdr();
+    reset(fake.handlers);
+    const state = runState();
+
+    await start(
+      runSpec({
+        taskBreakdown: [{ text: "pick a bucket", done: true }],
+        acceptanceCriteria: [{ text: "101st request is refused", done: false }],
+      }),
+      state,
+    );
+
+    const { text } = paramsOf("agent.prompt") as { text: string };
+    assert.match(text, /^TICKET SPAWNTEST-1: Rate limit the API$/m);
+    assert.match(text, /^429 after 100 req\/min$/m);
+    assert.match(text, /^Task breakdown:\n- \[x\] pick a bucket$/m);
+    assert.match(text, /^Acceptance criteria:\n- \[ \] 101st request is refused$/m);
   });
 
   test("an agent.start that returns before the agent is gettable still lands the ticket", async () => {

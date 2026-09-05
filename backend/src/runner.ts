@@ -24,7 +24,7 @@ import { agentNameFor, branchFor, normalizeEvent } from "./lifecycle.ts";
 import { ENV_FILE, envFileFor, type PortBlock } from "./ports.ts";
 import { loadPrompt } from "./prompts.ts";
 import { provisionSkill } from "./skills.ts";
-import type { Diagnostics } from "./types.ts";
+import type { ChecklistItem, Diagnostics } from "./types.ts";
 
 /**
  * Everything a run needs, passed explicitly so this module never touches the store.
@@ -35,6 +35,8 @@ export type RunSpec = {
   number: number;
   title: string;
   description: string;
+  taskBreakdown: ChecklistItem[];
+  acceptanceCriteria: ChecklistItem[];
   repoPath: string;
   base: string;
   /** Where THIS 10x server answers, so the visual-diff skill knows where to upload to. */
@@ -66,6 +68,28 @@ type WorktreeCreated = {
   worktree: WorktreeInfo;
 };
 type WorktreeOpened = { workspace: { workspace_id: string }; worktree: WorktreeInfo };
+
+/**
+ * The opening turn: the ticket, and nothing about how to work on it — that is the system
+ * prompt's job, and saying it twice would make two places to change. Same shape as
+ * `planner.ts`'s `openingMessage`: the checklists are why the ticket sheet collects them, and
+ * an agent that never sees them cannot act on them.
+ */
+function openingMessage(spec: RunSpec): string {
+  const checked = (item: ChecklistItem) => `- [${item.done ? "x" : " "}] ${item.text}`;
+
+  return [
+    `TICKET ${spec.projectId.toUpperCase()}-${spec.number}: ${spec.title}`,
+    "",
+    spec.description,
+    "",
+    "Task breakdown:",
+    spec.taskBreakdown.map(checked).join("\n") || "(empty)",
+    "",
+    "Acceptance criteria:",
+    spec.acceptanceCriteria.map(checked).join("\n") || "(empty)",
+  ].join("\n");
+}
 
 /**
  * Boot the ticket's implementation agent: write its system prompt, run the shared boot
@@ -101,11 +125,7 @@ async function bootTicketAgent(
 
   // The opening turn: the ticket, and nothing about how to work on it — that is the system
   // prompt's job, and saying it twice would make two places to change.
-  const text = [
-    `TICKET ${spec.projectId.toUpperCase()}-${spec.number}: ${spec.title}`,
-    "",
-    spec.description,
-  ].join("\n");
+  const text = openingMessage(spec);
 
   let booted: BootedAgent;
   try {
