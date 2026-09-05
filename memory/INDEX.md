@@ -60,9 +60,10 @@ that proves the prompt retry is no substitute for it, and measured timings. Also
 and waited *for*, never waited *on*; the proof that **result shapes are schema-proven**,
 `workspace_created` carrying its own `root_pane`; and **how 10x provisions a skill into a
 spawned agent's worktree at all** — `skills.ts`'s `provisionSkill`, generic and templateless,
-excluded from git the same way as the port block, and the one skill built on it so far,
-`visual-diff`, which captures the board's before/after screenshot pair.
-`worktree.create · agent.start · agent.prompt · opening prompt · agent_pane_busy · interactive_ready · readiness guard · agent-boot.ts · bootAgent · agent_not_ready · agent_not_found · plan · workspace.create · root_pane · ResponseResult · provisionSkill · skills.ts · visual-diff · screenshots.ts · excludeFromGit · git.ts`
+excluded from git the same way as the port block, and the two skills built on it so far:
+`visual-diff` (captures the board's before/after screenshot pair) and `ticket-api` (the
+read + own-ticket-PATCH surface of 10x's own API).
+`worktree.create · agent.start · agent.prompt · opening prompt · agent_pane_busy · interactive_ready · readiness guard · agent-boot.ts · bootAgent · agent_not_ready · agent_not_found · plan · workspace.create · root_pane · ResponseResult · provisionSkill · skills.ts · visual-diff · ticket-api · screenshots.ts · excludeFromGit · git.ts`
 
 **[agent-status](./agent-status.md)** — `idle` and `done` are the **same** state; the first `idle`
 arrives *before* the prompt; a turn ending is not the ticket succeeding; a prose question is
