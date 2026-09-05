@@ -16,6 +16,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet.tsx";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog.tsx";
 import { Spinner } from "@/components/ui/spinner.tsx";
 import { createTicket, moveTicket, updateTicket } from "@/lib/api.ts";
 import { runFailed } from "@/lib/board.ts";
@@ -50,13 +51,34 @@ type Props = {
 /**
  * One labelled Before/After pane: the image when its url is captured, or a placeholder when it
  * isn't. Extracted so the two panes below share this markup instead of duplicating it.
+ *
+ * Clicking the thumbnail enlarges it in a plain `Dialog` (dialog.tsx) nested inside the sheet's
+ * own dialog — Radix's dismissable-layer stack closes only the topmost one on Escape, so
+ * closing the enlarged view never closes the sheet under it. The thumbnail is a `<button>`
+ * rather than an `onClick` on the `<img>` so it is keyboard-reachable and gets a focus ring.
  */
 function ScreenshotPane({ label, url }: { label: string; url: string | null }) {
+  const [enlarged, setEnlarged] = useState(false);
   return (
     <div className="grid gap-1.5">
       <label className="text-xs text-muted-foreground">{label}</label>
       {url ? (
-        <img src={url} alt={label} className="aspect-video w-full rounded-md border object-cover" />
+        <>
+          <button
+            type="button"
+            onClick={() => setEnlarged(true)}
+            aria-label={`Enlarge ${label} screenshot`}
+            className="block aspect-video w-full overflow-hidden rounded-md border focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          >
+            <img src={url} alt={label} className="size-full object-cover" />
+          </button>
+          <Dialog open={enlarged} onOpenChange={setEnlarged}>
+            <DialogContent className="max-w-4xl p-2">
+              <DialogTitle className="sr-only">{label} screenshot, enlarged</DialogTitle>
+              <img src={url} alt={label} className="max-h-[85vh] w-full rounded-md object-contain" />
+            </DialogContent>
+          </Dialog>
+        </>
       ) : (
         <div className="flex aspect-video w-full flex-col items-center justify-center gap-1.5 rounded-md border bg-muted text-xs text-muted-foreground">
           <ImageIcon aria-hidden className="size-5" />

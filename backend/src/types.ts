@@ -73,6 +73,12 @@ export type ChecklistItem = { text: string; done: boolean };
  */
 export type Attachment = { name: string; size: number; mime: string; path: string };
 
+/**
+ * Which side of the before/after pair a screenshot upload writes. The route is
+ * `POST /tickets/:id/screenshots/:side`, and `side` is the one path segment narrowed to this.
+ */
+export type ScreenshotSide = "before" | "after";
+
 export type Project = {
   /** Immutable slug used in branch and agent names. Renaming would orphan worktrees. */
   id: string;

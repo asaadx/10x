@@ -46,9 +46,16 @@ describe("renderPrompt", () => {
 
 describe("loadPrompt", () => {
   test("the implementation prompt renders with the keys the runner passes", async () => {
-    const rendered = await loadPrompt("implementation", { portStart: 4110, portEnd: 4119 });
+    const rendered = await loadPrompt("implementation", {
+      portStart: 4110,
+      portEnd: 4119,
+      apiUrl: "http://localhost:4010",
+      ticketId: "demo-3",
+    });
     assert.ok(rendered.includes("TCP ports 4110-4119"));
     assert.ok(rendered.includes("PORT=4110"));
+    assert.ok(rendered.includes("http://localhost:4010"));
+    assert.ok(rendered.includes("demo-3"));
     assert.ok(!rendered.includes("{{"));
   });
 

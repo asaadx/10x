@@ -215,6 +215,7 @@ const runSpec = (over: Partial<RunSpec> = {}): RunSpec => ({
   description: "429 after 100 req/min",
   repoPath: worktree,
   base: "main",
+  apiUrl: "http://localhost:4010",
   ...over,
 });
 

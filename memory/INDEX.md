@@ -57,9 +57,12 @@ strace evidence, the 6-trial race table, the required guard — **one implementa
 that proves the prompt retry is no substitute for it, and measured timings. Also
 **`--append-system-prompt` starts no turn, so every started agent needs an opening
 `agent.prompt`**; the **planning** sequence — a worktree-less, portless agent that is prompted
-and waited *for*, never waited *on*; and the proof that **result shapes are schema-proven**,
-`workspace_created` carrying its own `root_pane`.
-`worktree.create · agent.start · agent.prompt · opening prompt · agent_pane_busy · interactive_ready · readiness guard · agent-boot.ts · bootAgent · agent_not_ready · agent_not_found · plan · workspace.create · root_pane · ResponseResult`
+and waited *for*, never waited *on*; the proof that **result shapes are schema-proven**,
+`workspace_created` carrying its own `root_pane`; and **how 10x provisions a skill into a
+spawned agent's worktree at all** — `skills.ts`'s `provisionSkill`, generic and templateless,
+excluded from git the same way as the port block, and the one skill built on it so far,
+`visual-diff`, which captures the board's before/after screenshot pair.
+`worktree.create · agent.start · agent.prompt · opening prompt · agent_pane_busy · interactive_ready · readiness guard · agent-boot.ts · bootAgent · agent_not_ready · agent_not_found · plan · workspace.create · root_pane · ResponseResult · provisionSkill · skills.ts · visual-diff · screenshots.ts · excludeFromGit · git.ts`
 
 **[agent-status](./agent-status.md)** — `idle` and `done` are the **same** state; the first `idle`
 arrives *before* the prompt; a turn ending is not the ticket succeeding; a prose question is
@@ -120,7 +123,7 @@ load-bearing and why `capitalize` makes `textContent` lie.
 `frontend/ · React · Vite · Tailwind · shadcn · types.ts · BoardTicket · VITE_MOCK_MODE · use-board · poll · native-select · aria-labelledby`
 
 **[testing](./testing.md)** — the two suites, and **which command costs money**: `pnpm e2e` is an
-allow-list of the three agent-free specs (18 tests, ~7 s), while `pnpm e2e:full` spawns **16 real
+allow-list of four agent-free specs (19 tests, ~8 s), while `pnpm e2e:full` spawns **16 real
 agents**. Every unit target and why it is pinned, the `e2e/fixtures.ts` contract, the per-test
 budgets, and what the suite reads outside the HTTP API.
 `node:test · playwright · fast vs full · e2e:full · requireHerdr · startBoard · 4310 · cleanupAll · real agents`

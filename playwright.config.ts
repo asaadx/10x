@@ -23,7 +23,7 @@ export default defineConfig({
   projects: [
     {
       name: "fast",
-      testMatch: ["projects.spec.ts", "tickets.spec.ts", "board.spec.ts"],
+      testMatch: ["projects.spec.ts", "tickets.spec.ts", "board.spec.ts", "screenshots.spec.ts"],
     },
     {
       name: "full",

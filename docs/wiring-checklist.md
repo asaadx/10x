@@ -189,11 +189,13 @@ migration each). What is missing is the write path, and it differs per field.
       agent files its plan, and what the card's readiness signal reads. Editing them from the
       sheet still depends on `Save`, tracked in section 1.
 
-- [ ] **`screenshots` has columns and no capture path.** `screenshot_before` and
-      `screenshot_after` are two independently nullable columns, deliberately not one blob, and
-      nothing writes either: there is no screenshot route in `server.ts`. The sheet renders the
-      Before/After panes only when at least one side is non-null, so a live board degrades
-      honestly here.
+- [x] **`screenshots` are captured by the ticket's own agent and have a real write path.**
+      `POST /tickets/:id/screenshots/:side` (raw PNG bytes) writes `screenshot_before` /
+      `screenshot_after` (`screenshots.ts`, `backend/src/server.ts`), served back at
+      `GET /screenshots/<file>`. Capture itself is the `visual-diff` skill
+      (`skills/visual-diff/SKILL.md`), provisioned into every implementation agent's worktree
+      at spawn (`backend/src/skills.ts`) — see `memory/spawn.md`. Deleting a ticket deletes
+      both files.
 
 - [ ] **Attachments are inert.** `attachments` is a column; `AttachmentDropZone` in
       `TicketSheet.tsx` is a real drag target whose drop handler only resets its own `dragging`

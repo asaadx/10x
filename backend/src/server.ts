@@ -65,6 +65,7 @@ import {
   type PullRequestSnapshot,
 } from "./github.ts";
 import { blockFor } from "./ports.ts";
+import { deleteScreenshots, saveScreenshot, SCREENSHOTS_DIR } from "./screenshots.ts";
 import { killDevServers } from "./dev-server.ts";
 
 const PORT = Number(process.env.PORT ?? 4010);
@@ -139,6 +140,7 @@ const specFor = (t: Ticket, p: Project): RunSpec => ({
   description: t.description,
   repoPath: p.repoPath,
   base: p.baseBranch,
+  apiUrl: API_URL,
 });
 
 /**
@@ -416,7 +418,12 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       const state = runStateFor(ticket);
       await teardown(specFor(ticket, project), state, true);
       runs.delete(id);
-      return json(deleteTicket(id));
+      const result = deleteTicket(id);
+      // 10x's own bookkeeping, not the user's work (memory/architecture.md, port pool) — the
+      // same automatic-reclaim treatment a port slot gets, unlike the worktree and branch
+      // teardown just decided above, which memory/teardown.md never removes automatically.
+      await deleteScreenshots(id);
+      return json(result);
     } finally {
       // Deleting the row frees the slot with it, but only if teardown got that far. A
       // failed Herdr call must not strand a tenth of the pool until the next boot.
@@ -893,6 +900,124 @@ async function resolvePublicAsset(bare: string): Promise<{ file: string; type: s
   return { file, type };
 }
 
+/**
+ * Resolve `/screenshots/<file>` to a readable file under `SCREENSHOTS_DIR`, or `null`. Same
+ * shape and the same reasons as `resolvePublicAsset` above — realpath containment, a decode
+ * failure or embedded NUL fails closed, only a regular file is served — narrowed to the one
+ * extension `screenshots.ts` ever writes.
+ */
+async function resolveScreenshotAsset(bare: string): Promise<{ file: string; type: string } | null> {
+  const m = /^\/screenshots\/([^/]+)$/.exec(bare);
+  if (!m?.[1]) return null;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(m[1]);
+  } catch {
+    return null;
+  }
+  if (decoded.includes("\0") || extname(decoded).toLowerCase() !== ".png") return null;
+
+  let root: string;
+  let file: string;
+  try {
+    root = await realpath(SCREENSHOTS_DIR);
+    file = await realpath(join(root, decoded));
+  } catch {
+    return null;
+  }
+  if (file !== root && !file.startsWith(root + sep)) return null;
+  if (!(await stat(file)).isFile()) return null;
+  return { file, type: "image/png" };
+}
+
+const SCREENSHOT_UPLOAD_RE = /^\/tickets\/([^/]+)\/screenshots\/(before|after)$/;
+
+/**
+ * Bigger than any real capture needs to be — a 1680x940 PNG at 2x density is a few MB at
+ * most — and small enough to bound what an upload can hold in memory. Enforced by
+ * `readRawBody` aborting the connection once the running total crosses it, not by trusting a
+ * client-supplied `Content-Length`.
+ */
+const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024;
+
+/** The one byte signature `screenshots.ts` ever writes — see `handleScreenshotUpload`. */
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/** Thrown by `readRawBody` when the body crosses `maxBytes`, so the caller can answer 413. */
+class PayloadTooLargeError extends Error {}
+
+/**
+ * Same shape as `readBody`, minus the JSON parse: the one route whose body is bytes, not
+ * JSON. Rejects with `PayloadTooLargeError` as soon as the running total exceeds `maxBytes`,
+ * so an oversized upload is never buffered whole — but it does NOT destroy the connection:
+ * the client is still writing, and killing the socket the instant the promise rejects races
+ * the caller's 413 response, which the client then sees as a bare connection reset instead of
+ * an HTTP error. Excess chunks are simply dropped rather than stored, which is what keeps
+ * memory bounded; the stream is left to drain to its own `end` on its own time.
+ */
+async function readRawBody(
+  req: { on: (e: string, f: (c?: unknown) => void) => void },
+  maxBytes: number,
+): Promise<Buffer> {
+  const { promise, resolve: done, reject: fail } = Promise.withResolvers<Buffer>();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  let exceeded = false;
+  req.on("data", (c) => {
+    const chunk = c as Buffer;
+    total += chunk.length;
+    if (total > maxBytes) {
+      if (!exceeded) fail(new PayloadTooLargeError(`body exceeded ${maxBytes} bytes`));
+      exceeded = true;
+      return;
+    }
+    chunks.push(chunk);
+  });
+  req.on("end", () => {
+    if (!exceeded) done(Buffer.concat(chunks));
+  });
+  req.on("error", fail);
+  return promise;
+}
+
+/**
+ * `POST /tickets/:id/screenshots/:side`, raw PNG bytes — the visual-diff skill's upload path
+ * (skills/visual-diff/SKILL.md). Deliberately NOT folded into `handle()`, whose `body`
+ * parameter is JSON-or-undefined by contract everywhere else in this API.
+ *
+ * No ticket-status gate and no `inFlight` check: the agent that captures is the one already
+ * holding the ticket for its whole time in progress, and a re-upload — a respawn re-capturing,
+ * or the agent retrying after a failed POST — is an ordinary overwrite (screenshots.ts), not a
+ * conflict.
+ *
+ * Two checks make "not a screenshot" a 400 rather than a stored garbage file: the declared
+ * `Content-Type` must say `image/png` (params such as `; charset=` are stripped first,
+ * defensively, though a PNG upload has no reason to carry one), and the bytes themselves must
+ * start with the real PNG signature — a client that lies about its header is caught by the
+ * second check even if it passes the first.
+ */
+async function handleScreenshotUpload(
+  id: string,
+  side: "before" | "after",
+  contentType: string | undefined,
+  data: Buffer,
+): Promise<Reply> {
+  if (getTicket(id) === undefined) return json({ error: "no_such_ticket", id }, 404);
+  if (data.length === 0) return json({ error: "empty_body", message: "screenshot body was empty" }, 400);
+  const mime = contentType?.split(";")[0]?.trim().toLowerCase();
+  if (mime !== "image/png") {
+    return json(
+      { error: "invalid_content_type", message: "expected Content-Type: image/png", contentType: contentType ?? null },
+      400,
+    );
+  }
+  if (!data.subarray(0, PNG_MAGIC.length).equals(PNG_MAGIC)) {
+    return json({ error: "invalid_image", message: "body is not a PNG" }, 400);
+  }
+  const path = await saveScreenshot(id, side, data);
+  return json({ ok: true, path });
+}
+
 createServer(async (req, res) => {
   const url = req.url ?? "/";
   const path = url.split("#")[0] ?? "/";
@@ -903,11 +1028,39 @@ createServer(async (req, res) => {
   // probe of the filesystem. Only a GET that no route claimed may look at `public/`.
 
   try {
+    // The one binary-body route in the whole API, so it is resolved before `readBody` ever
+    // gets to treat the bytes as UTF-8 JSON — that would corrupt a PNG (see readRawBody).
+    const screenshotUpload = req.method === "POST" ? SCREENSHOT_UPLOAD_RE.exec(bare) : null;
+    const uploadId = screenshotUpload?.[1];
+    const uploadSide = screenshotUpload?.[2];
+    if (uploadId && uploadSide) {
+      let raw: Buffer;
+      try {
+        raw = await readRawBody(req, MAX_SCREENSHOT_BYTES);
+      } catch (err) {
+        if (err instanceof PayloadTooLargeError) {
+          res.writeHead(413, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "payload_too_large", maxBytes: MAX_SCREENSHOT_BYTES }));
+          return;
+        }
+        throw err;
+      }
+      const out = await handleScreenshotUpload(
+        decodeURIComponent(uploadId),
+        uploadSide as "before" | "after",
+        req.headers["content-type"],
+        raw,
+      );
+      res.writeHead(out.status, { "content-type": "application/json" });
+      res.end(out.body);
+      return;
+    }
+
     const body = req.method === "GET" || req.method === "DELETE" ? undefined : await readBody(req);
     const out = await handle(req.method ?? "GET", path, body);
 
     if (out.status === 404 && req.method === "GET") {
-      const asset = await resolvePublicAsset(bare);
+      const asset = (await resolveScreenshotAsset(bare)) ?? (await resolvePublicAsset(bare));
       if (asset) {
         res.writeHead(200, { "content-type": asset.type });
         res.end(await readFile(asset.file));

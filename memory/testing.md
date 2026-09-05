@@ -25,7 +25,7 @@ forgotten new spec merely runs slower under `e2e:full` and never spawns unexpect
 
 **The glob matters and so do the quotes.** `node --test src` does not pick up `.ts` files —
 verified: it reports `✖ src (40ms) 'test failed'`. Quote the glob so the shell hands it to Node
-rather than expanding it. Current state: **207 tests, 45 suites, 0 failures**, `duration_ms` ≈ 3950
+rather than expanding it. Current state: **241 tests, 57 suites, 0 failures**, `duration_ms` ≈ 4160
 (the readiness-guard tests spend most of it polling a fake Herdr at the real 125 ms cadence).
 
 | Target | Why it is tested |
@@ -64,6 +64,7 @@ they never start an agent.
 | `projects.spec.ts` | fast | 5 | registration, slug / repo / duplicate validation | none |
 | `tickets.spec.ts` | fast | 4 | ticket CRUD and monotonic numbering across a delete | none |
 | `board.spec.ts` | fast | 9 | the four columns and their order, empty In Review and Done, Accept/Reject button presence per column, picking up a ticket via the poll, the static asset route | none |
+| `screenshots.spec.ts` | fast | 1 | upload both sides over HTTP, the sheet rendering real decoded images at their served paths, enlarging one in a nested dialog without closing the sheet, Escape closing only the topmost dialog | none |
 | `spawn.spec.ts` | full | 3 | spawn, **the automatic move to In Review** observed on a real turn, cancel | 3 |
 | `teardown.spec.ts` | full | 2 | ticket delete, worktree-only delete (branch survives) | 2 |
 | `resilience.spec.ts` | full | 4 | backend restart, `finished` and the review column surviving a pane close, compare-and-swap, two concurrent tickets | 5 |
@@ -71,7 +72,7 @@ they never start an agent.
 | `accept.spec.ts` | full | 1 | publish the branch as a PR, ticket to Done, agent retired | 1 |
 | `reject.spec.ts` | full | 2 | re-prompt back to In Progress destroying nothing, empty reason → 400 | 2 |
 
-**32 tests in all.** The three `fast` specs are **18 of them and run in ~7 s with no agent and no
+**33 tests in all.** The four `fast` specs are **19 of them and run in ~8 s with no agent and no
 model cost, so run them freely** *(verified)*. The other six specs are 14 tests and **16 real agent
 spawns**, so `pnpm e2e:full` costs real model turns and is not a routine check. The automatic
 In Review transition is asserted inside the existing completion test rather than in a new one,
@@ -80,6 +81,12 @@ precisely so covering it cost **zero extra spawns**.
 *(Test counts verified with `playwright test --list`. The 13 spawns in the first four full specs
 were measured; the 3 added by `accept`/`reject` are counted from their `spawnTicket` calls, not
 yet observed on a run.)*
+
+**`board.spec.ts` cannot currently pass — this is pre-existing, not a regression.** Five of its
+nine tests fail against the live `todo`/`Start` split and the five-column board (verified: same
+five failures before and after `screenshots.spec.ts` was added, by running the suite against a
+`git stash` of the base branch). `docs/wiring-checklist.md` tracks the rewrite; nothing here
+depends on it passing.
 
 `accept.spec.ts` **skips itself without `GITHUB_TOKEN`**, because it pushes to `asaadx/10x-test`
 and opens a real PR, then closes it in a failure-proof `finally`.

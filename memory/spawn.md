@@ -312,3 +312,67 @@ What it shares with `spawn`, and must:
   pane that looks dead until the prompt lands. A second Plan click focuses only: re-prompting
   would restart a live conversation, and a planner waiting on a human question is `blocked`,
   which `agent.prompt` refuses with `agent_blocked` ([agent-status](./agent-status.md)).
+
+---
+
+## Provisioning a skill into a spawned agent's worktree
+
+**The general mechanism, not a one-off.** `backend/src/skills.ts` exports `provisionSkill
+(worktreePath, name)`, called from `runner.ts`'s `spawn()` (step 2, alongside `injectPortBlock`
+— both must land before step 4, since OMP discovers `.agents/skills/*` at `agent.start`, not
+later). It copies `skills/<name>/` — a sibling of `prompts/`, prose a human edits, resolved the
+same way (`import.meta.dirname`, see prompts.ts) — verbatim into `.agents/skills/<name>/`
+inside the worktree, which is the exact path OMP reads a skill from: this repo's own
+`.agents/skills/playwright-cli/` is what puts `playwright-cli` in an agent's `<skills>` list
+when it is pointed at 10x itself, and a provisioned skill is discovered the identical way.
+
+**Deliberately generic.** One function, keyed by name, that copies and templates nothing — so
+*which* skills a ticket gets (today: always `visual-diff`; later: a set chosen by
+`ticket.playbook`) is the call site's decision, never this function's. Anything ticket-specific
+a skill needs (an API URL, a ticket id) goes in the **system prompt** instead
+(`prompts/implementation.md`'s `{{apiUrl}}`/`{{ticketId}}` markers), never baked into the
+skill file itself — that is what keeps the skill a plain verbatim copy with nothing to render.
+
+**Never overwrites a skill the target repo already tracks under that name.** `git.ts`'s
+`isTracked` checks `git ls-files` on the base branch before copying — present there means the
+project committed its own `.agents/skills/<name>/`, and `provisionSkill` returns without
+touching it (no copy, no exclude entry either, since it was never 10x's file to hide). A name
+collision is a real, if unlikely, possibility: nothing stops a project from carrying a skill of
+its own under the same name 10x happens to provision.
+
+**Excluded from git exactly like the port `.env`.** `git.ts` (`excludeFromGit`, extracted from
+what `injectPortBlock` used to inline) appends `.agents/skills/<name>/` to the worktree's
+shared `info/exclude`, the same file and the same reasoning as the port block: this is 10x's
+own tooling landing in the worktree, not the project's code, and it must never surface in the
+agent's diff or the pull request it opens. Naming the exact skill, not `.agents/skills/`
+wholesale, means provisioning one skill cannot blind a project that tracks its own — this repo
+tracks `playwright-cli` there, on the base branch, and a ticket built in another project's
+worktree must not have that committed entry treated as ours to hide.
+
+**The one skill built so far: `visual-diff`.** Captures the before/after screenshot pair for
+`screenshot_before`/`screenshot_after` (`backend/src/db.ts`), via `playwright-cli` over `npx`
+rather than `.agents/skills/playwright-cli` — a target project has no reason to carry that
+skill itself, so the visual-diff skill's own prose names the pinned `npx` invocation directly.
+Uploads through the one binary-body route in the API, `POST
+/tickets/:id/screenshots/:side` (`server.ts`, deliberately not folded into the JSON-bodied
+`handle()`), served back at `GET /screenshots/<file>` from `SCREENSHOTS_DIR`
+(`screenshots.ts`, a sibling of `sessions/` under `STATE_DIR` — never inside the worktree, so
+nothing captured can end up in the agent's own diff). Deleting a ticket deletes both files
+(`deleteScreenshots`, called from `DELETE /tickets/:id`): the same automatic-reclaim treatment
+a port slot already gets ([architecture](./architecture.md)), because they are 10x's own
+bookkeeping, never the user's work — unlike the worktree and branch that same route also tears
+down, which [teardown](./teardown.md) never removes without an explicit user action.
+
+**The upload is hardened against more than a happy-path PNG.** A running byte count aborts
+`readRawBody` past `MAX_SCREENSHOT_BYTES` (10 MiB) without destroying the connection — killing
+the socket the instant the cap trips races the client reading the 413 it was about to send, and
+that reads as a bare connection reset rather than an HTTP error; the excess is dropped, not
+buffered, and the stream is left to drain to its own `end`. A declared `Content-Type` other
+than `image/png` is `400 invalid_content_type` before the bytes are even looked at, and the
+bytes themselves are checked against the real PNG magic number (`400 invalid_image`) so a
+client that lies about its header cannot land a non-image file behind a `.png` path.
+
+**Verified live, not just in tests.** Ticket 10x-5's own Before/After panes on the real board
+carry a real light-theme and dark-theme capture of the kanban board itself, uploaded through
+this exact route against the production server — the "one real UI ticket, verified by hand"
+case this mechanism exists for.

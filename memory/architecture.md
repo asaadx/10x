@@ -82,10 +82,10 @@ Line counts are `wc -l`, current as of this node.
 
 | File | Lines | Responsibility | I/O |
 | --- | --- | --- | --- |
-| `backend/src/server.ts` | 844 | HTTP routing, the static asset route, per-run in-memory state, boot reconciliation | `node:http` |
-| `backend/src/runner.ts` | 415 | `spawn` / `teardown` / `retireAgent` for one ticket; worktree, port block, event-stream reopen | Herdr socket, fs, `git` via `execFile` |
+| `backend/src/server.ts` | 1141 | HTTP routing, the static asset route, the screenshot upload/serving route, per-run in-memory state, boot reconciliation | `node:http` |
+| `backend/src/runner.ts` | 404 | `spawn` / `teardown` / `retireAgent` for one ticket; worktree, port block, skill provisioning, event-stream reopen | Herdr socket, fs, `git` via `execFile` |
 | `backend/src/agent-boot.ts` | 251 | **The readiness guard.** `bootAgent` (start → poll `agent.get` → prompt) and `reattachAgent`; the only module that calls `agent.start`, used by `runner.ts` and `planner.ts` alike | Herdr socket |
-| `backend/src/db.ts` | 361 | Schema + in-place migration, connection, row types, the status and PR-state parse boundaries, `claimTicket` CAS, port-slot reserve/release, `setPullRequest`, `setPullRequestState` | SQLite (opens DB at import) |
+| `backend/src/db.ts` | 413 | Schema + in-place migration, connection, row types, the status and PR-state parse boundaries, `claimTicket` CAS, port-slot reserve/release, `setPullRequest`, `setPullRequestState`, `setScreenshot` | SQLite (opens DB at import) |
 | `backend/src/ticket-store.ts` | 294 | Ticket persistence + `/tickets` handler bodies, input narrowing | SQLite |
 | `backend/src/db.test.ts` | 326 | Tests for the CAS, the Accept/Reject hand-backs and `setPullRequestState`, against a temp DB | SQLite (temp dir) |
 | `backend/src/projects.ts` | 214 | Project CRUD, slug / repo / base-branch validation | SQLite, `existsSync` |
@@ -96,13 +96,19 @@ Line counts are `wc -l`, current as of this node.
 | `backend/src/port-slots.test.ts` | 130 | Tests for reserve / release / reclaim, against a temp DB | SQLite (temp dir) |
 | `backend/src/dev-server.ts` | 135 | Reap the agent's dev server by port block, gated on worktree containment | `ss` via `execFile`, `/proc` |
 | `backend/src/dev-server.test.ts` | 145 | Tests for `ss` parsing and, against real listeners, that a stranger in the block is spared | `node:net`, temp dirs |
+| `backend/src/screenshot-route.test.ts` | 260 | Route-level tests for the upload/serve/delete surface, against a real server child and a fake Herdr | `node:net`, `fetch`, temp dirs |
+| `backend/src/screenshots.test.ts` | 92 | Tests for `saveScreenshot` / `deleteScreenshots`, against a temp DB and temp `STATE_DIR` | SQLite (temp dir), temp dirs |
+| `backend/src/screenshots.ts` | 49 | Screenshot file storage under `STATE_DIR`: `saveScreenshot`, `deleteScreenshots`, `screenshotFile` | fs |
+| `backend/src/skills.test.ts` | 89 | Tests for `provisionSkill` against the real `skills/visual-diff` source and a real git repo, including that a repo-tracked skill is never overwritten | fs, `git` via `execFileSync` |
+| `backend/src/skills.ts` | 44 | `provisionSkill` — the general skill-provisioning mechanism (memory/spawn.md), never overwriting a skill the target repo already tracks | fs, `git` (via git.ts) |
+| `backend/src/git.ts` | 50 | `excludeFromGit` — append to a worktree's shared `info/exclude`, idempotently; `isTracked` — is a path already committed on the base branch | `git` via `execFile`, fs |
 | `backend/src/ports.ts` | 98 | **Pure.** Port-slot pool: cap, block arithmetic, `.env` body | none |
 | `backend/src/ports.test.ts` | 78 | Tests for the pure allocator | none |
 | `backend/src/lifecycle.ts` | 71 | **Pure.** Naming, event normalisation, readiness predicates | none |
 | `backend/src/transitions.ts` | 137 | **Pure, import-free.** The legal-transitions table: every edge, and whether it is a pure status write or belongs to a route | none |
 | `backend/src/transitions.test.ts` | 147 | Tests for the table, its refusals, and a compile-time assertion that its restated `Status` union has not drifted from `types.ts` | none |
 | `backend/src/prompts.ts` | 67 | Read a system prompt out of `prompts/` and substitute its `{{markers}}` | fs (read only) |
-| `backend/src/prompts.test.ts` | 64 | Tests for substitution and both throws, plus the real prompt files | fs (read only) |
+| `backend/src/prompts.test.ts` | 71 | Tests for substitution and both throws, plus the real prompt files | fs (read only) |
 | `backend/src/ticket-store.test.ts` | 63 | Tests for ticket input narrowing | SQLite (temp dir) |
 | `backend/src/github.test.ts` | 95 | Tests for PR body construction, token redaction and webhook payload narrowing | none |
 | `backend/src/herdr.test.ts` | 107 | Tests for `onClose`, against a real unix socket | `node:net` (temp socket) |
@@ -215,7 +221,7 @@ harmless, and what makes a lost claim mean *do nothing* ([operations](./operatio
 
 ## 6. HTTP surface
 
-`PORT` defaults to `4010`. Every JSON route answers `application/json`; a GET that no route claimed then falls through to the `frontend/` static handler described below, which is how `/`, `/index.html`, `/styles.css` and `/js/*.js` are served. Router excerpt this table is based on (`backend/src/server.ts` `handle()`, lines 183–498):
+`PORT` defaults to `4010`. Every JSON route answers `application/json`; a GET that no route claimed then falls through to the screenshot route, then the `frontend/` static handler, both described below — which is how `/`, `/index.html`, `/styles.css`, `/js/*.js` and `/screenshots/<file>` are served. Router excerpt this table is based on (`backend/src/server.ts` `handle()`, lines 321–863):
 
 ```ts
 if (method === "GET"  && path === "/projects") return json(listProjects());
@@ -229,23 +235,34 @@ if (projectMatch?.[1]) {
 if (method === "GET"  && path.startsWith("/tickets")) { … return board(q?.get("project") …); }
 if (method === "POST" && path === "/tickets") { … }
 if (method === "POST" && path === "/webhooks/github") { … }
-const m = /^\/tickets\/([^/]+)(\/spawn|\/cancel|\/status|\/worktree|\/focus|\/accept|\/reject)?$/.exec(path);
+const m = /^\/tickets\/([^/]+)(\/spawn|\/cancel|\/status|\/worktree|\/focus|\/accept|\/reject|\/plan|\/archive)?$/.exec(path);
 if (!m?.[1]) return json({ error: "not_found", path }, 404);
 …
 if (!action   && method === "PATCH")  { … }
 if (inFlight.has(id)) return json({ error: "operation_in_flight", id }, 409);
 if (!action   && method === "DELETE") { … }
 if (action === "/focus"    && method === "POST")   { … }
+if (action === "/plan"     && method === "POST")   { … }
 if (action === "/status"   && method === "POST")   { … }
 if (action === "/spawn"    && method === "POST")   { … }
 if (action === "/cancel"   && method === "POST")   { … }
 if (action === "/worktree" && method === "DELETE") { … }
 if (action === "/accept"   && method === "POST")   { … }
 if (action === "/reject"   && method === "POST")   { … }
+if (action === "/archive"  && method === "POST")   { … }
 return json({ error: "not_found", path, method }, 404);
 ```
 
-**Sixteen** JSON endpoints, plus one static handler covering everything under `frontend/`.
+**`POST /tickets/:id/screenshots/:side` is not in that regex or that table.** It is resolved
+**before** `handle()` even runs, in the raw request handler, because it is the one route in the
+whole API whose body is bytes, not JSON: `readBody` decodes with `String(chunk)` and
+`JSON.parse`s the result, which would corrupt a PNG. `SCREENSHOT_UPLOAD_RE` is matched first,
+and only a miss falls through to `readBody`/`handle()` as before ([spawn](./spawn.md) covers
+what it does).
+
+**Nineteen** JSON endpoints (eighteen through `handle()` plus the screenshot upload resolved
+ahead of it), plus two static-file handlers: `/screenshots/<file>` and everything under
+`frontend/`.
 
 | # | Method | Path | Returns |
 | --- | --- | --- | --- |
@@ -256,15 +273,19 @@ return json({ error: "not_found", path, method }, 404);
 | 5 | GET | `/tickets[?project=<id>]` | `{tickets: LiveTicket[], unowned: Orphan[]}`; a `LiveTicket` is the stored row plus the live join `branch`, `agentName`, `agentStatus`, `hasWorktree`, `worktreePath`, `paneId`, `workspaceId`, `busy`, `diagnostics` |
 | 6 | POST | `/tickets` | `201` the created `Ticket` |
 | 7 | PATCH | `/tickets/:id` | the updated `Ticket` (title/description only) |
-| 8 | DELETE | `/tickets/:id` | `{ok}` after a full destructive teardown. **Guarded**: a ticket with a `pr_number` needs its PR merged or closed first — `409 pr_open` / `409 pr_state_unknown` ([teardown](./teardown.md)) |
+| 8 | DELETE | `/tickets/:id` | `{ok}` after a full destructive teardown, **and** `deleteScreenshots(id)` (screenshots.ts). **Guarded**: a ticket with a `pr_number` needs its PR merged or closed first — `409 pr_open` / `409 pr_state_unknown` ([teardown](./teardown.md)) |
 | 9 | POST | `/tickets/:id/spawn` | `{ok, workspaceId, paneId, worktreePath, branch, diagnostics}` |
 | 10 | POST | `/tickets/:id/status` | `{to}` in, the updated `Ticket` out. **Pure status writes only**, validated against `transitions.ts`: `400 invalid_input` for a `to` that is not a status, `409 illegal_transition` for a pair the machine does not have, `409 transition_has_side_effects` (carrying `owner`) for a move a route owns, `409 not_in_status` for a lost CAS ([operations](./operations.md)) |
 | 11 | POST | `/tickets/:id/cancel` | `{ok:true}` after teardown + branch delete |
 | 12 | DELETE | `/tickets/:id/worktree` | `{ok:true, branchKept}` — disk reclaimed, branch kept |
 | 13 | POST | `/tickets/:id/focus` | `{ok}` or `{ok:false, error:<herdr code>}` — always 200 |
-| 14 | POST | `/tickets/:id/accept` | the updated `Ticket` with `prNumber`/`prUrl`; `409 no_branch` / `409 not_in_review`, `500 missing_github_token`, `502` on a failed push or PR call (claim handed back) |
-| 15 | POST | `/tickets/:id/reject` | `{reason}` in, the updated `Ticket` out; `400 reason_required`, `409 no_agent` / `not_in_review` / `agent_not_alive` / `prompt_failed` |
-| 16 | POST | `/webhooks/github` | `{ok:true, matched}` when a ticket owns that `pr_url`, `{ok:true, ignored:true}` for anything that is not a `pull_request` payload. **Always 2xx**, unauthenticated by decision ([github](./github.md)) |
+| 14 | POST | `/tickets/:id/plan` | `{ok, ...}` a planning agent, started and prompted; `409 not_in_backlog` |
+| 15 | POST | `/tickets/:id/accept` | the updated `Ticket` with `prNumber`/`prUrl`; `409 no_branch` / `409 not_in_review`, `500 missing_github_token`, `502` on a failed push or PR call (claim handed back) |
+| 16 | POST | `/tickets/:id/reject` | `{reason}` in, the updated `Ticket` out; `400 reason_required`, `409 no_agent` / `not_in_review` / `agent_not_alive` / `prompt_failed` |
+| 17 | POST | `/tickets/:id/archive` | the updated `Ticket`; `409 not_done`, plus the same live-PR guard as DELETE |
+| 18 | POST | `/webhooks/github` | `{ok:true, matched}` when a ticket owns that `pr_url`, `{ok:true, ignored:true}` for anything that is not a `pull_request` payload. **Always 2xx**, unauthenticated by decision ([github](./github.md)) |
+| 19 | POST | `/tickets/:id/screenshots/:side` | raw PNG bytes in (`side` is `before` \| `after`), `{ok, path}` out; `404 no_such_ticket`, `400 empty_body`. Resolved ahead of `handle()` — see above |
+| — | GET | `/screenshots/<file>` | the PNG `saveScreenshot` wrote, realpath-contained the same way as the static route below |
 | — | GET | `/`, `/index.html`, `/styles.css`, `/js/*.js` | the board's static assets |
 
 **Naming and shape decisions.** The spawn endpoint is canonically **`/spawn`**; earlier drafts called it `/start`, `spawn` is the name, it is the only spelling in the code, and `/start` must not be reintroduced. `spawn`, `cancel`, `accept` and `reject` are **separate endpoints** because each is an irreversible act with its own side effects. `/status` is the one endpoint that takes a target state, and it is safe precisely because it refuses every move those four own: one verb per irreversible act, so a destructive path still cannot be reached by passing a different string.
@@ -295,6 +316,10 @@ percent-encoded traversal, a symlink to `/etc/passwd`, a symlink to `../package.
 a NUL byte and a malformed escape all answer the JSON 404; POST to an existing file answers the
 JSON 404; and a 404 under an API prefix keeps the API's own envelope.)*
 
+`resolveScreenshotAsset` runs first and is checked the same way: realpath containment against
+`SCREENSHOTS_DIR` rather than `PUBLIC_DIR`, and narrowed to the one extension
+`screenshots.ts` ever writes (`.png`) rather than the frontend's allow-list.
+
 ## 7. Request lifecycle for a spawn
 
 `POST /tickets/:id/spawn`, end to end:
@@ -312,7 +337,7 @@ JSON 404; and a 404 under an API prefix keeps the API's own envelope.)*
 
 ### Injecting the port block
 
-`.env` is written into the worktree root with `PORT` (the block's first port) plus `PORT_RANGE_START` and `PORT_RANGE_END`, commented so a human who finds it knows 10x wrote it. The agent's system prompt — `prompts/implementation.md`, rendered by `loadPrompt("implementation", { portStart, portEnd })` and written to the prompt file before `agent.start` — names the same range, tells the agent to read the port from `.env` rather than hardcode one, and forbids binding outside the block. That is a **convention, not a sandbox**; nothing enforces it.
+`.env` is written into the worktree root with `PORT` (the block's first port) plus `PORT_RANGE_START` and `PORT_RANGE_END`, commented so a human who finds it knows 10x wrote it. The agent's system prompt — `prompts/implementation.md`, rendered by `loadPrompt("implementation", { portStart, portEnd, apiUrl, ticketId })` and written to the prompt file before `agent.start` — names the same range, tells the agent to read the port from `.env` rather than hardcode one, and forbids binding outside the block. That is a **convention, not a sandbox**; nothing enforces it. The same step also provisions the `visual-diff` skill into `.agents/skills/` ([spawn](./spawn.md)).
 
 **The worktree is a real git worktree the agent commits in, so a stray `.env` is one `git add -A` from being committed.** The project's tracked `.gitignore` is not ours to edit, so the entry goes into the exclude file instead. Resolve it with `git rev-parse --path-format=absolute --git-path info/exclude`, never by joining `.git/info/exclude` onto the worktree path: in a linked worktree `.git` is a **file**, and git resolves `info/exclude` against the **common** git directory — the source repo's `.git/info/exclude`, shared by every ticket worktree of that repo, which is why the append is conditional. *(Verified: after the append, `git status` inside the worktree is clean and `git check-ignore -v .env` names that file.)*
 
