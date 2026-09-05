@@ -8,6 +8,36 @@ mean starting from zero. Nothing here is in scope; nothing here blocks
 
 ---
 
+## Enforcing screenshot capture
+
+**Decision: not built. The `visual-diff` skill (`skills/visual-diff/SKILL.md`) requires the
+agent to say, in its own turn summary, either that it captured or exactly why it skipped — and
+that is the whole enforcement.** Nothing server-side checks that a UI ticket actually produced
+a `screenshot_before`/`screenshot_after` pair.
+
+**Why this is feature creep, not a gap.** Per [agent-status](./agent-status.md), a settled turn
+and a deliberate skip are indistinguishable to anything watching from outside — the only place
+that distinction exists at all is the agent's own words. Two enforcement shapes would need
+building to close that gap for real, and neither is free:
+
+- **A board flag** — a card whose ticket touches UI (however that would be decided:
+  `playbook`, a path glob over the diff, something else) but carries no screenshots renders a
+  warning chip. Needs a definition of "this ticket touches UI" that does not exist anywhere in
+  this codebase today — `playbook` is the closest candidate and it is self-reported at ticket
+  creation, not inferred from the diff.
+- **A gate on Accept** — refuse `POST /tickets/:id/accept` for a UI ticket with no screenshots,
+  the same shape as the live PR-state guard DELETE and Archive already run. Harder to get
+  right than it looks: it would have to distinguish "this ticket never needed one" from "the
+  agent forgot", which is exactly the distinguishing problem above, now blocking a real
+  publish rather than just a display.
+
+Both need the same missing primitive — a reliable "does this ticket change the UI" signal —
+before either is worth building. Until one exists, a ticket that forgets to capture (or
+silently skips without saying so) simply shows an honest `null`/`null` pair in the sheet, which
+`ScreenshotPane`'s placeholder already renders without lying.
+
+---
+
 ## e2e model policy: cheap and often
 
 **Decision.** The e2e suite spawns agents on a cheap model at low reasoning effort — Haiku, named

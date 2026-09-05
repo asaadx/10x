@@ -65,6 +65,7 @@ import {
   type PullRequestSnapshot,
 } from "./github.ts";
 import { blockFor } from "./ports.ts";
+import { deleteScreenshots, saveScreenshot, SCREENSHOTS_DIR } from "./screenshots.ts";
 import { killDevServers } from "./dev-server.ts";
 
 const PORT = Number(process.env.PORT ?? 4010);
@@ -417,7 +418,12 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       const state = runStateFor(ticket);
       await teardown(specFor(ticket, project), state, true);
       runs.delete(id);
-      return json(deleteTicket(id));
+      const result = deleteTicket(id);
+      // 10x's own bookkeeping, not the user's work (memory/architecture.md, port pool) — the
+      // same automatic-reclaim treatment a port slot gets, unlike the worktree and branch
+      // teardown just decided above, which memory/teardown.md never removes automatically.
+      await deleteScreenshots(id);
+      return json(result);
     } finally {
       // Deleting the row frees the slot with it, but only if teardown got that far. A
       // failed Herdr call must not strand a tenth of the pool until the next boot.
@@ -894,6 +900,66 @@ async function resolvePublicAsset(bare: string): Promise<{ file: string; type: s
   return { file, type };
 }
 
+/**
+ * Resolve `/screenshots/<file>` to a readable file under `SCREENSHOTS_DIR`, or `null`. Same
+ * shape and the same reasons as `resolvePublicAsset` above — realpath containment, a decode
+ * failure or embedded NUL fails closed, only a regular file is served — narrowed to the one
+ * extension `screenshots.ts` ever writes.
+ */
+async function resolveScreenshotAsset(bare: string): Promise<{ file: string; type: string } | null> {
+  const m = /^\/screenshots\/([^/]+)$/.exec(bare);
+  if (!m?.[1]) return null;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(m[1]);
+  } catch {
+    return null;
+  }
+  if (decoded.includes("\0") || extname(decoded).toLowerCase() !== ".png") return null;
+
+  let root: string;
+  let file: string;
+  try {
+    root = await realpath(SCREENSHOTS_DIR);
+    file = await realpath(join(root, decoded));
+  } catch {
+    return null;
+  }
+  if (file !== root && !file.startsWith(root + sep)) return null;
+  if (!(await stat(file)).isFile()) return null;
+  return { file, type: "image/png" };
+}
+
+const SCREENSHOT_UPLOAD_RE = /^\/tickets\/([^/]+)\/screenshots\/(before|after)$/;
+
+/** Same shape as `readBody`, minus the JSON parse: the one route whose body is bytes, not JSON. */
+async function readRawBody(req: { on: (e: string, f: (c?: unknown) => void) => void }): Promise<Buffer> {
+  const { promise, resolve: done } = Promise.withResolvers<Buffer>();
+  const chunks: Buffer[] = [];
+  req.on("data", (c) => {
+    chunks.push(c as Buffer);
+  });
+  req.on("end", () => done(Buffer.concat(chunks)));
+  return promise;
+}
+
+/**
+ * `POST /tickets/:id/screenshots/:side`, raw PNG bytes — the visual-diff skill's upload path
+ * (skills/visual-diff/SKILL.md). Deliberately NOT folded into `handle()`, whose `body`
+ * parameter is JSON-or-undefined by contract everywhere else in this API.
+ *
+ * No ticket-status gate and no `inFlight` check: the agent that captures is the one already
+ * holding the ticket for its whole time in progress, and a re-upload — a respawn re-capturing,
+ * or the agent retrying after a failed POST — is an ordinary overwrite (screenshots.ts), not a
+ * conflict.
+ */
+async function handleScreenshotUpload(id: string, side: "before" | "after", data: Buffer): Promise<Reply> {
+  if (getTicket(id) === undefined) return json({ error: "no_such_ticket", id }, 404);
+  if (data.length === 0) return json({ error: "empty_body", message: "screenshot body was empty" }, 400);
+  const path = await saveScreenshot(id, side, data);
+  return json({ ok: true, path });
+}
+
 createServer(async (req, res) => {
   const url = req.url ?? "/";
   const path = url.split("#")[0] ?? "/";
@@ -904,11 +970,27 @@ createServer(async (req, res) => {
   // probe of the filesystem. Only a GET that no route claimed may look at `public/`.
 
   try {
+    // The one binary-body route in the whole API, so it is resolved before `readBody` ever
+    // gets to treat the bytes as UTF-8 JSON — that would corrupt a PNG (see readRawBody).
+    const screenshotUpload = req.method === "POST" ? SCREENSHOT_UPLOAD_RE.exec(bare) : null;
+    const uploadId = screenshotUpload?.[1];
+    const uploadSide = screenshotUpload?.[2];
+    if (uploadId && uploadSide) {
+      const out = await handleScreenshotUpload(
+        decodeURIComponent(uploadId),
+        uploadSide as "before" | "after",
+        await readRawBody(req),
+      );
+      res.writeHead(out.status, { "content-type": "application/json" });
+      res.end(out.body);
+      return;
+    }
+
     const body = req.method === "GET" || req.method === "DELETE" ? undefined : await readBody(req);
     const out = await handle(req.method ?? "GET", path, body);
 
     if (out.status === 404 && req.method === "GET") {
-      const asset = await resolvePublicAsset(bare);
+      const asset = (await resolveScreenshotAsset(bare)) ?? (await resolvePublicAsset(bare));
       if (asset) {
         res.writeHead(200, { "content-type": asset.type });
         res.end(await readFile(asset.file));

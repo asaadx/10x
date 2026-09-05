@@ -12,7 +12,7 @@
  *  2. Status is the lock (memory/operations.md). `claimTicket` is a conditional UPDATE and reports whether
  *     it won, so a double-click cannot start two spawns.
  */
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -24,6 +24,7 @@ import {
   type Playbook,
   type Project,
   type PullRequestState,
+  type ScreenshotSide,
   type Status,
   type Ticket,
 } from "./types.ts";
@@ -377,6 +378,20 @@ export function setPullRequestState(
 ): boolean {
   const res = SET_PULL_REQUEST_STATE.run(state, additions, deletions, nowIso(), prUrl);
   return Number(res.changes) > 0;
+}
+
+const SET_SCREENSHOT: Record<ScreenshotSide, StatementSync> = {
+  before: db.prepare("UPDATE tickets SET screenshot_before = ?, updated_at = ? WHERE id = ?"),
+  after: db.prepare("UPDATE tickets SET screenshot_after = ?, updated_at = ? WHERE id = ?"),
+};
+
+/**
+ * Point one side of the before/after pair at the route that serves it (screenshots.ts). Two
+ * columns, not one JSON blob (see the schema comment above), so this writes exactly one and
+ * leaves the other untouched — a ticket sits with a before and no after for its whole run.
+ */
+export function setScreenshot(id: string, side: ScreenshotSide, path: string): void {
+  SET_SCREENSHOT[side].run(path, nowIso(), id);
 }
 
 /**
