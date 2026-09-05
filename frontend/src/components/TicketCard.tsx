@@ -673,8 +673,13 @@ export function TicketCard({
             every card the same height. */}
         <div className="flex h-5 items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-1.5">
-            {/* The id stays in the accessible tree through `<article aria-label={ticket.id}>`, so hiding the text here costs nothing to assistive tech. */}
-            <CopyButton value={ticket.id} label={`Ticket id ${ticket.id}`} icon={Hash} />
+            {/* The id is now visible as text too — with several projects on one board, the id's
+                project prefix (e.g. "jarvis-6") is the only at-a-glance way to tell which
+                project a card belongs to without opening it. Still a CopyButton: the click-to-copy
+                behavior is unchanged, this only stops hiding the value it already copies. */}
+            <CopyButton value={ticket.id} label={`Ticket id ${ticket.id}`} icon={Hash}>
+              <span className="truncate text-[11px] tabular-nums">{ticket.id}</span>
+            </CopyButton>
             {dispatched && ticket.branch && (
               <CopyButton value={ticket.branch} label={`Branch ${ticket.branch}`} icon={GitBranch} tone="git" />
             )}
