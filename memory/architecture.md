@@ -82,7 +82,7 @@ Line counts are `wc -l`, current as of this node.
 
 | File | Lines | Responsibility | I/O |
 | --- | --- | --- | --- |
-| `backend/src/server.ts` | 1071 | HTTP routing, the static asset route, the screenshot upload/serving route, per-run in-memory state, boot reconciliation | `node:http` |
+| `backend/src/server.ts` | 1141 | HTTP routing, the static asset route, the screenshot upload/serving route, per-run in-memory state, boot reconciliation | `node:http` |
 | `backend/src/runner.ts` | 404 | `spawn` / `teardown` / `retireAgent` for one ticket; worktree, port block, skill provisioning, event-stream reopen | Herdr socket, fs, `git` via `execFile` |
 | `backend/src/agent-boot.ts` | 251 | **The readiness guard.** `bootAgent` (start → poll `agent.get` → prompt) and `reattachAgent`; the only module that calls `agent.start`, used by `runner.ts` and `planner.ts` alike | Herdr socket |
 | `backend/src/db.ts` | 413 | Schema + in-place migration, connection, row types, the status and PR-state parse boundaries, `claimTicket` CAS, port-slot reserve/release, `setPullRequest`, `setPullRequestState`, `setScreenshot` | SQLite (opens DB at import) |
@@ -96,12 +96,12 @@ Line counts are `wc -l`, current as of this node.
 | `backend/src/port-slots.test.ts` | 130 | Tests for reserve / release / reclaim, against a temp DB | SQLite (temp dir) |
 | `backend/src/dev-server.ts` | 135 | Reap the agent's dev server by port block, gated on worktree containment | `ss` via `execFile`, `/proc` |
 | `backend/src/dev-server.test.ts` | 145 | Tests for `ss` parsing and, against real listeners, that a stranger in the block is spared | `node:net`, temp dirs |
-| `backend/src/screenshot-route.test.ts` | 221 | Route-level tests for the upload/serve/delete surface, against a real server child and a fake Herdr | `node:net`, `fetch`, temp dirs |
+| `backend/src/screenshot-route.test.ts` | 260 | Route-level tests for the upload/serve/delete surface, against a real server child and a fake Herdr | `node:net`, `fetch`, temp dirs |
 | `backend/src/screenshots.test.ts` | 92 | Tests for `saveScreenshot` / `deleteScreenshots`, against a temp DB and temp `STATE_DIR` | SQLite (temp dir), temp dirs |
 | `backend/src/screenshots.ts` | 49 | Screenshot file storage under `STATE_DIR`: `saveScreenshot`, `deleteScreenshots`, `screenshotFile` | fs |
-| `backend/src/skills.test.ts` | 62 | Tests for `provisionSkill` against the real `skills/visual-diff` source and a real git repo | fs, `git` via `execFileSync` |
-| `backend/src/skills.ts` | 36 | `provisionSkill` — the general skill-provisioning mechanism (memory/spawn.md) | fs, `git` (via git.ts) |
-| `backend/src/git.ts` | 39 | `excludeFromGit` — append to a worktree's shared `info/exclude`, idempotently | `git` via `execFile`, fs |
+| `backend/src/skills.test.ts` | 89 | Tests for `provisionSkill` against the real `skills/visual-diff` source and a real git repo, including that a repo-tracked skill is never overwritten | fs, `git` via `execFileSync` |
+| `backend/src/skills.ts` | 44 | `provisionSkill` — the general skill-provisioning mechanism (memory/spawn.md), never overwriting a skill the target repo already tracks | fs, `git` (via git.ts) |
+| `backend/src/git.ts` | 50 | `excludeFromGit` — append to a worktree's shared `info/exclude`, idempotently; `isTracked` — is a path already committed on the base branch | `git` via `execFile`, fs |
 | `backend/src/ports.ts` | 98 | **Pure.** Port-slot pool: cap, block arithmetic, `.env` body | none |
 | `backend/src/ports.test.ts` | 78 | Tests for the pure allocator | none |
 | `backend/src/lifecycle.ts` | 71 | **Pure.** Naming, event normalisation, readiness predicates | none |
@@ -337,7 +337,7 @@ JSON 404; and a 404 under an API prefix keeps the API's own envelope.)*
 
 ### Injecting the port block
 
-`.env` is written into the worktree root with `PORT` (the block's first port) plus `PORT_RANGE_START` and `PORT_RANGE_END`, commented so a human who finds it knows 10x wrote it. The agent's system prompt — `prompts/implementation.md`, rendered by `loadPrompt("implementation", { portStart, portEnd })` and written to the prompt file before `agent.start` — names the same range, tells the agent to read the port from `.env` rather than hardcode one, and forbids binding outside the block. That is a **convention, not a sandbox**; nothing enforces it.
+`.env` is written into the worktree root with `PORT` (the block's first port) plus `PORT_RANGE_START` and `PORT_RANGE_END`, commented so a human who finds it knows 10x wrote it. The agent's system prompt — `prompts/implementation.md`, rendered by `loadPrompt("implementation", { portStart, portEnd, apiUrl, ticketId })` and written to the prompt file before `agent.start` — names the same range, tells the agent to read the port from `.env` rather than hardcode one, and forbids binding outside the block. That is a **convention, not a sandbox**; nothing enforces it. The same step also provisions the `visual-diff` skill into `.agents/skills/` ([spawn](./spawn.md)).
 
 **The worktree is a real git worktree the agent commits in, so a stray `.env` is one `git add -A` from being committed.** The project's tracked `.gitignore` is not ours to edit, so the entry goes into the exclude file instead. Resolve it with `git rev-parse --path-format=absolute --git-path info/exclude`, never by joining `.git/info/exclude` onto the worktree path: in a linked worktree `.git` is a **file**, and git resolves `info/exclude` against the **common** git directory — the source repo's `.git/info/exclude`, shared by every ticket worktree of that repo, which is why the append is conditional. *(Verified: after the append, `git status` inside the worktree is clean and `git check-ignore -v .env` names that file.)*
 
