@@ -123,7 +123,7 @@ load-bearing and why `capitalize` makes `textContent` lie.
 `frontend/ · React · Vite · Tailwind · shadcn · types.ts · BoardTicket · VITE_MOCK_MODE · use-board · poll · native-select · aria-labelledby`
 
 **[testing](./testing.md)** — the two suites, and **which command costs money**: `pnpm e2e` is an
-allow-list of the three agent-free specs (18 tests, ~7 s), while `pnpm e2e:full` spawns **16 real
+allow-list of four agent-free specs (19 tests, ~8 s), while `pnpm e2e:full` spawns **16 real
 agents**. Every unit target and why it is pinned, the `e2e/fixtures.ts` contract, the per-test
 budgets, and what the suite reads outside the HTTP API.
 `node:test · playwright · fast vs full · e2e:full · requireHerdr · startBoard · 4310 · cleanupAll · real agents`
