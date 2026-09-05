@@ -237,8 +237,10 @@ export function TicketSheet({
       setDescription(ticket?.description ?? "");
       setProjectId(ticket?.projectId ?? defaultProjectId);
       setPlaybook(ticket?.playbook ?? PLAYBOOKS[0]);
-      setTaskBreakdown([{ text: "", done: false }]);
-      setAcceptanceCriteria([{ text: "", done: false }]);
+      setTaskBreakdown(ticket?.taskBreakdown.length ? ticket.taskBreakdown : [{ text: "", done: false }]);
+      setAcceptanceCriteria(
+        ticket?.acceptanceCriteria.length ? ticket.acceptanceCriteria : [{ text: "", done: false }],
+      );
       setSubmitError(null);
     }
     onOpenChange(next);
