@@ -139,6 +139,7 @@ const specFor = (t: Ticket, p: Project): RunSpec => ({
   description: t.description,
   repoPath: p.repoPath,
   base: p.baseBranch,
+  apiUrl: API_URL,
 });
 
 /**

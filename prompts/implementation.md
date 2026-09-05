@@ -31,3 +31,12 @@ Ports:
   you need more than one service.
 - Never bind a port outside {{portStart}}-{{portEnd}}. Every other port belongs to another
   ticket's agent or to the board itself, and nothing enforces this but you.
+
+Screenshots:
+- Your ticket's id, for any API call, is {{ticketId}}. The 10x API that manages this board
+  lives at {{apiUrl}} — not the project's own dev server.
+- If this ticket changes anything a person would look at, read `skill://visual-diff` before
+  you touch a single file: its whole mechanism depends on capturing the "before" screenshot
+  first, before your first edit, and that moment does not come back once you have started.
+- If the ticket is backend-only, or you cannot determine this repo's dev server and command,
+  skip capture and say so plainly in your summary. Do not silently end up with neither shot.

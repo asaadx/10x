@@ -7,7 +7,7 @@
  * talks to `agent.start`.
  */
 import { execFile } from "node:child_process";
-import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdir, writeFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -18,10 +18,12 @@ import {
   type AgentEnvelope,
   type BootedAgent,
 } from "./agent-boot.ts";
+import { excludeFromGit } from "./git.ts";
 import { HerdrError, request, subscribe } from "./herdr.ts";
 import { agentNameFor, branchFor, normalizeEvent } from "./lifecycle.ts";
 import { ENV_FILE, envFileFor, type PortBlock } from "./ports.ts";
 import { loadPrompt } from "./prompts.ts";
+import { provisionSkill } from "./skills.ts";
 import type { Diagnostics } from "./types.ts";
 
 /**
@@ -35,6 +37,8 @@ export type RunSpec = {
   description: string;
   repoPath: string;
   base: string;
+  /** Where THIS 10x server answers, so the visual-diff skill knows where to upload to. */
+  apiUrl: string;
 };
 
 /** Mutable per-run state the caller owns and persists. */
@@ -87,7 +91,12 @@ async function bootTicketAgent(
    * states them, and OMP loads that itself. Naming them in the prompt would be a second,
    * staler copy.
    */
-  const prompt = await loadPrompt("implementation", { portStart: block.start, portEnd: block.end });
+  const prompt = await loadPrompt("implementation", {
+    portStart: block.start,
+    portEnd: block.end,
+    apiUrl: spec.apiUrl,
+    ticketId: `${spec.projectId}-${spec.number}`,
+  });
   await writeFile(promptFile, prompt, "utf8");
 
   // The opening turn: the ticket, and nothing about how to work on it — that is the system
@@ -131,37 +140,14 @@ async function bootTicketAgent(
 }
 
 /**
- * Put the ticket's port block in its worktree, and keep git from seeing the file.
- *
- * The worktree is a REAL git worktree that the agent commits in, so an untracked `.env`
- * showing up in `git status` is one `git add -A` away from being committed. The project's
- * tracked `.gitignore` belongs to the project and is not ours to edit, so the entry goes in
- * the exclude file instead: same effect on `git status`, nothing tracked touched.
- *
- * `rev-parse --git-path`, never `join(worktreePath, ".git", …)`. In a linked worktree `.git`
- * is a FILE, and git resolves `info/exclude` against the COMMON git directory — the source
- * repo's `.git/info/exclude`, shared by every ticket worktree of that repo. Verified: after
- * appending the entry there, `git status` inside the worktree is clean and `git check-ignore`
- * names that file. Being shared is why the append is conditional.
+ * Put the ticket's port block in its worktree, and keep git from seeing the file — the
+ * worktree is a REAL git worktree the agent commits in, so an untracked `.env` showing up in
+ * `git status` is one `git add -A` away from being committed. See git.ts for why the exclude
+ * goes through `info/exclude` rather than the project's own `.gitignore`.
  */
 async function injectPortBlock(worktreePath: string, block: PortBlock, ticket: string) {
   await writeFile(join(worktreePath, ENV_FILE), envFileFor(block, ticket), "utf8");
-
-  const resolved = await run("git", [
-    "-C",
-    worktreePath,
-    "rev-parse",
-    "--path-format=absolute",
-    "--git-path",
-    "info/exclude",
-  ]);
-  const excludeFile = resolved.stdout.trim();
-  // Absent on a repo cloned without the template, so create the directory rather than assume.
-  await mkdir(dirname(excludeFile), { recursive: true });
-  const current = await readFile(excludeFile, "utf8").catch(() => "");
-  if (current.split("\n").includes(ENV_FILE)) return;
-  const separator = current === "" || current.endsWith("\n") ? "" : "\n";
-  await writeFile(excludeFile, `${current}${separator}${ENV_FILE}\n`, "utf8");
+  await excludeFromGit(worktreePath, ENV_FILE);
 }
 
 export type SpawnResult = {
@@ -222,8 +208,11 @@ export async function spawn(
   // anything, and this is the only place that path is resolved.
   state.worktreePath = worktreePath;
 
-  // 2. Inject the port block before anything can start a server in there.
+  // 2. Inject the port block, and provision the skills this run needs, before the agent
+  //    boots — OMP discovers `.agents/skills/*` at `agent.start`, so both must land in the
+  //    worktree before step 4, and before anything could start a server in there.
   await injectPortBlock(worktreePath, block, branch);
+  await provisionSkill(worktreePath, "visual-diff");
 
   const agentName = agentNameFor(spec.projectId, spec.number);
 
