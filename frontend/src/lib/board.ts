@@ -1,3 +1,4 @@
+import { PRIORITIES } from "@/types.ts";
 import type { SortOrder, Status, Ticket } from "@/types.ts";
 
 /**
@@ -33,14 +34,20 @@ export function matchesSearch(ticket: Ticket, query: string): boolean {
   );
 }
 
+/** Position in `PRIORITIES` is the rank: low < medium < high, the same order the stars count. */
+const priorityRank = (ticket: Ticket): number => PRIORITIES.indexOf(ticket.priority);
+
 /**
- * Sorts by creation, never by position: nothing persists card order, so there is no stored
- * ordering to respect and no reorder to implement.
+ * Sorts by creation or by priority, never by position: nothing persists card order, so there
+ * is no stored ordering to respect and no reorder to implement. `direction` is generic across
+ * both keys — "desc" is always the highest value first, whether that value is a timestamp or
+ * a priority rank — so this is the one place either key's comparison lives.
  */
 export function sortTickets(tickets: Ticket[], order: SortOrder): Ticket[] {
   return [...tickets].sort((a, b) => {
-    const cmp = a.createdAt.localeCompare(b.createdAt);
-    return order === "newest" ? -cmp : cmp;
+    const cmp =
+      order.key === "date" ? a.createdAt.localeCompare(b.createdAt) : priorityRank(a) - priorityRank(b);
+    return order.direction === "desc" ? -cmp : cmp;
   });
 }
 

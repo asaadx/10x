@@ -23,7 +23,8 @@ export function App() {
   // may legitimately be empty, so this is the only value that is valid before the first read.
   const [projectId, setProjectId] = useState<string>(ALL_PROJECTS);
   const [query, setQuery] = useState("");
-  const [order, setOrder] = useState<SortOrder>("newest");
+  // Date, newest first, is the sort the board has always defaulted to.
+  const [order, setOrder] = useState<SortOrder>({ key: "date", direction: "desc" });
   const [sheetOpen, setSheetOpen] = useState(false);
   const [sheetTicket, setSheetTicket] = useState<Ticket | null>(null);
   // Which column's New ticket button opened the composer. A ticket is always CREATED in
