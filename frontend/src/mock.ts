@@ -364,6 +364,13 @@ export const MOCK_TICKETS: Ticket[] = [
     sessionDir: "/home/asaad/.omp/sessions/ticket-10x-10",
     hasWorktree: true,
     worktreePath: worktree("10x", 10),
+    // The one fixture where both sides are captured, since none of the others cover that
+    // state — it's what exercises the lightbox's pagination (dots, arrows, arrow keys) rather
+    // than the single-side placeholder every other ticket above exercises.
+    screenshots: {
+      before: "https://cdn.10x.dev/screenshots/10x-10-before.png",
+      after: "https://cdn.10x.dev/screenshots/10x-10-after.png",
+    },
     prNumber: 41,
     prUrl: "https://github.com/asaadx/10x/pull/41",
     prState: "open",

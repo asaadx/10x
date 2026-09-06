@@ -40,3 +40,9 @@ Screenshots:
   first, before your first edit, and that moment does not come back once you have started.
 - If the ticket is backend-only, or you cannot determine this repo's dev server and command,
   skip capture and say so plainly in your summary. Do not silently end up with neither shot.
+
+Ticket API:
+- Need context from another ticket, want to re-check your own ticket's current fields, or want
+  to record something as you go — an updated description, a task or acceptance-criteria item
+  checked off — read `skill://ticket-api`. It covers reading the board (any ticket) and editing
+  your own ({{ticketId}}); it is not how your ticket moves to review or done.

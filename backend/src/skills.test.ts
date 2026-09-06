@@ -87,3 +87,29 @@ describe("provisionSkill", () => {
     assert.ok(!excludeContent.includes(".agents/skills/visual-diff/"));
   });
 });
+
+describe("provisionSkill (ticket-api)", () => {
+  test("copies the skill verbatim to .agents/skills/ticket-api/", async () => {
+    await provisionSkill(worktree, "ticket-api");
+
+    const copied = join(worktree, ".agents", "skills", "ticket-api", "SKILL.md");
+    const source = join(import.meta.dirname, "..", "..", "skills", "ticket-api", "SKILL.md");
+    assert.equal(await readFile(copied, "utf8"), await readFile(source, "utf8"));
+  });
+
+  test("excludes the copied directory from git, alongside visual-diff's own entry", async () => {
+    const excludeFile = execFileSync(
+      "git",
+      ["-C", worktree, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"],
+      { encoding: "utf8" },
+    ).trim();
+
+    assert.match(readFileSync(excludeFile, "utf8"), /^\.agents\/skills\/ticket-api\/$/m);
+
+    const status = execFileSync("git", ["-C", worktree, "status", "--porcelain"], {
+      cwd: worktree,
+      encoding: "utf8",
+    });
+    assert.equal(status, "");
+  });
+});

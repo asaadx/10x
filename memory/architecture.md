@@ -154,7 +154,7 @@ SQLite at `$DB_PATH`, defaulting to `$STATE_DIR/10x.db`, `STATE_DIR` defaulting 
 | `id` | TEXT PRIMARY KEY | literally `<projectId>-<number>` |
 | `project_id` | TEXT NOT NULL REFERENCES projects(id) **ON DELETE CASCADE** | deleting a project drops its tickets |
 | `number` | INTEGER NOT NULL | per-project, starts at 1 |
-| `title` / `description` | TEXT NOT NULL / NOT NULL DEFAULT `''` | the only two fields a PATCH may touch |
+| `title` / `description` | TEXT NOT NULL / NOT NULL DEFAULT `''` | two of the five fields a PATCH may touch — see row 7 of [the endpoint table](#6-http-surface) for the other three (`playbook`, `task_breakdown`, `acceptance_criteria`) |
 | `status` | TEXT NOT NULL DEFAULT `'backlog'` | `backlog` \| `in_progress` \| `in_review`; anything else decodes as `backlog`, in the one `toStatus` parse boundary |
 | `finished` | INTEGER NOT NULL DEFAULT 0 | a turn settled *after* `working` was seen; set in the same moment as the move to `in_review`, and never cleared while a run is live |
 | `died` | INTEGER NOT NULL DEFAULT 0 | the pane exited — **not** the same as finished |
@@ -217,7 +217,7 @@ The conditional `WHERE` *is* the lock, and the row count reports whether the cal
 and it uses the same CAS rather than a read-then-write — which is what makes a turn settling twice
 harmless, and what makes a lost claim mean *do nothing* ([operations](./operations.md)).
 
-`PATCH /tickets/:id` therefore refuses to touch `status`, `number`, `projectId`, `branch`, `agentName`, `finished`, `died` or `sessionDir` — naming any of them is a 400 `immutable_field`. Those columns are written only by `setRunFields`, from the spawn/teardown paths.
+`PATCH /tickets/:id` therefore refuses to touch `status`, `number`, `projectId`, `branch`, `agentName`, `finished`, `died`, `archived` or `sessionDir` — naming any of them is a 400 `immutable_field`. Those columns are written only by `setRunFields` (or, for `archived`, `archiveTicket`), from the spawn/teardown/archive paths.
 
 ## 6. HTTP surface
 
@@ -272,7 +272,7 @@ ahead of it), plus two static-file handlers: `/screenshots/<file>` and everythin
 | 4 | DELETE | `/projects/:id` | `{ok}` — tickets cascade, worktrees deliberately do not |
 | 5 | GET | `/tickets[?project=<id>]` | `{tickets: LiveTicket[], unowned: Orphan[]}`; a `LiveTicket` is the stored row plus the live join `branch`, `agentName`, `agentStatus`, `hasWorktree`, `worktreePath`, `paneId`, `workspaceId`, `busy`, `diagnostics` |
 | 6 | POST | `/tickets` | `201` the created `Ticket` |
-| 7 | PATCH | `/tickets/:id` | the updated `Ticket` (title/description only) |
+| 7 | PATCH | `/tickets/:id` | the updated `Ticket` (`title`, `description`, `playbook`, `taskBreakdown`, `acceptanceCriteria` — each checklist field is a **full-array replace**, no per-item toggle route) |
 | 8 | DELETE | `/tickets/:id` | `{ok}` after a full destructive teardown, **and** `deleteScreenshots(id)` (screenshots.ts). **Guarded**: a ticket with a `pr_number` needs its PR merged or closed first — `409 pr_open` / `409 pr_state_unknown` ([teardown](./teardown.md)) |
 | 9 | POST | `/tickets/:id/spawn` | `{ok, workspaceId, paneId, worktreePath, branch, diagnostics}` |
 | 10 | POST | `/tickets/:id/status` | `{to}` in, the updated `Ticket` out. **Pure status writes only**, validated against `transitions.ts`: `400 invalid_input` for a `to` that is not a status, `409 illegal_transition` for a pair the machine does not have, `409 transition_has_side_effects` (carrying `owner`) for a move a route owns, `409 not_in_status` for a lost CAS ([operations](./operations.md)) |

@@ -327,11 +327,12 @@ inside the worktree, which is the exact path OMP reads a skill from: this repo's
 when it is pointed at 10x itself, and a provisioned skill is discovered the identical way.
 
 **Deliberately generic.** One function, keyed by name, that copies and templates nothing — so
-*which* skills a ticket gets (today: always `visual-diff`; later: a set chosen by
-`ticket.playbook`) is the call site's decision, never this function's. Anything ticket-specific
-a skill needs (an API URL, a ticket id) goes in the **system prompt** instead
-(`prompts/implementation.md`'s `{{apiUrl}}`/`{{ticketId}}` markers), never baked into the
-skill file itself — that is what keeps the skill a plain verbatim copy with nothing to render.
+*which* skills a ticket gets (today: `visual-diff` and `ticket-api`, always both; later:
+possibly a set chosen by `ticket.playbook`) is the call site's decision, never this function's.
+Anything ticket-specific a skill needs (an API URL, a ticket id) goes in the **system prompt**
+instead (`prompts/implementation.md`'s `{{apiUrl}}`/`{{ticketId}}` markers), never baked into
+the skill file itself — that is what keeps a skill a plain verbatim copy with nothing to
+render.
 
 **Never overwrites a skill the target repo already tracks under that name.** `git.ts`'s
 `isTracked` checks `git ls-files` on the base branch before copying — present there means the
@@ -349,7 +350,7 @@ wholesale, means provisioning one skill cannot blind a project that tracks its o
 tracks `playwright-cli` there, on the base branch, and a ticket built in another project's
 worktree must not have that committed entry treated as ours to hide.
 
-**The one skill built so far: `visual-diff`.** Captures the before/after screenshot pair for
+**The first skill built on it: `visual-diff`.** Captures the before/after screenshot pair for
 `screenshot_before`/`screenshot_after` (`backend/src/db.ts`), via `playwright-cli` over `npx`
 rather than `.agents/skills/playwright-cli` — a target project has no reason to carry that
 skill itself, so the visual-diff skill's own prose names the pinned `npx` invocation directly.
@@ -376,3 +377,17 @@ client that lies about its header cannot land a non-image file behind a `.png` p
 carry a real light-theme and dark-theme capture of the kanban board itself, uploaded through
 this exact route against the production server — the "one real UI ticket, verified by hand"
 case this mechanism exists for.
+
+**The second: `ticket-api`.** Teaches the implementation agent the read + own-ticket-PATCH
+surface of 10x's own API — `GET /tickets[?project=]` (no single-ticket route; filter the list
+by `id` client-side, the same pattern `prompts/plan.md` already used for the planning agent)
+and `PATCH /tickets/:id` restricted to its own `{{ticketId}}`, documented in
+`skills/ticket-api/SKILL.md`. Deliberately narrower than the full ticket surface: no
+`/status`, `/accept`, `/reject`, `/archive`, `/cancel` or delete on any ticket (those are board
+lifecycle moves, not something an implementation agent calls on itself or another ticket), no
+screenshots (already `visual-diff`'s job) and no attachments (no write path exists anywhere in
+the backend to teach). The one thing worth remembering if you touch this skill: `taskBreakdown`
+and `acceptanceCriteria` are each a whole-array column with no per-item toggle endpoint
+(`ticket-store.ts` `updateTicket`), so checking off one item is GET, flip that one item's
+`done` in place, PATCH the complete array back — a partial array silently deletes every item
+not resent, because the column is JSON text written whole, not merged server-side.

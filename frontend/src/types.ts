@@ -32,6 +32,7 @@ export type {
   Priority,
   Project,
   PullRequestState,
+  ScreenshotSide,
   Status,
 } from "@10x/backend/types";
 
