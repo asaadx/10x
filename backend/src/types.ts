@@ -60,6 +60,20 @@ export const PLAYBOOKS = [
 export type Playbook = (typeof PLAYBOOKS)[number];
 
 /**
+ * How urgently a ticket should be worked, board-owned rather than derived: nothing computes
+ * it from age or status, a human sets it. Mirrors `Playbook` in every way that matters — a
+ * closed union 10x owns, an array that is both the runtime validation list and the type, and
+ * array order is the order the picker offers (low to high, cheapest to justify first).
+ *
+ * The UI renders it as stars rather than the word, so the position in this array IS the star
+ * count: `PRIORITIES.indexOf(p) + 1` stars, never a second low/medium/high-to-count mapping
+ * that could drift from this list.
+ */
+export const PRIORITIES = ["low", "medium", "high"] as const;
+
+export type Priority = (typeof PRIORITIES)[number];
+
+/**
  * One line of a task breakdown or an acceptance criteria list. Stored as JSON text inside the
  * ticket row rather than as a child table (see db.ts): a list is only ever read and written
  * whole with its ticket, and the board derives its own ticked/total counts from the array.
@@ -122,6 +136,12 @@ export type Ticket = {
    * to choose none — a nullable field would model a state the product does not have.
    */
   playbook: Playbook;
+  /**
+   * Never null: the column is NOT NULL with a 'low' default (see db.ts), so a ticket that
+   * predates this field, or one created without ever naming a priority, reads as the lowest
+   * one rather than an absence the board would have to special-case.
+   */
+  priority: Priority;
   /**
    * The plan and its attachments, each one JSON text in a single column (see db.ts). Empty
    * arrays, never null: the columns default to '[]', so "no items yet" and "never migrated"

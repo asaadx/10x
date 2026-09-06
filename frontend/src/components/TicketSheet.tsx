@@ -23,7 +23,9 @@ import { runFailed } from "@/lib/board.ts";
 import { cn } from "@/lib/utils.ts";
 import {
   PLAYBOOKS,
+  PRIORITIES,
   type Playbook,
+  type Priority,      
   type Project,
   type ScreenshotSide,
   type Status,
@@ -324,6 +326,23 @@ function AttachmentDropZone() {
 const isPlaybook = (value: string): value is Playbook =>
   PLAYBOOKS.some((playbook) => playbook === value);
 
+// Same boundary as `isPlaybook`, for the other closed vocabulary this sheet writes.
+const isPriority = (value: string): value is Priority =>
+  PRIORITIES.some((priority) => priority === value);
+
+/**
+ * The picker shows stars, not the bare word: position in `PRIORITIES` is the star count, so
+ * this is a plain literal map rather than a formula that could drift from either the count or
+ * the word. Built once here rather than composed inline in the option's JSX, which would
+ * otherwise split "the star glyphs" and "the capitalised word" across two expressions the
+ * option had to be trusted to space correctly.
+ */
+const PRIORITY_LABELS: Record<Priority, string> = {
+  low: "\u2605 Low",
+  medium: "\u2605\u2605 Medium",
+  high: "\u2605\u2605\u2605 High",
+};
+
 /**
  * Opened either from a column footer's New ticket button, with `ticket` null, or from a
  * card's title/overflow menu, with `ticket` set — the one detail surface for both creating and
@@ -356,6 +375,11 @@ export function TicketSheet({
   // `PLAYBOOKS`, which is also what the picker shows first — so seeding a create with it
   // matches what the API would store anyway, without naming a playbook value here.
   const [playbook, setPlaybook] = useState<Playbook>(ticket?.playbook ?? PLAYBOOKS[0]);
+  // Priority is editable at any point too, the same as Playbook, and it is never settable at
+  // creation: `POST /tickets` narrows the body the same way, and the column's `'low'` default
+  // covers a create with no picker for it. Seeded from `PRIORITIES[0]` ("low") for the same
+  // reason Playbook seeds from its own first entry — it is what the API would store anyway.
+  const [priority, setPriority] = useState<Priority>(ticket?.priority ?? PRIORITIES[0]);
   // Task Breakdown and Acceptance Criteria are the plan a Plan agent produces, and they do come
   // off the wire — the planning agent PATCHes them onto the ticket, and both non-empty is the
   // readiness signal the card's To Do button reads. What is not wired is writing them from
@@ -393,6 +417,7 @@ export function TicketSheet({
       setDescription(ticket?.description ?? "");
       setProjectId(ticket?.projectId ?? defaultProjectId);
       setPlaybook(ticket?.playbook ?? PLAYBOOKS[0]);
+      setPriority(ticket?.priority ?? PRIORITIES[0]);
       setTaskBreakdown(normalizeChecklistRows(ticket?.taskBreakdown ?? []));
       setAcceptanceCriteria(normalizeChecklistRows(ticket?.acceptanceCriteria ?? []));
       setSubmitError(null);
@@ -439,6 +464,7 @@ export function TicketSheet({
         title: title.trim(),
         description,
         playbook,
+        priority,
         taskBreakdown: normalizeChecklistRows(taskBreakdown).filter((row) => row.text.trim() !== ""),
         acceptanceCriteria: normalizeChecklistRows(acceptanceCriteria).filter((row) => row.text.trim() !== ""),
       });
@@ -523,6 +549,30 @@ export function TicketSheet({
               {PLAYBOOKS.map((name) => (
                 <NativeSelectOption key={name} value={name}>
                   {name}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+          </div>
+
+          <div className="grid gap-1.5">
+            <label htmlFor="c-priority" className="text-xs text-muted-foreground">
+              Priority
+            </label>
+            <NativeSelect
+              id="c-priority"
+              aria-label="Priority"
+              value={priority}
+              onChange={(e) => {
+                const next = e.target.value;
+                // Every option below is a `PRIORITIES` member, so the guard never rejects a
+                // real change; it is what keeps an unvalidated string out of typed state.
+                if (isPriority(next)) setPriority(next);
+              }}
+              className="w-full"
+            >
+              {PRIORITIES.map((name) => (
+                <NativeSelectOption key={name} value={name}>
+                  {PRIORITY_LABELS[name]}
                 </NativeSelectOption>
               ))}
             </NativeSelect>

@@ -1,5 +1,5 @@
 import { ALL_PROJECTS } from "@/lib/board.ts";
-import type { BoardResponse, Playbook, Project, Status, Ticket } from "@/types.ts";
+import type { BoardResponse, Playbook, Priority, Project, Status, Ticket } from "@/types.ts";
 
 /**
  * The board's whole HTTP seam: the two GETs it renders from, and the writes behind every
@@ -99,8 +99,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
  * never sent, which is a worse failure than the crash this prevents.
  */
 
-/** The four the older backend can still answer as null, typed as it really sends them. */
-type Mistyped = "playbook" | "taskBreakdown" | "acceptanceCriteria" | "attachments";
+/** The five the older backend can still answer as null, typed as it really sends them. */
+type Mistyped = "playbook" | "priority" | "taskBreakdown" | "acceptanceCriteria" | "attachments";
 type WireTicket = Omit<Ticket, Mistyped> & { [K in Mistyped]: Ticket[K] | null };
 
 /**
@@ -113,10 +113,14 @@ type WireTicket = Omit<Ticket, Mistyped> & { [K in Mistyped]: Ticket[K] | null }
  */
 const ABSENT_PLAYBOOK = "Fullstack" satisfies Playbook;
 
+/** Same reasoning as `ABSENT_PLAYBOOK`: `tickets.priority` defaults to `'low'`, never absent. */
+const ABSENT_PRIORITY = "low" satisfies Priority;
+
 function normalizeTicket(ticket: WireTicket): Ticket {
   return {
     ...ticket,
     playbook: ticket.playbook ?? ABSENT_PLAYBOOK,
+    priority: ticket.priority ?? ABSENT_PRIORITY,
     taskBreakdown: ticket.taskBreakdown ?? [],
     acceptanceCriteria: ticket.acceptanceCriteria ?? [],
     attachments: ticket.attachments ?? [],
@@ -258,6 +262,7 @@ export async function updateTicket(
     title?: string;
     description?: string;
     playbook?: Playbook;
+    priority?: Priority;
     taskBreakdown?: { text: string; done: boolean }[];
     acceptanceCriteria?: { text: string; done: boolean }[];
   },

@@ -2,7 +2,8 @@ import { ArrowDownWideNarrow, ArrowUpNarrowWide, ListFilter, Search } from "luci
 
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
-import type { SortOrder } from "@/types.ts";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select.tsx";
+import type { SortDirection, SortKey, SortOrder } from "@/types.ts";
 
 type Props = {
   query: string;
@@ -11,8 +12,16 @@ type Props = {
   onOrderChange: (o: SortOrder) => void;
 };
 
+/** What "desc"/"asc" mean in words, per key: newest/highest first vs oldest/lowest first. */
+const DIRECTION_LABEL: Record<SortKey, Record<SortDirection, string>> = {
+  date: { desc: "Newest first", asc: "Oldest first" },
+  priority: { desc: "Highest first", asc: "Lowest first" },
+};
+
+const isSortKey = (value: string): value is SortKey => value === "date" || value === "priority";
+
 export function BoardToolbar({ query, onQueryChange, order, onOrderChange }: Props) {
-  const newestFirst = order === "newest";
+  const otherDirection: SortDirection = order.direction === "desc" ? "asc" : "desc";
 
   return (
     <div role="toolbar" aria-label="Board controls" className="h-14 shrink-0 border-b">
@@ -34,22 +43,36 @@ export function BoardToolbar({ query, onQueryChange, order, onOrderChange }: Pro
         </div>
 
         {/*
-          Sort and Filters sit together at the right edge. Sort is one button rather than a
-          select because there is exactly one key to sort by; the arrow carries the direction and
-          the accessible name spells out what the next click does, since "ascending" on a date is
-          ambiguous in a way "oldest first" is not.
+          Sort and Filters sit together at the right edge. Sort is now two controls instead of
+          one button: a select for which field orders the board, and an icon button whose
+          accessible name spells out what the next click does. The arrow's meaning is generic
+          across both keys — "desc" is always the highest value first — so one toggle serves
+          Date and Priority alike; only the words in the accessible name change.
         */}
         <div className="ml-auto flex items-center gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-8 gap-1.5 text-xs"
-            aria-label={newestFirst ? "Sorted newest first. Sort oldest first" : "Sorted oldest first. Sort newest first"}
-            title={newestFirst ? "Newest first" : "Oldest first"}
-            onClick={() => onOrderChange(newestFirst ? "oldest" : "newest")}
+          <span className="text-xs text-muted-foreground">Sort by</span>
+          <NativeSelect
+            aria-label="Sort by"
+            value={order.key}
+            onChange={(e) => {
+              const next = e.target.value;
+              if (isSortKey(next)) onOrderChange({ ...order, key: next });
+            }}
+            className="h-8 w-28"
           >
-            Sort by
-            {newestFirst ? (
+            <NativeSelectOption value="date">Date</NativeSelectOption>
+            <NativeSelectOption value="priority">Priority</NativeSelectOption>
+          </NativeSelect>
+          <Button
+            type="button"
+            size="icon"
+            variant="outline"
+            className="h-8 w-8"
+            aria-label={`Sorted ${DIRECTION_LABEL[order.key][order.direction].toLowerCase()}. Sort ${DIRECTION_LABEL[order.key][otherDirection].toLowerCase()}`}
+            title={DIRECTION_LABEL[order.key][order.direction]}
+            onClick={() => onOrderChange({ ...order, direction: otherDirection })}
+          >
+            {order.direction === "desc" ? (
               <ArrowDownWideNarrow aria-hidden className="size-3.5" />
             ) : (
               <ArrowUpNarrowWide aria-hidden className="size-3.5" />
