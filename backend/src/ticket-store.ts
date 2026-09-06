@@ -24,9 +24,11 @@ import type { SQLInputValue, SQLOutputValue } from "node:sqlite";
 import { db, nowIso, toTicket } from "./db.ts";
 import {
   PLAYBOOKS,
+  PRIORITIES,
   type Attachment,
   type ChecklistItem,
   type Playbook,
+  type Priority,
   type Ticket,
 } from "./types.ts";
 
@@ -141,6 +143,7 @@ const decode = (row: Row): Ticket =>
     // a corrupt row and belongs in `bad()` rather than being smuggled through as a value.
     // `toTicket` casts it to `Playbook`; why that is a cast and not a check is noted there.
     playbook: text(row, "playbook"),
+    priority: text(row, "priority"),
     task_breakdown: jsonList<ChecklistItem>(row, "task_breakdown"),
     acceptance_criteria: jsonList<ChecklistItem>(row, "acceptance_criteria"),
     attachments: jsonList<Attachment>(row, "attachments"),
@@ -207,6 +210,7 @@ type TicketInput = {
   title?: unknown;
   description?: unknown;
   playbook?: unknown;
+  priority?: unknown;
   taskBreakdown?: unknown;
   acceptanceCriteria?: unknown;
 };
@@ -248,6 +252,13 @@ const isChecklist = (value: unknown): value is ChecklistItem[] =>
  */
 const isPlaybook = (value: unknown): value is Playbook =>
   PLAYBOOKS.some((playbook) => playbook === value);
+
+/**
+ * The same asymmetry again, for priority: `PRIORITIES` is the only list of priority values in
+ * the codebase, so this guard cannot fall behind the union it narrows to either.
+ */
+const isPriority = (value: unknown): value is Priority =>
+  PRIORITIES.some((priority) => priority === value);
 
 /** Owned by the lifecycle, so naming one in a PATCH is a mistake worth reporting. */
 const IMMUTABLE = [
@@ -343,7 +354,7 @@ export function updateTicket(id: string, input: unknown): TicketResult {
     }
   }
 
-  const { title, description, playbook, taskBreakdown, acceptanceCriteria }: TicketInput = input;
+  const { title, description, playbook, priority, taskBreakdown, acceptanceCriteria }: TicketInput = input;
   const columns: [string, SQLInputValue][] = [];
   if (title !== undefined) {
     if (typeof title !== "string" || title.trim() === "") {
@@ -363,6 +374,14 @@ export function updateTicket(id: string, input: unknown): TicketResult {
     }
     columns.push(["playbook", playbook]);
   }
+  if (priority !== undefined) {
+    // Same asymmetry as playbook: the column is NOT NULL, so there is nothing to clear, and
+    // absent still means "leave the column alone".
+    if (!isPriority(priority)) {
+      return invalid("priority", `must be one of: ${PRIORITIES.join(", ")}`);
+    }
+    columns.push(["priority", priority]);
+  }
   if (taskBreakdown !== undefined) {
     if (!isChecklist(taskBreakdown)) {
       return invalid("taskBreakdown", "must be an array of { text: string, done: boolean }");
@@ -378,7 +397,7 @@ export function updateTicket(id: string, input: unknown): TicketResult {
   if (columns.length === 0) {
     return invalid(
       "title",
-      "nothing to update: provide title, description, playbook, taskBreakdown and/or acceptanceCriteria",
+      "nothing to update: provide title, description, playbook, priority, taskBreakdown and/or acceptanceCriteria",
     );
   }
 

@@ -22,6 +22,7 @@ import {
   type Attachment,
   type ChecklistItem,
   type Playbook,
+  type Priority,
   type Project,
   type PullRequestState,
   type ScreenshotSide,
@@ -82,6 +83,11 @@ CREATE TABLE IF NOT EXISTS tickets (
   -- offers no "none", and 'Fullstack' is the option it shows first — so a row's data agrees
   -- with what the board renders for it instead of a null that reads as Fullstack anyway.
   playbook    TEXT NOT NULL DEFAULT 'Fullstack',
+  -- How urgently the ticket should be worked, one of the values in the Priority union. NOT
+  -- NULL with a 'low' default: a ticket that predates this column, or one created without
+  -- ever naming a priority (the picker offers no create-time control — see types.ts), reads
+  -- as the lowest star count rather than a null the board would have to special-case.
+  priority    TEXT NOT NULL DEFAULT 'low',
   -- The plan a ticket carries: its task breakdown, its acceptance criteria, and the files
   -- attached to it. JSON text rather than child tables because all three are only ever read
   -- and written whole with their ticket — there is no query that wants one item, and no join
@@ -148,6 +154,11 @@ addColumnIfMissing("tickets", "screenshot_after", "TEXT");
 addColumnIfMissing("tickets", "started_at", "TEXT");
 addColumnIfMissing("tickets", "archived", "INTEGER NOT NULL DEFAULT 0");
 
+// Every pre-existing row backfills to 'low' on the same migration, no manual step: ADD
+// COLUMN with a NOT NULL constant default hands that default back for every row that
+// predates the column, exactly as the playbook and checklist columns above do.
+addColumnIfMissing("tickets", "priority", "TEXT NOT NULL DEFAULT 'low'");
+
 // A database migrated while `playbook` was briefly nullable already has the column, so
 // `addColumnIfMissing` above will not revisit it and its NOT NULL default never applies to
 // those rows. One idempotent backfill covers them: without it, every such row's decode hits
@@ -193,6 +204,7 @@ export type TicketRow = {
   pr_additions: number | null;
   pr_deletions: number | null;
   playbook: string;
+  priority: string;
   // Already parsed. The JSON lives in one TEXT column each, and the parse happens at the
   // decode boundary in ticket-store.ts, where a corrupt column can be reported by name.
   task_breakdown: ChecklistItem[];
@@ -257,6 +269,9 @@ export const toTicket = (r: TicketRow): Ticket => ({
   // about, there is nothing here to decide. This is the seam to tighten if anything other
   // than this API ever gains write access to `tickets.playbook`.
   playbook: r.playbook as Playbook,
+  // Same cast, same reasoning: only this API writes `tickets.priority`, and `updateTicket`
+  // tests every incoming value against `PRIORITIES` before it goes in.
+  priority: r.priority as Priority,
   taskBreakdown: r.task_breakdown,
   acceptanceCriteria: r.acceptance_criteria,
   attachments: r.attachments,
