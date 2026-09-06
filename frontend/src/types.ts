@@ -19,16 +19,17 @@
 // `Status` is also imported, not just re-exported: `COLUMNS` below needs it in local scope.
 import type { Status } from "@10x/backend/types";
 
-// `PLAYBOOKS` is a value, not a type, so it needs its own re-export line: it is the runtime
-// list the backend validates against, and each entry is both the option the picker shows and
-// the value it sends.
-export { PLAYBOOKS } from "@10x/backend/types";
+// `PLAYBOOKS` and `PRIORITIES` are values, not types, so each needs its own re-export line:
+// both are runtime lists the backend validates against, and each entry is both the option a
+// picker shows and the value it sends.
+export { PLAYBOOKS, PRIORITIES } from "@10x/backend/types";
 
 export type {
   BoardResponse,
   Diagnostics,
   Orphan,
   Playbook,
+  Priority,
   Project,
   PullRequestState,
   Status,
@@ -42,7 +43,16 @@ export type {
  */
 export type { BoardTicket as Ticket } from "@10x/backend/types";
 
-export type SortOrder = "newest" | "oldest";
+/**
+ * The toolbar's sort control: which field orders the board, and which direction. `date` is
+ * the field the board has always sorted by; `priority` is the second axis this type was split
+ * to accommodate. Direction is generic — "desc" means the highest value first, whether that
+ * value is a timestamp (newest) or a priority (highest star count) — so one toggle icon covers
+ * both keys instead of the key needing its own asc/desc vocabulary.
+ */
+export type SortKey = "date" | "priority";
+export type SortDirection = "asc" | "desc";
+export type SortOrder = { key: SortKey; direction: SortDirection };
 
 /** Column order is the state machine's order, and is not configurable. */
 export const COLUMNS = [

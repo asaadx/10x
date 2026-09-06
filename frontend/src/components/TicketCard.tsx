@@ -17,6 +17,7 @@ import {
   NotebookPen,
   Play,
   ShipWheel,
+  Star,
   Trash2,
   TriangleAlert,
   Undo2,
@@ -57,7 +58,7 @@ import {
 } from "@/lib/api.ts";
 import { runFailed } from "@/lib/board.ts";
 import { REMOTE_TARGET, remoteCommand, type SteerMode } from "@/lib/steer-mode.ts";
-import type { Status, Ticket } from "@/types.ts";
+import { PRIORITIES, type Priority, type Status, type Ticket } from "@/types.ts";
 
 const PR_ICON = {
   merged: GitMerge,
@@ -112,6 +113,26 @@ function RunTimer({ since }: { since: string }) {
       className="text-[11px] text-muted-foreground tabular-nums"
     >
       {formatElapsed(now - new Date(since).getTime())}
+    </span>
+  );
+}
+
+/**
+ * Read-only star badge: 1/2/3 filled stars for low/medium/high, immediately left of the
+ * three-dot menu. Position in `PRIORITIES` is the count, the same rule the sheet's picker
+ * uses, so there is no second low/medium/high-to-count mapping that could drift.
+ */
+function PriorityBadge({ priority }: { priority: Priority }) {
+  const count = PRIORITIES.indexOf(priority) + 1;
+  return (
+    <span
+      className="flex shrink-0 items-center gap-px text-amber-500"
+      title={`Priority: ${priority}`}
+      aria-label={`Priority: ${priority}`}
+    >
+      {Array.from({ length: count }, (_, i) => (
+        <Star key={i} aria-hidden className="size-3 fill-current" />
+      ))}
     </span>
   );
 }
@@ -699,39 +720,42 @@ export function TicketCard({
             )}
           </div>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              {/* The hit area comes from a transparent `::after`, not padding: the row is a
-                  fixed `h-5` and this button draws its focus ring on its own box, so growing
-                  the box would both overflow the row and enlarge the ring. */}
-              <button
-                type="button"
-                aria-label="Ticket actions"
-                className="relative shrink-0 rounded-sm text-muted-foreground transition-colors after:absolute after:-inset-1.5 after:content-[''] hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
-              >
-                <MoreHorizontal aria-hidden className="size-3.5" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => onOpen(actionError)}>Open</DropdownMenuItem>
-              {/*
-                Not column-scoped: Accept keeps the worktree and the branch, so a worktree can
-                exist on a ticket in any column, and manual removal is the only thing that
-                reclaims one (memory/teardown.md).
-              */}
-              {ticket.hasWorktree && (
-                <DropdownMenuItem onSelect={() => setConfirmWorktree(true)}>
-                  <IconChristmasTreeFilled aria-hidden />
-                  Delete worktree
+          <div className="flex shrink-0 items-center gap-2">
+            <PriorityBadge priority={ticket.priority} />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                {/* The hit area comes from a transparent `::after`, not padding: the row is a
+                    fixed `h-5` and this button draws its focus ring on its own box, so growing
+                    the box would both overflow the row and enlarge the ring. */}
+                <button
+                  type="button"
+                  aria-label="Ticket actions"
+                  className="relative shrink-0 rounded-sm text-muted-foreground transition-colors after:absolute after:-inset-1.5 after:content-[''] hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+                >
+                  <MoreHorizontal aria-hidden className="size-3.5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => onOpen(actionError)}>Open</DropdownMenuItem>
+                {/*
+                  Not column-scoped: Accept keeps the worktree and the branch, so a worktree can
+                  exist on a ticket in any column, and manual removal is the only thing that
+                  reclaims one (memory/teardown.md).
+                */}
+                {ticket.hasWorktree && (
+                  <DropdownMenuItem onSelect={() => setConfirmWorktree(true)}>
+                    <IconChristmasTreeFilled aria-hidden />
+                    Delete worktree
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onSelect={() => setConfirmDelete(true)}>
+                  <Trash2 aria-hidden />
+                  Delete
                 </DropdownMenuItem>
-              )}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem variant="destructive" onSelect={() => setConfirmDelete(true)}>
-                <Trash2 aria-hidden />
-                Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
 
         <h3 className="mt-2 text-sm leading-snug font-medium">

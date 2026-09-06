@@ -10,8 +10,9 @@ import type { Project, Ticket } from "@/types.ts";
  * truncate, a description long enough for the single-line clamp to matter, a second project
  * with tickets of its own so the project filter has something to prove, an empty column, an
  * in-review ticket with a before screenshot captured and no after yet (the sheet's placeholder
- * pane for the missing side), and tickets spread across several playbooks so the picker is not
- * only ever seen on one value.
+ * pane for the missing side), tickets spread across several playbooks so the picker is not
+ * only ever seen on one value, and tickets spread across all three priorities so the star
+ * badge and the sheet's Priority picker are not only ever seen on one value either.
  *
  * These are checked against the real `GET /tickets` shape now, not a local copy of it, so the
  * resolved fields have to be internally consistent: `branch` and `agentName` are always present
@@ -77,6 +78,9 @@ const base: Ticket = {
   // Never null: the column is NOT NULL with this exact default (see the backend's db.ts), and
   // it is the option the sheet's picker shows first.
   playbook: "Fullstack",
+  // Never null: the column is NOT NULL with this exact default (see the backend's db.ts), and
+  // it is the lowest star count — most fixtures leave this alone and a handful override it.
+  priority: "low",
   // Empty until a Plan agent (or a human) fills them in; the columns default to '[]', never null.
   taskBreakdown: [],
   acceptanceCriteria: [],
@@ -148,6 +152,7 @@ export const MOCK_TICKETS: Ticket[] = [
     branch: "ticket/10x/6",
     agentName: "ticket-10x-6",
     playbook: "Frontend",
+    priority: "medium",
     createdAt: iso(3),
     updatedAt: iso(3),
   },
@@ -161,6 +166,7 @@ export const MOCK_TICKETS: Ticket[] = [
     branch: "ticket/10x/5",
     agentName: "ticket-10x-5",
     playbook: "Backend",
+    priority: "high",
     agentStatus: "working",
     sessionDir: "/home/asaad/.omp/sessions/ticket-10x-5",
     hasWorktree: true,
@@ -207,6 +213,7 @@ export const MOCK_TICKETS: Ticket[] = [
     branch: "ticket/10x/9",
     agentName: "ticket-10x-9",
     playbook: "Backend",
+    priority: "high",
     // Herdr saw a real question UI. `agent.prompt` refuses a blocked agent outright, so this
     // ticket cannot move until a human answers (memory/agent-status.md).
     agentStatus: "blocked",
@@ -270,6 +277,7 @@ export const MOCK_TICKETS: Ticket[] = [
     branch: "ticket/10x/3",
     agentName: "ticket-10x-3",
     playbook: "Frontend",
+    priority: "medium",
     agentStatus: "idle",
     finished: true,
     sessionDir: "/home/asaad/.omp/sessions/ticket-10x-3",
@@ -374,6 +382,7 @@ export const MOCK_TICKETS: Ticket[] = [
     branch: "ticket/10x/11",
     agentName: "ticket-10x-11",
     playbook: "DevOps",
+    priority: "medium",
     // Herdr reports a status the board has never seen before. `unknown` is deliberately not
     // one of the values `isSettled`/`isAgentReady` recognize, so it never proves completion.
     agentStatus: "unknown",
@@ -448,6 +457,7 @@ export const MOCK_TICKETS: Ticket[] = [
     branch: "ticket/10x-test/2",
     agentName: "ticket-10x-test-2",
     playbook: "Backend",
+    priority: "medium",
     agentStatus: "working",
     sessionDir: "/home/asaad/.omp/sessions/ticket-10x-test-2",
     hasWorktree: true,
@@ -501,6 +511,7 @@ export const MOCK_TICKETS: Ticket[] = [
     branch: "ticket/10x/14",
     agentName: "ticket-10x-14",
     playbook: "Backend",
+    priority: "high",
     agentStatus: "idle",
     finished: true,
     sessionDir: "/home/asaad/.omp/sessions/ticket-10x-14",
