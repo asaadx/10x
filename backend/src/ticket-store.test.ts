@@ -88,6 +88,9 @@ describe("plan column decoding", () => {
     // Not null: the column is NOT NULL DEFAULT 'Fullstack', so a row created without a
     // playbook still has one, which is what the type promises every consumer.
     assert.equal(ticket.playbook, "Fullstack");
+    // Same guarantee for priority: the column is NOT NULL DEFAULT 'low', so a ticket
+    // created (or migrated) with no priority ever named still reads as the lowest one.
+    assert.equal(ticket.priority, "low");
     assert.deepEqual(ticket.taskBreakdown, []);
     assert.deepEqual(ticket.acceptanceCriteria, []);
     assert.deepEqual(ticket.attachments, []);
@@ -224,6 +227,48 @@ describe("updateTicket plan fields", () => {
     });
     assert.equal(body["error"], "invalid_input");
     assert.equal(body.field, "acceptanceCriteria");
+  });
+});
+
+describe("updateTicket priority", () => {
+  test("priority round-trips through a PATCH the same way playbook does", () => {
+    seed("t-priority-round-trip", 0, 0);
+    const result = updateTicket("t-priority-round-trip", { priority: "high" });
+    if (!result.ok) assert.fail(`update rejected: ${JSON.stringify(result.body)}`);
+    assert.equal(result.ticket.priority, "high");
+    assert.equal(loaded("t-priority-round-trip").priority, "high");
+  });
+
+  test("an unrecognised priority is rejected, naming the field and writing nothing", () => {
+    seed("t-priority-unknown", 0, 0);
+    updateTicket("t-priority-unknown", { priority: "medium" });
+    assert.equal(loaded("t-priority-unknown").priority, "medium");
+
+    const body = rejected("t-priority-unknown", { priority: "urgent" });
+    assert.equal(body["error"], "invalid_input");
+    assert.equal(body.field, "priority");
+    // The frontend shows this message, so it has to name what is allowed.
+    assert.match(String(body.message), /low, medium, high/);
+    // Rejected means nothing was written: the value that was there survives.
+    assert.equal(loaded("t-priority-unknown").priority, "medium");
+  });
+
+  test("null is rejected too — a NOT NULL column has nothing to clear", () => {
+    seed("t-priority-null", 0, 0);
+    updateTicket("t-priority-null", { priority: "high" });
+
+    const body = rejected("t-priority-null", { priority: null });
+    assert.equal(body["error"], "invalid_input");
+    assert.equal(body.field, "priority");
+    assert.equal(loaded("t-priority-null").priority, "high");
+  });
+
+  test("a priority that is not a string at all is rejected the same way", () => {
+    seed("t-priority-nonstring", 0, 0);
+    const body = rejected("t-priority-nonstring", { priority: 3 });
+    assert.equal(body["error"], "invalid_input");
+    assert.equal(body.field, "priority");
+    assert.equal(loaded("t-priority-nonstring").priority, "low");
   });
 });
 
