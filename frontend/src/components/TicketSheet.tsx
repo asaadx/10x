@@ -97,6 +97,19 @@ function normalizeChecklistRows(rows: ChecklistRow[]): ChecklistRow[] {
   return [...rows.filter((row) => row.text.trim() !== ""), { text: "", done: false }];
 }
 
+// A row's text is free-form and can be far wider than the sheet, so the row element is a
+// textarea that wraps instead of an input that scrolls its caret out of view. Tailwind alone
+// can't grow a textarea to fit wrapped content, so height is measured and set imperatively:
+// collapse to "auto" first so a shrinking edit (deleting a wrapped line) is picked up too, then
+// grow to `scrollHeight`. Called both from the row's `ref` (sizes existing content — an edited
+// ticket's rows — as soon as the element mounts) and from its `onChange` (a mounted textarea's
+// ref callback fires only on mount/unmount, never again, so typing needs its own resize call).
+function autoGrowChecklistRow(el: HTMLTextAreaElement | null) {
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = `${el.scrollHeight}px`;
+}
+
 /**
  * Task Breakdown and Acceptance Criteria are both this same growing checklist: the plan a Plan
  * agent is meant to produce, held here as local state because there is no field for it yet. The
@@ -125,23 +138,27 @@ function Checklist({
         {rows.map((row, index) => {
           const trailing = index === rows.length - 1;
           return (
-            <div key={index} className="flex items-center gap-2">
+            <div key={index} className="flex items-start gap-2">
               <Checkbox
                 checked={row.done}
                 disabled={trailing}
+                className="mt-1"
                 onCheckedChange={(checked) =>
                   onRowsChange(rows.map((r, i) => (i === index ? { ...r, done: checked === true } : r)))
                 }
               />
-              <input
+              <textarea
+                ref={autoGrowChecklistRow}
                 value={row.text}
                 onChange={(e) => {
                   const next = rows.map((r, i) => (i === index ? { ...r, text: e.target.value } : r));
                   onRowsChange(normalizeChecklistRows(next));
+                  autoGrowChecklistRow(e.target);
                 }}
                 placeholder={trailing ? "Add an item…" : undefined}
+                rows={1}
                 className={cn(
-                  "h-6 w-full min-w-0 border-0 bg-transparent text-sm outline-none placeholder:text-muted-foreground",
+                  "w-full min-w-0 resize-none overflow-hidden border-0 bg-transparent text-sm leading-6 outline-none placeholder:text-muted-foreground",
                   row.done && "line-through text-muted-foreground"
                 )}
               />
