@@ -31,6 +31,7 @@ export type {
   Playbook,
   Project,
   PullRequestState,
+  ScreenshotSide,
   Status,
 } from "@10x/backend/types";
 

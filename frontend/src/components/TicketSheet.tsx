@@ -1,5 +1,5 @@
-import { ImageIcon, Trash2, Upload } from "lucide-react";
-import { useState } from "react";
+import { ChevronLeftIcon, ChevronRightIcon, ImageIcon, Trash2, Upload } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { DeleteTicketDialog } from "@/components/DeleteTicketDialog.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -21,7 +21,14 @@ import { Spinner } from "@/components/ui/spinner.tsx";
 import { createTicket, moveTicket, updateTicket } from "@/lib/api.ts";
 import { runFailed } from "@/lib/board.ts";
 import { cn } from "@/lib/utils.ts";
-import { PLAYBOOKS, type Playbook, type Project, type Status, type Ticket } from "@/types.ts";
+import {
+  PLAYBOOKS,
+  type Playbook,
+  type Project,
+  type ScreenshotSide,
+  type Status,
+  type Ticket,
+} from "@/types.ts";
 
 type Props = {
   open: boolean;
@@ -52,33 +59,33 @@ type Props = {
  * One labelled Before/After pane: the image when its url is captured, or a placeholder when it
  * isn't. Extracted so the two panes below share this markup instead of duplicating it.
  *
- * Clicking the thumbnail enlarges it in a plain `Dialog` (dialog.tsx) nested inside the sheet's
- * own dialog — Radix's dismissable-layer stack closes only the topmost one on Escape, so
- * closing the enlarged view never closes the sheet under it. The thumbnail is a `<button>`
- * rather than an `onClick` on the `<img>` so it is keyboard-reachable and gets a focus ring.
+ * Clicking the thumbnail opens the shared `ScreenshotLightbox` below on this pane's own image —
+ * enlargement state lives one level up in `TicketSheet` rather than here, so Before and After
+ * share a single dialog instead of each mounting its own, and the lightbox can page between them
+ * without one pane's state having to know the other exists. The thumbnail is a `<button>` rather
+ * than an `onClick` on the `<img>` so it is keyboard-reachable and gets a focus ring.
  */
-function ScreenshotPane({ label, url }: { label: string; url: string | null }) {
-  const [enlarged, setEnlarged] = useState(false);
+function ScreenshotPane({
+  label,
+  url,
+  onEnlarge,
+}: {
+  label: string;
+  url: string | null;
+  onEnlarge: () => void;
+}) {
   return (
     <div className="grid gap-1.5">
       <label className="text-xs text-muted-foreground">{label}</label>
       {url ? (
-        <>
-          <button
-            type="button"
-            onClick={() => setEnlarged(true)}
-            aria-label={`Enlarge ${label} screenshot`}
-            className="block aspect-video w-full overflow-hidden rounded-md border focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-          >
-            <img src={url} alt={label} className="size-full object-cover" />
-          </button>
-          <Dialog open={enlarged} onOpenChange={setEnlarged}>
-            <DialogContent className="max-w-4xl p-2">
-              <DialogTitle className="sr-only">{label} screenshot, enlarged</DialogTitle>
-              <img src={url} alt={label} className="max-h-[85vh] w-full rounded-md object-contain" />
-            </DialogContent>
-          </Dialog>
-        </>
+        <button
+          type="button"
+          onClick={onEnlarge}
+          aria-label={`Enlarge ${label} screenshot`}
+          className="block aspect-video w-full overflow-hidden rounded-md border focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        >
+          <img src={url} alt={label} className="size-full object-cover" />
+        </button>
       ) : (
         <div className="flex aspect-video w-full flex-col items-center justify-center gap-1.5 rounded-md border bg-muted text-xs text-muted-foreground">
           <ImageIcon aria-hidden className="size-5" />
@@ -86,6 +93,110 @@ function ScreenshotPane({ label, url }: { label: string; url: string | null }) {
         </div>
       )}
     </div>
+  );
+}
+
+const SCREENSHOT_LABELS: Record<ScreenshotSide, string> = { before: "Before", after: "After" };
+
+/**
+ * The single enlarged view shared by both `ScreenshotPane`s, so paging between Before and After
+ * doesn't close and reopen a dialog. `side` is which one is open, or null when closed; each
+ * pane's click sets it directly to its own side, so the lightbox opens on whichever was clicked
+ * rather than always defaulting to one. `screenshots` is read straight off the ticket so a
+ * missing side is never treated as "the same image twice".
+ *
+ * No close-X: it used to draw at `opacity-70` directly over the raw image with no backing chip,
+ * invisible on a screenshot with a light corner. Escape and clicking the overlay both still
+ * close it — that's Radix's own dismissable-layer behaviour, `showCloseButton` only toggles the
+ * button.
+ */
+function ScreenshotLightbox({
+  screenshots,
+  side,
+  onOpenChange,
+  onSelect,
+}: {
+  screenshots: { before: string | null; after: string | null };
+  side: ScreenshotSide | null;
+  onOpenChange: (open: boolean) => void;
+  onSelect: (side: ScreenshotSide) => void;
+}) {
+  const open = side !== null;
+  const bothExist = screenshots.before !== null && screenshots.after !== null;
+
+  // Left/right cycle Before <-> After, but only while open and only when there is a second
+  // side to cycle to — with one side missing, the keys have nothing to do.
+  useEffect(() => {
+    if (!open || !bothExist) return;
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "ArrowLeft") onSelect("before");
+      else if (event.key === "ArrowRight") onSelect("after");
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open, bothExist, onSelect]);
+
+  // Radix unmounts DialogContent while closed, so this fallback is never actually shown — it
+  // only keeps the render below type-safe between the last open side and null.
+  const shown = side ?? "before";
+  const url = screenshots[shown];
+  const label = SCREENSHOT_LABELS[shown];
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent showCloseButton={false} className="max-w-4xl p-2">
+        <DialogTitle className="sr-only">{label} screenshot, enlarged</DialogTitle>
+        <div className="flex items-center gap-2">
+          {bothExist && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Show before screenshot"
+              onClick={() => onSelect("before")}
+              className="shrink-0"
+            >
+              <ChevronLeftIcon aria-hidden />
+            </Button>
+          )}
+          {url && (
+            <img src={url} alt={label} className="min-w-0 flex-1 max-h-[80vh] rounded-md object-contain" />
+          )}
+          {bothExist && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Show after screenshot"
+              onClick={() => onSelect("after")}
+              className="shrink-0"
+            >
+              <ChevronRightIcon aria-hidden />
+            </Button>
+          )}
+        </div>
+        <div className="grid justify-items-center gap-1.5">
+          <span className="text-sm font-medium">{label}</span>
+          {bothExist && (
+            <div className="flex gap-1.5" role="group" aria-label="Screenshot">
+              {(["before", "after"] as const satisfies readonly ScreenshotSide[]).map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  aria-label={`Show ${SCREENSHOT_LABELS[s]} screenshot`}
+                  aria-current={s === shown}
+                  onClick={() => onSelect(s)}
+                  className={cn(
+                    "size-2 rounded-full transition-colors",
+                    s === shown ? "bg-foreground" : "bg-muted-foreground/40 hover:bg-muted-foreground/70",
+                  )}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -267,6 +378,10 @@ export function TicketSheet({
   // discarding a description because the network blinked would be the expensive mistake — so
   // the message sits next to the button that failed and the same click retries.
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // Which side, if any, the shared screenshot lightbox is showing. Lives here rather than in
+  // `ScreenshotPane` so Before and After share one dialog instead of each mounting its own —
+  // see `ScreenshotLightbox`'s own comment for why that matters.
+  const [lightboxSide, setLightboxSide] = useState<ScreenshotSide | null>(null);
 
   // The callsite's `key` re-seeds this component when a *different* ticket is opened, but the
   // create key is the constant "new", so the composer never remounts between one creation
@@ -449,8 +564,16 @@ export function TicketSheet({
               side is still null. */}
           {!creating && (ticket.screenshots.before !== null || ticket.screenshots.after !== null) && (
             <div className="grid gap-4">
-              <ScreenshotPane label="Before" url={ticket.screenshots.before} />
-              <ScreenshotPane label="After" url={ticket.screenshots.after} />
+              <ScreenshotPane
+                label="Before"
+                url={ticket.screenshots.before}
+                onEnlarge={() => setLightboxSide("before")}
+              />
+              <ScreenshotPane
+                label="After"
+                url={ticket.screenshots.after}
+                onEnlarge={() => setLightboxSide("after")}
+              />
             </div>
           )}
 
@@ -612,6 +735,16 @@ export function TicketSheet({
         </SheetFooter>
       </SheetContent>
       {!creating && <DeleteTicketDialog ticket={ticket} open={confirmDelete} onOpenChange={setConfirmDelete} />}
+      {!creating && (
+        <ScreenshotLightbox
+          screenshots={ticket.screenshots}
+          side={lightboxSide}
+          onOpenChange={(next) => {
+            if (!next) setLightboxSide(null);
+          }}
+          onSelect={setLightboxSide}
+        />
+      )}
     </Sheet>
   );
 }
