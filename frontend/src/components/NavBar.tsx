@@ -1,10 +1,13 @@
 import { IconMoonFilled, IconSunFilled } from "@tabler/icons-react";
-import { BookOpen, Columns3, LayoutDashboard } from "lucide-react";
+import { BookOpen, Columns3, LayoutDashboard, Pencil, Plus, Trash2 } from "lucide-react";
+import { useState } from "react";
 
+import { DeleteProjectDialog, ProjectDialog } from "@/components/ProjectDialog.tsx";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select.tsx";
 import { ALL_PROJECTS } from "@/lib/board.ts";
 import type { SteerMode } from "@/lib/steer-mode.ts";
 import type { Theme } from "@/lib/theme.ts";
+import { cn } from "@/lib/utils.ts";
 import type { Project } from "@/types.ts";
 
 type Props = {
@@ -25,6 +28,27 @@ const DESTINATIONS = [
   { label: "Playbooks", icon: BookOpen, active: false },
 ];
 
+/**
+ * A project is usable at `ready` and only there, so the picker says where the others are: an
+ * option's label is the one place a project is named while it is still downloading. Text only —
+ * the picker is a native `<select>` and its options cannot hold markup.
+ */
+const STATE_SUFFIX: Record<Project["provisionState"], string> = {
+  pending: " (queued)",
+  cloning: " (downloading…)",
+  ready: "",
+  failed: " (needs attention)",
+};
+
+/**
+ * Shared by the picker's three neighbours and the theme toggle: a fixed size-9 square, not
+ * padding around an icon, so the icon has a box to centre in and the row matches the h-9 select.
+ * `disabled:` deliberately does not include `pointer-events-none` — a disabled control still has
+ * to be hoverable for its title to explain *why* it is disabled.
+ */
+const ICON_BUTTON =
+  "inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-input bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground dark:bg-input/30 dark:hover:bg-input/50";
+
 export function NavBar({
   projects,
   projectId,
@@ -38,6 +62,17 @@ export function NavBar({
   // display/aria text is purely presentational, so both derive from this one lowercase
   // value instead of a second hardcoded capitalized literal that can drift out of sync.
   const otherSteerMode: SteerMode = steerMode === "local" ? "remote" : "local";
+
+  // All of it stays here: the dialogs belong to the controls that open them, so adding a
+  // project needs nothing threaded down from `App.tsx`.
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editing, setEditing] = useState<Project | null>(null);
+  const [deleting, setDeleting] = useState<Project | null>(null);
+
+  // `ALL_PROJECTS` is the picker's sentinel and never a project id, so "no selection" and
+  // "every project" are the same state here — which is exactly when editing and deleting have
+  // no subject.
+  const selected = projects.find((project) => project.id === projectId) ?? null;
 
   return (
     <header className="shrink-0 border-b">
@@ -110,14 +145,57 @@ export function NavBar({
             {projects.map((p) => (
               <NativeSelectOption key={p.id} value={p.id}>
                 {p.name}
+                {STATE_SUFFIX[p.provisionState]}
               </NativeSelectOption>
             ))}
           </NativeSelect>
 
-          {/* Fixed size-9 square (not padding around an icon) gives the icon a box to centre in and matches the h-9 select beside it. */}
           <button
             type="button"
-            className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-input bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none dark:bg-input/30 dark:hover:bg-input/50"
+            aria-label="Add project"
+            title="Add a project from a GitHub link"
+            onClick={() => {
+              setEditing(null);
+              setEditorOpen(true);
+            }}
+            className={ICON_BUTTON}
+          >
+            <Plus aria-hidden className="size-5" />
+          </button>
+
+          {/*
+            Both always rendered, disabled while the picker is on "All projects". Hiding them
+            behind a selection is what review rejected: a first-time user sees only `+`, never
+            learns the controls exist, and concludes a project cannot be edited at all.
+          */}
+          <button
+            type="button"
+            disabled={selected === null}
+            aria-label={selected === null ? "Edit project" : `Edit ${selected.name}`}
+            title={selected === null ? "Pick a project in the picker to edit it" : `Edit ${selected.name}`}
+            onClick={() => {
+              setEditing(selected);
+              setEditorOpen(true);
+            }}
+            className={ICON_BUTTON}
+          >
+            <Pencil aria-hidden className="size-4" />
+          </button>
+
+          <button
+            type="button"
+            disabled={selected === null}
+            aria-label={selected === null ? "Delete project" : `Delete ${selected.name}`}
+            title={selected === null ? "Pick a project in the picker to delete it" : `Delete ${selected.name}`}
+            onClick={() => setDeleting(selected)}
+            className={cn(ICON_BUTTON, "hover:bg-destructive/10 hover:text-destructive")}
+          >
+            <Trash2 aria-hidden className="size-4" />
+          </button>
+
+          <button
+            type="button"
+            className={ICON_BUTTON}
             aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
             onClick={onThemeToggle}
           >
@@ -129,6 +207,30 @@ export function NavBar({
           </button>
         </div>
       </div>
+
+      <ProjectDialog
+        open={editorOpen}
+        onOpenChange={setEditorOpen}
+        projects={projects}
+        editing={editing}
+        // A new project is selected the moment it exists, because its whole point is that you
+        // can start filling its backlog while the clone is still running.
+        onSaved={(project) => onProjectChange(project.id)}
+      />
+
+      {deleting !== null && (
+        <DeleteProjectDialog
+          project={deleting}
+          open
+          onOpenChange={(open) => {
+            if (!open) setDeleting(null);
+          }}
+          onDeleted={() => {
+            onProjectChange(ALL_PROJECTS);
+            setDeleting(null);
+          }}
+        />
+      )}
     </header>
   );
 }

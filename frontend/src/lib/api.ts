@@ -1,4 +1,5 @@
 import { ALL_PROJECTS } from "@/lib/board.ts";
+import { MOCK_PROJECTS } from "@/mock.ts";
 import type { BoardResponse, Playbook, Priority, Project, Status, Ticket } from "@/types.ts";
 
 /**
@@ -28,18 +29,47 @@ export const MOCK_MODE = import.meta.env["VITE_MOCK_MODE"] === "true";
  *
  * A body that is not that envelope — the dev proxy's own 404, an HTML error page — falls back
  * to the status text, so the throw still says something.
+ *
+ * The parsed body is handed back as well, because one refusal is data rather than a sentence:
+ * `pr_open` names the pull requests blocking a project delete, and the dialog links each one.
  */
-async function failureDetail(response: Response): Promise<string> {
-  let body: { error?: unknown; message?: unknown };
+async function failureDetail(response: Response): Promise<{
+  detail: string;
+  code: string | null;
+  body: unknown;
+}> {
+  let body: unknown;
   try {
-    body = (await response.json()) as { error?: unknown; message?: unknown };
+    body = await response.json();
   } catch {
-    return response.statusText;
+    return { detail: response.statusText, code: null, body: null };
   }
-  const code = typeof body.error === "string" ? body.error : null;
-  const detail = typeof body.message === "string" ? body.message : null;
-  if (code !== null && detail !== null) return `${code}: ${detail}`;
-  return code ?? detail ?? response.statusText;
+  const envelope = typeof body === "object" && body !== null ? body : {};
+  const code = "error" in envelope && typeof envelope.error === "string" ? envelope.error : null;
+  const detail = "message" in envelope && typeof envelope.message === "string" ? envelope.message : null;
+  return {
+    detail: code !== null && detail !== null ? `${code}: ${detail}` : (code ?? detail ?? response.statusText),
+    code,
+    body,
+  };
+}
+
+/**
+ * Same shape as the backend's `GitHubApiError`: a caller that has to *branch* on a refusal
+ * switches on `code`, never on message text. `body` carries the whole envelope for the one
+ * refusal that says more than a sentence; both are null for a response that was never the
+ * envelope at all.
+ */
+export class RequestError extends Error {
+  readonly code: string | null;
+  readonly body: unknown;
+
+  constructor(message: string, code: string | null, body: unknown) {
+    super(message);
+    this.name = "RequestError";
+    this.code = code;
+    this.body = body;
+  }
 }
 
 /**
@@ -48,8 +78,14 @@ async function failureDetail(response: Response): Promise<string> {
  * Two error styles for two ways of being unusable would only be two things to recognise in a
  * bug report.
  */
-function requestFailed(method: string, path: string, detail: string): Error {
-  return new Error(`${method} ${path} failed: ${detail}`);
+function requestFailed(
+  method: string,
+  path: string,
+  detail: string,
+  code: string | null = null,
+  body: unknown = null,
+): RequestError {
+  return new RequestError(`${method} ${path} failed: ${detail}`, code, body);
 }
 
 /**
@@ -66,7 +102,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       : { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
   );
   if (!response.ok) {
-    throw requestFailed(method, path, `${response.status} ${await failureDetail(response)}`);
+    const { detail, code, body: envelope } = await failureDetail(response);
+    throw requestFailed(method, path, `${response.status} ${detail}`, code, envelope);
   }
   return (await response.json()) as T;
 }
@@ -276,4 +313,317 @@ export async function updateTicket(
  */
 export async function rejectTicket(id: string, reason: string): Promise<void> {
   await request<unknown>("POST", `/tickets/${encodeURIComponent(id)}/reject`, { reason });
+}
+
+/**
+ * Adding a project is three typed fields and one admission test: `GET /projects/lookup` proves
+ * the link parses, the repo exists and the token can read it, and hands back everything the
+ * dialog would otherwise have had to ask for. `POST`, `PATCH` and `/provision` answer
+ * `{project}` rather than the row itself, so the wrapper is unwrapped here and every caller
+ * sees a `Project`.
+ */
+export type RepoLookup = {
+  owner: string;
+  repo: string;
+  /** The repo's *own* name and description, which prefill the two fields — not the project's. */
+  name: string;
+  description: string;
+  defaultBranch: string;
+  private: boolean;
+  /**
+   * Zero commits, which makes `defaultBranch` a GitHub setting rather than a branch that
+   * exists (memory/gotchas.md G8): the first ticket would die at worktree creation. This is
+   * what the seed-commit offer in the dialog is for.
+   */
+  empty: boolean;
+};
+
+/**
+ * A remote, not a path: the repo *is* the project's identity and 10x clones it itself, so
+ * `owner`, `repo`, `repoPath` and `baseBranch` are all derived server-side. `id` is the
+ * permanent slug; omitting it lets the server derive one with `deriveProjectSlug`.
+ * `seedInitialCommit` is only honoured on a repo with no commits — the one time 10x writes to
+ * a repo outside a ticket.
+ */
+export type CreateProjectInput = {
+  remote: string;
+  name: string;
+  description: string;
+  id?: string;
+  seedInitialCommit?: boolean;
+};
+
+/** The three fields that stay editable. The slug and the repo are frozen at creation. */
+export type UpdateProjectInput = {
+  name?: string;
+  description?: string;
+  baseBranch?: string;
+};
+
+/** One of the still-open pull requests `409 pr_open` refuses a project delete with. */
+export type OpenPullRequest = { ticketId: string; prNumber: number; prUrl: string };
+
+/**
+ * The two remote shapes `github.ts`'s own `parseRemote` accepts, and nothing else. The dialog
+ * parses before it debounces, so a half-typed URL costs no request and a non-GitHub host is
+ * refused with a different sentence than "GitHub does not have that repo" — the reason for
+ * that refusal is the board's finish line, not a limitation worth being vague about.
+ */
+const GITHUB_HTTPS_REMOTE = /^(?:https:\/\/)?(?:www\.)?github\.com\/([^/\s]+)\/([^/\s]+?)(?:\.git)?$/i;
+const GITHUB_SSH_REMOTE = /^git@github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?$/i;
+
+export function parseGithubRemote(remote: string): { owner: string; repo: string } | null {
+  const raw = remote.trim().replace(/\/+$/, "");
+  const match = GITHUB_HTTPS_REMOTE.exec(raw) ?? GITHUB_SSH_REMOTE.exec(raw);
+  const [, owner, repo] = match ?? [];
+  return owner === undefined || repo === undefined ? null : { owner, repo };
+}
+
+export function lookupRepo(remote: string): Promise<RepoLookup> {
+  if (MOCK_MODE) return mockLookupRepo(remote);
+  return request<RepoLookup>("GET", `/projects/lookup?remote=${encodeURIComponent(remote)}`);
+}
+
+/**
+ * The project row lands immediately, `pending`, and the clone runs behind it: a large repo
+ * takes minutes and filling the backlog does not need the code, so the dialog closes on this
+ * response rather than on the download. Only Start waits for `ready`.
+ */
+export async function createProject(input: CreateProjectInput): Promise<Project> {
+  if (MOCK_MODE) return mockCreateProject(input);
+  const { project } = await request<{ project: Project }>("POST", "/projects", input);
+  return project;
+}
+
+/**
+ * Name, description and base branch. `id`, `owner`, `repo` and `repoPath` are deliberately not
+ * accepted: the slug is in every branch and agent name the project has ever created, and work
+ * already on disk carries the old value.
+ */
+export async function updateProject(id: string, patch: UpdateProjectInput): Promise<Project> {
+  if (MOCK_MODE) return mockUpdateProject(id, patch);
+  const { project } = await request<{ project: Project }>("PATCH", `/projects/${encodeURIComponent(id)}`, patch);
+  return project;
+}
+
+/**
+ * Total cleanup: agents stopped, working copies and their unmerged branches removed, 10x's
+ * downloaded copy of the repo deleted. Nothing on GitHub is touched.
+ *
+ * Refused with `pr_open` while any ticket in the project has an open pull request — deleting
+ * the branch out from under a PR leaves whoever is reviewing it pointing at nothing. The list
+ * of blocking PRs rides on the error; `openPullRequests` below reads it.
+ */
+export async function deleteProject(id: string): Promise<void> {
+  if (MOCK_MODE) return mockDeleteProject(id);
+  await request<unknown>("DELETE", `/projects/${encodeURIComponent(id)}`);
+}
+
+/** Retries a clone that failed, from the top. The project returns to `pending`. */
+export async function provisionProject(id: string): Promise<Project> {
+  if (MOCK_MODE) return mockProvisionProject(id);
+  const { project } = await request<{ project: Project }>(
+    "POST",
+    `/projects/${encodeURIComponent(id)}/provision`,
+  );
+  return project;
+}
+
+/**
+ * `pr_open` is the one refusal a component renders as data rather than as a sentence: the fix
+ * is on GitHub, so the dialog links each blocking PR instead of making you go and find it.
+ * Narrowing the `unknown` belongs here at the seam, not in the dialog. Null means "not that
+ * refusal"; an empty array means the refusal arrived without its list, which is a server bug
+ * and still must not read as "nothing is blocking you".
+ */
+export function openPullRequests(error: unknown): OpenPullRequest[] | null {
+  if (!(error instanceof RequestError) || error.code !== "pr_open") return null;
+  const body = error.body;
+  if (typeof body !== "object" || body === null || !("openPullRequests" in body)) return [];
+  const list = body.openPullRequests;
+  // Rendered as a link, so a half-shaped entry would show as `#undefined` rather than fail —
+  // the one read in this file worth checking instead of casting.
+  return Array.isArray(list) ? list.filter(isOpenPullRequest) : [];
+}
+
+function isOpenPullRequest(value: unknown): value is OpenPullRequest {
+  if (typeof value !== "object" || value === null) return false;
+  return (
+    "ticketId" in value &&
+    typeof value.ticketId === "string" &&
+    "prNumber" in value &&
+    typeof value.prNumber === "number" &&
+    "prUrl" in value &&
+    typeof value.prUrl === "string"
+  );
+}
+
+/*
+ * ── Mock mode ─────────────────────────────────────────────────────────────────────────────
+ *
+ * `use-board.ts` serves `mock.ts` as a static board and starts no timer, so mock mode has no
+ * write path at all: without the store below the project dialog renders and then has nothing
+ * to submit to, which defeats building the UI before the endpoints exist. Every write above
+ * resolves against this instead of `fetch`, and refuses with the same coded `RequestError` a
+ * real route would, so the dialog's error handling is the one it will ship with.
+ *
+ * Outcomes are driven by the repo name rather than by a hidden switch, so every state is
+ * reachable from the field you are already typing in: `notfound`, `private`, `new`/`fresh`/
+ * `empty`, `failclone`.
+ */
+
+const MOCK_LOOKUP_MS = 350;
+const MOCK_CLONE_START_MS = 700;
+const MOCK_CLONE_MS = 3000;
+
+/** Whatever the mock lookup resolves is also what a mock clone ends up on. */
+const MOCK_DEFAULT_BRANCH = "main";
+
+/**
+ * Replaced, never mutated in place: a changed array identity is the only signal a subscriber
+ * has that the list moved, and it is what `useSyncExternalStore` compares.
+ */
+let mockSnapshot: Project[] = MOCK_PROJECTS;
+const mockListeners = new Set<() => void>();
+
+export const mockProjects = {
+  list: (): Project[] => mockSnapshot,
+  subscribe(listener: () => void): () => void {
+    mockListeners.add(listener);
+    return () => {
+      mockListeners.delete(listener);
+    };
+  },
+};
+
+function publishMock(next: Project[]): void {
+  mockSnapshot = next;
+  for (const listener of mockListeners) listener();
+}
+
+/** Null when the project is gone — a clone that lands after a delete must not resurrect it. */
+function patchMock(id: string, patch: Partial<Project>): Project | null {
+  const current = mockSnapshot.find((project) => project.id === id);
+  if (current === undefined) return null;
+  const updated: Project = { ...current, ...patch, updatedAt: new Date().toISOString() };
+  publishMock(mockSnapshot.map((project) => (project.id === id ? updated : project)));
+  return updated;
+}
+
+/** The same envelope a real refusal carries, so `RequestError.code` reads the same in both modes. */
+function mockRefusal(method: string, path: string, status: number, code: string, message: string): RequestError {
+  return requestFailed(method, path, `${status} ${code}: ${message}`, code, { error: code, message });
+}
+
+/** Executor form because `Promise.withResolvers` is ES2024 and this build's lib is ES2023. */
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function mockLookupRepo(remote: string): Promise<RepoLookup> {
+  await sleep(MOCK_LOOKUP_MS);
+  const path = "/projects/lookup";
+  const parsed = parseGithubRemote(remote);
+  if (parsed === null) {
+    throw mockRefusal("GET", path, 400, "invalid_remote", `${remote} is not a GitHub repo URL.`);
+  }
+  const repo = parsed.repo.toLowerCase();
+  if (repo.includes("notfound")) {
+    throw mockRefusal("GET", path, 404, "repo_not_found", `No repo at ${parsed.owner}/${parsed.repo}.`);
+  }
+  if (repo.includes("private")) {
+    throw mockRefusal(
+      "GET",
+      path,
+      403,
+      "repo_not_accessible",
+      `${parsed.owner}/${parsed.repo} exists but the token cannot see it.`,
+    );
+  }
+  const empty = /new|fresh|empty/.test(repo);
+  return {
+    ...parsed,
+    name: parsed.repo,
+    // A brand-new repo has no description yet, which is also the case the dialog must not
+    // prefill over.
+    description: empty ? "" : "Everything I keep meaning to automate around the house.",
+    defaultBranch: MOCK_DEFAULT_BRANCH,
+    private: true,
+    empty,
+  };
+}
+
+async function mockCreateProject(input: CreateProjectInput): Promise<Project> {
+  const parsed = parseGithubRemote(input.remote);
+  if (parsed === null) {
+    throw mockRefusal("POST", "/projects", 400, "invalid_remote", `${input.remote} is not a GitHub repo URL.`);
+  }
+  await sleep(MOCK_LOOKUP_MS);
+  const now = new Date().toISOString();
+  const project: Project = {
+    // The dialog always sends the slug it showed you; the bare repo name is a stand-in for
+    // `deriveProjectSlug`, which lives in the backend mock mode never reaches.
+    id: input.id ?? parsed.repo.toLowerCase(),
+    name: input.name,
+    description: input.description,
+    ...parsed,
+    // Displayed, never read: mock mode never learns the real `$PROJECTS_ROOT`, and the dialog
+    // shows the same `~/.10x/repos/<slug>` form.
+    repoPath: `~/.10x/repos/${input.id ?? parsed.repo.toLowerCase()}`,
+    baseBranch: MOCK_DEFAULT_BRANCH,
+    provisionState: "pending",
+    provisionError: "",
+    createdAt: now,
+    updatedAt: now,
+  };
+  publishMock([...mockSnapshot, project]);
+  runMockClone(project);
+  return project;
+}
+
+/**
+ * Deliberately not awaited by its caller: the response is the row, and the download runs
+ * behind the closed dialog exactly as the real one does.
+ */
+function runMockClone(project: Project): void {
+  setTimeout(() => {
+    if (patchMock(project.id, { provisionState: "cloning" }) === null) return;
+    setTimeout(() => {
+      patchMock(
+        project.id,
+        /failclone/i.test(project.repo)
+          ? {
+              provisionState: "failed",
+              provisionError:
+                "Could not download the repo: the connection dropped partway through. Nothing was left behind — retry when you are ready.",
+            }
+          : { provisionState: "ready", provisionError: "" },
+      );
+    }, MOCK_CLONE_MS);
+  }, MOCK_CLONE_START_MS);
+}
+
+async function mockUpdateProject(id: string, patch: UpdateProjectInput): Promise<Project> {
+  await sleep(MOCK_LOOKUP_MS);
+  const updated = patchMock(id, patch);
+  if (updated === null) {
+    throw mockRefusal("PATCH", `/projects/${id}`, 404, "project_not_found", `No project ${id}.`);
+  }
+  return updated;
+}
+
+async function mockDeleteProject(id: string): Promise<void> {
+  await sleep(MOCK_LOOKUP_MS);
+  if (!mockSnapshot.some((project) => project.id === id)) {
+    throw mockRefusal("DELETE", `/projects/${id}`, 404, "project_not_found", `No project ${id}.`);
+  }
+  publishMock(mockSnapshot.filter((project) => project.id !== id));
+}
+
+async function mockProvisionProject(id: string): Promise<Project> {
+  await sleep(MOCK_LOOKUP_MS);
+  const retried = patchMock(id, { provisionState: "pending", provisionError: "" });
+  if (retried === null) {
+    throw mockRefusal("POST", `/projects/${id}/provision`, 404, "project_not_found", `No project ${id}.`);
+  }
+  runMockClone(retried);
+  return retried;
 }
