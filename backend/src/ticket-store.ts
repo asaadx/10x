@@ -282,6 +282,18 @@ export function listTickets(projectId?: string): Ticket[] {
   return rows.map(decode);
 }
 
+/**
+ * Every ticket id a project owns, archived included — the one read that deliberately ignores
+ * the `archived = 0` filter every other list applies. Deleting a project has to sweep files
+ * keyed by ticket id (screenshots), and an archived ticket's files are still on disk even
+ * though its card is gone for good.
+ */
+const SELECT_IDS_BY_PROJECT = db.prepare("SELECT id FROM tickets WHERE project_id = ?");
+
+export function listProjectTicketIds(projectId: string): string[] {
+  return SELECT_IDS_BY_PROJECT.all(projectId).map((row) => String(row["id"]));
+}
+
 export function getTicket(id: string): Ticket | undefined {
   const row = SELECT_ONE.get(id);
   return row === undefined ? undefined : decode(row);

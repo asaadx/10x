@@ -10,17 +10,20 @@
  *
  *  2. The slug is IMMUTABLE. Branch and agent names are computed from it and existing
  *     worktrees already carry the old value, so renaming would orphan every one of them.
- *     Only `name`, `repoPath` and `baseBranch` — which nothing is derived from — mutate.
+ *     `owner`/`repo` are immutable for the same class of reason — they are the project's
+ *     identity, and repointing a healthy project at a different repo would orphan its open
+ *     pull requests. Only `name`, `description` and `baseBranch` mutate freely.
  *
- * The repo path is checked for a `.git` entry for the same reason: the alternative is
- * discovering the mistake as a `worktree_create_failed` at spawn time (memory/operations.md).
+ *  3. `repoPath` is DERIVED, never supplied: `$PROJECTS_ROOT/<id>`. 10x clones the repo itself
+ *     rather than borrowing a checkout the user also works in, so the base branch is never
+ *     dirty, mid-rebase or on a surprise branch. A caller naming it is refused, not obeyed.
  */
 import type { SQLOutputValue } from "node:sqlite";
-import { existsSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
 import { db, nowIso, toProject } from "./db.ts";
-import type { Project } from "./types.ts";
-import { validateProjectSlug } from "./lifecycle.ts";
+import { parseRemote } from "./github.ts";
+import { projectRepoPath } from "./provision.ts";
+import type { Project, ProvisionState } from "./types.ts";
+import { deriveProjectSlug, validateProjectSlug } from "./lifecycle.ts";
 
 export type ProjectError = { error: string; field?: string; message: string };
 
@@ -102,17 +105,68 @@ function checkName(value: unknown): Checked {
   return { ok: true, value: name };
 }
 
-function checkRepoPath(value: unknown): Checked {
-  const bad = (message: string) => fail(400, "invalid_repo_path", message, "repoPath");
-  const path = typeof value === "string" ? value.trim() : "";
-  if (path.length === 0) return bad("repoPath is required and must be a non-empty string");
-  // Herdr's socket API takes paths verbatim; only its CLI expands relative ones (memory/socket.md).
-  if (!isAbsolute(path)) return bad(`repoPath must be an absolute path, got "${path}"`);
-  if (!existsSync(path)) return bad(`repoPath does not exist: ${path}`);
-  if (!existsSync(join(path, ".git"))) {
-    return bad(`repoPath is not a git repository (no .git entry): ${path}`);
+/**
+ * Optional, and free-form: it is prose, not an identifier. The cap is generous but finite
+ * because this text is handed to every agent spawned on the project, where an unbounded field
+ * would quietly eat the opening prompt.
+ */
+function checkDescription(value: unknown): Checked {
+  if (value === undefined || value === null) return { ok: true, value: "" };
+  if (typeof value !== "string") {
+    return fail(400, "invalid_description", "description must be a string", "description");
   }
-  return { ok: true, value: path };
+  const description = value.trim();
+  if (description.length > 2000) {
+    return fail(
+      400,
+      "invalid_description",
+      "description must be 2000 characters or fewer",
+      "description",
+    );
+  }
+  return { ok: true, value: description };
+}
+
+/**
+ * A project is identified by its GitHub repo, not by where that repo happens to sit on this
+ * machine, so this is the only identity the caller supplies. Rejecting a non-GitHub remote here
+ * rather than at Accept is the whole point: `in_review -> done` runs through one route, and that
+ * route pushes a branch and opens a pull request. A project with nowhere to push would park
+ * every ticket in In Review permanently and could not even be archived, so it is refused at
+ * creation instead of failing at the finish line (docs/plug-and-play-projects.md).
+ */
+function checkRemote(value: unknown): { ok: true; owner: string; repo: string } | ProjectFailure {
+  const remote = typeof value === "string" ? value.trim() : "";
+  if (remote.length === 0) {
+    return fail(400, "invalid_remote", "remote is required and must be a non-empty string", "remote");
+  }
+  try {
+    const { owner, repo } = parseRemote(normalizeRemote(remote));
+    return { ok: true, owner, repo };
+  } catch {
+    return fail(
+      400,
+      "invalid_remote",
+      `not a GitHub repository: "${remote}". Expected https://github.com/owner/repo or ` +
+        "git@github.com:owner/repo.",
+      "remote",
+    );
+  }
+}
+
+/**
+ * `parseRemote` is strict because it also parses what git hands back from `remote get-url`.
+ * A human pasting from a browser brings along a trailing slash, a `/tree/main` suffix or a
+ * missing scheme, none of which change which repo is meant. Normalising here keeps that
+ * leniency at the edge instead of loosening the parser every consumer shares.
+ */
+export function normalizeRemote(raw: string): string {
+  let remote = raw.replace(/\s+/g, "").replace(/\/+$/, "");
+  remote = remote.replace(/^(https:\/\/github\.com\/[^/]+\/[^/]+)\/(?:tree|blob|pull)\/.*$/, "$1");
+  if (remote.startsWith("github.com/") || remote.startsWith("www.github.com/")) {
+    remote = `https://${remote.replace(/^www\./, "")}`;
+  }
+  return remote;
 }
 
 /** Handed to git verbatim as `worktree.create`'s `base`, so keep it ref-shaped. */
@@ -141,17 +195,39 @@ export function getProject(id: string): Project | undefined {
   return row === undefined ? undefined : rowToProject(row);
 }
 
+/**
+ * Takes `{ remote, name, description?, id?, baseBranch? }`. The row lands `pending`: the clone
+ * is minutes of work on a large repo and the caller kicks it off separately, so this stays the
+ * fast, synchronous half — parse, validate, insert, answer.
+ *
+ * `id` is optional because the slug is derived from the repo name. It is still accepted so the
+ * dialog can offer an edited one, since the derived slug is frozen forever and lands in every
+ * branch name this project ever creates.
+ */
 export function createProject(input: unknown): ProjectResult {
   if (typeof input !== "object" || input === null) {
     return fail(400, "invalid_body", "expected a JSON object");
   }
 
-  const id = checkSlug("id" in input ? input.id : undefined);
+  const remote = checkRemote("remote" in input ? input.remote : undefined);
+  if (!remote.ok) return remote;
+
+  if ("repoPath" in input) {
+    return fail(
+      400,
+      "immutable_field",
+      "repoPath is derived from the project id and cannot be supplied — 10x clones the repo " +
+        "itself. Remove the field.",
+      "repoPath",
+    );
+  }
+
+  const id = checkSlug("id" in input ? input.id : deriveProjectSlug(remote.repo));
   if (!id.ok) return id;
   const name = checkName("name" in input ? input.name : undefined);
   if (!name.ok) return name;
-  const repoPath = checkRepoPath("repoPath" in input ? input.repoPath : undefined);
-  if (!repoPath.ok) return repoPath;
+  const description = checkDescription("description" in input ? input.description : "");
+  if (!description.ok) return description;
   const baseBranch = checkBaseBranch("baseBranch" in input ? input.baseBranch : "main");
   if (!baseBranch.ok) return baseBranch;
 
@@ -160,18 +236,29 @@ export function createProject(input: unknown): ProjectResult {
   const now = nowIso();
   const res = db
     .prepare(
-      `INSERT INTO projects (id, name, repo_path, base_branch, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO projects
+         (id, name, description, owner, repo, repo_path, base_branch,
+          provision_state, provision_error, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?)
        ON CONFLICT (id) DO NOTHING`,
     )
-    .run(id.value, name.value, repoPath.value, baseBranch.value, now, now);
+    .run(
+      id.value,
+      name.value,
+      description.value,
+      remote.owner,
+      remote.repo,
+      projectRepoPath(id.value),
+      baseBranch.value,
+      now,
+      now,
+    );
   if (res.changes !== 1) {
     return fail(409, "project_exists", `a project with id "${id.value}" already exists`, "id");
   }
 
   // Read back rather than reassembling the row by hand: the table owns the defaults for
-  // description, owner, repo and provisioning state, and a second construction site here
-  // would be free to drift from them.
+  // provisioning state, and a second construction site here would be free to drift from them.
   const project = getProject(id.value);
   if (project === undefined) {
     throw new Error(`project "${id.value}" vanished immediately after being inserted`);
@@ -199,22 +286,56 @@ export function updateProject(id: string, input: unknown): ProjectResult {
     );
   }
 
+  // `repoPath` is derived and `owner`/`repo` are the project's identity. Repointing a healthy
+  // project at a different repo would orphan its open pull requests, so re-linking is offered
+  // only for a project that failed to provision — where there is nothing to orphan yet.
+  for (const field of ["repoPath", "owner", "repo"] as const) {
+    if (!(field in input)) continue;
+    if ((field === "owner" || field === "repo") && existing.provisionState === "failed") continue;
+    return fail(
+      400,
+      "immutable_field",
+      field === "repoPath"
+        ? "repoPath is derived from the project id and cannot be changed — 10x owns the clone."
+        : `${field} is part of this project's identity and cannot be changed while it is ` +
+          "usable; its open pull requests would be orphaned. Re-linking is only available for " +
+          "a project that failed to provision.",
+      field,
+    );
+  }
+
   const updates: Array<[column: string, value: string]> = [];
   if ("name" in input) {
     const name = checkName(input.name);
     if (!name.ok) return name;
     updates.push(["name", name.value]);
   }
-  if ("repoPath" in input) {
-    const repoPath = checkRepoPath(input.repoPath);
-    if (!repoPath.ok) return repoPath;
-    updates.push(["repo_path", repoPath.value]);
+  if ("description" in input) {
+    const description = checkDescription(input.description);
+    if (!description.ok) return description;
+    updates.push(["description", description.value]);
   }
   if ("baseBranch" in input) {
     const baseBranch = checkBaseBranch(input.baseBranch);
     if (!baseBranch.ok) return baseBranch;
     updates.push(["base_branch", baseBranch.value]);
   }
+
+  // Re-linking a failed project: accepted above, applied here, and it resets provisioning so
+  // the retry starts clean rather than inheriting the old failure message.
+  if (existing.provisionState === "failed" && ("owner" in input || "repo" in input)) {
+    const remote = checkRemote(
+      "remote" in input
+        ? input.remote
+        : `https://github.com/${"owner" in input ? String(input.owner) : existing.owner}/${
+            "repo" in input ? String(input.repo) : existing.repo
+          }`,
+    );
+    if (!remote.ok) return remote;
+    updates.push(["owner", remote.owner], ["repo", remote.repo]);
+    updates.push(["provision_state", "pending"], ["provision_error", ""]);
+  }
+
   if (updates.length === 0) return { ok: true, project: existing };
 
   const now = nowIso();
@@ -231,9 +352,29 @@ export function updateProject(id: string, input: unknown): ProjectResult {
 }
 
 /**
- * Tickets go with it via ON DELETE CASCADE. Worktrees deliberately do NOT: removal is
- * always an explicit user action (memory/teardown.md), so tearing them down here would destroy work
- * nobody asked to lose. The caller deals with the leftovers.
+ * The only writer of `provision_state`. Kept here rather than in `provision.ts` so that module
+ * stays a pure worker with no database reach: it reports what happened, and the caller records
+ * it. `provision_error` is cleared on every non-failed transition so a stale message from an
+ * earlier attempt can never outlive the retry that fixed it.
+ */
+export function setProvisionState(
+  id: string,
+  state: ProvisionState,
+  error = "",
+): Project | undefined {
+  db.prepare(
+    "UPDATE projects SET provision_state = ?, provision_error = ?, updated_at = ? WHERE id = ?",
+  ).run(state, state === "failed" ? error : "", nowIso(), id);
+  return getProject(id);
+}
+
+/**
+ * Drops the project row; tickets follow via ON DELETE CASCADE.
+ *
+ * Deliberately NOT the whole story: agents, worktrees, branches and the clone directory are all
+ * outside SQLite, and destroying them is the caller's job (memory/teardown.md). The route owns
+ * that sequence because it is the only layer that can refuse the delete first — a ticket with an
+ * open pull request must block it, since force-removing that branch would strand a review.
  */
 export function deleteProject(id: string): { ok: boolean } {
   const res = db.prepare("DELETE FROM projects WHERE id = ?").run(id);
