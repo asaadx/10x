@@ -28,7 +28,8 @@ import type { ChecklistItem, Diagnostics } from "./types.ts";
 
 /**
  * Everything a run needs, passed explicitly so this module never touches the store.
- * `repoPath` and `base` come from the ticket's project, not the ticket.
+ * `repoPath`, `base`, `projectName` and `projectDescription` come from the ticket's project,
+ * not the ticket.
  */
 export type RunSpec = {
   projectId: string;
@@ -38,7 +39,15 @@ export type RunSpec = {
   taskBreakdown: ChecklistItem[];
   acceptanceCriteria: ChecklistItem[];
   repoPath: string;
+  /**
+   * The BARE upstream branch name. `spawn` prefixes it with `origin/` when it creates the
+   * worktree so the agent starts from the current upstream tip rather than a stale local
+   * branch (memory/gotchas.md G7); the unprefixed name is what a pull request needs as its base.
+   */
   base: string;
+  projectName: string;
+  /** What this project IS, so a ticket need not re-explain its own repo to every agent. */
+  projectDescription: string;
   /** Where THIS 10x server answers, so visual-diff knows where to upload and ticket-api knows where to read/PATCH. */
   apiUrl: string;
 };
@@ -70,15 +79,25 @@ type WorktreeCreated = {
 type WorktreeOpened = { workspace: { workspace_id: string }; worktree: WorktreeInfo };
 
 /**
- * The opening turn: the ticket, and nothing about how to work on it — that is the system
- * prompt's job, and saying it twice would make two places to change. Same shape as
+ * The opening turn: the project, the ticket, and nothing about how to work on either — that is
+ * the system prompt's job, and saying it twice would make two places to change. Same shape as
  * `planner.ts`'s `openingMessage`: the checklists are why the ticket sheet collects them, and
  * an agent that never sees them cannot act on them.
+ *
+ * The project block leads because it is the context the ticket is written against. Without it
+ * every ticket has to describe its own repo in its own description, for every agent, forever.
+ * Omitted entirely when the project has no description rather than emitted empty, so a project
+ * that never filled it in costs nothing.
  */
 function openingMessage(spec: RunSpec): string {
   const checked = (item: ChecklistItem) => `- [${item.done ? "x" : " "}] ${item.text}`;
+  const project =
+    spec.projectDescription.trim() === ""
+      ? []
+      : [`PROJECT ${spec.projectName}: ${spec.projectDescription}`, ""];
 
   return [
+    ...project,
     `TICKET ${spec.projectId.toUpperCase()}-${spec.number}: ${spec.title}`,
     "",
     spec.description,
@@ -212,10 +231,26 @@ export async function spawn(
     paneId = first.pane_id;
   } catch (err) {
     if (!(err instanceof HerdrError) || err.code !== "worktree_not_found") throw err;
+
+    // 10x owns this clone, so nobody ever pulls it: without this fetch every ticket for the
+    // life of the project branches off whatever commit existed when the repo was cloned
+    // (memory/gotchas.md G7). It throws on failure, like every refused Herdr call in this
+    // function — a remote we cannot reach means we cannot know what the base is, and a
+    // silently stale worktree is worse than a Start that visibly did not happen. `server.ts`
+    // rolls the claim and the port slot back and answers 500 with this message.
+    await run("git", ["-C", spec.repoPath, "fetch", "--prune", "origin"]);
+
     const created = await request<WorktreeCreated>("worktree.create", {
       cwd: spec.repoPath,
       branch,
-      base: spec.base,
+      // The remote-tracking ref, not the local branch. Fast-forwarding the local one is not
+      // an option: it is checked out in a normal clone, so `git fetch origin main:main` is
+      // refused outright (`refusing to fetch into branch 'refs/heads/main' checked out at`).
+      // Branching off `origin/<base>` needs no local update at all — Herdr hands `base` to
+      // git verbatim, verified live: `base: "main"` landed on the stale commit while
+      // `base: "origin/main"` landed on the upstream tip. The prefix belongs HERE and nowhere
+      // else: the stored `base_branch` is a real branch name, which is what a PR base must be.
+      base: `origin/${spec.base}`,
       focus: false,
     });
     workspaceId = created.workspace.workspace_id;

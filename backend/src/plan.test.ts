@@ -197,8 +197,13 @@ function liveHerdr(
 // ---------------------------------------------------------------------------
 
 const ANCIENT = "2020-01-01T00:00:00.000Z";
+// `owner`/`repo` and `provision_state: 'ready'` are stated rather than left to default: the
+// startup backfill reads a project's GitHub identity from its repo's `origin`, and this
+// fixture repo has no remote, so an unstated row would migrate to `failed` and every route
+// below would answer `project_not_provisioned` instead of what it is meant to test.
 db.prepare(
-  "INSERT INTO projects (id, name, repo_path, base_branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+  `INSERT INTO projects (id, name, owner, repo, repo_path, base_branch, provision_state, created_at, updated_at)
+   VALUES (?, ?, 'acme', 'plan-test', ?, ?, 'ready', ?, ?)`,
 ).run(PROJECT_ID, "Plan Test", REPO_PATH, "main", nowIso(), nowIso());
 
 function seed(id: string, number: number, status = "backlog"): string {

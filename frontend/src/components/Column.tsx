@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button.tsx";
 import { Spinner } from "@/components/ui/spinner.tsx";
 import { columnIsWorking } from "@/lib/board.ts";
 import type { SteerMode } from "@/lib/steer-mode.ts";
-import type { Status, Ticket } from "@/types.ts";
+import type { ProvisionState, Status, Ticket } from "@/types.ts";
 
 /**
  * One per column: the column accents, in state-machine order.
@@ -31,6 +31,12 @@ type Props = {
   label: string;
   tickets: Ticket[];
   steerMode: SteerMode;
+  /**
+   * Which projects have their repo on disk. Keyed by id rather than a single flag, because
+   * `All projects` mixes cards from several projects into one column and Start is refused per
+   * project, not per column.
+   */
+  projectStates: Record<string, ProvisionState>;
   onNewTicket?: () => void;
   /** The card hands over its last failed action so the sheet can show the full message. */
   onOpenTicket: (ticket: Ticket, actionError: string | null) => void;
@@ -43,6 +49,7 @@ export function Column({
   label,
   tickets,
   steerMode,
+  projectStates,
   onNewTicket,
   onOpenTicket,
   onTicketChanged,
@@ -102,6 +109,7 @@ export function Column({
             key={t.id}
             ticket={t}
             steerMode={steerMode}
+            provisionState={projectStates[t.projectId]}
             onOpen={(actionError) => onOpenTicket(t, actionError)}
             onChanged={onTicketChanged}
           />

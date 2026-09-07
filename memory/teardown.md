@@ -17,7 +17,7 @@ The dials: **agent process**, **Herdr pane/workspace**, **worktree directory**, 
 |---|---|---|---|---|---|
 | **Cancel** (In Progress → To Do) | stop | close | **force-remove** | **delete** | **delete** |
 | **Ticket deleted** | stop | close | **force-remove** | **delete** | **delete** |
-| **Project deleted** | stop all | close all, incl. source workspace | **force-remove all** | **delete all** | **delete all** |
+| **Project deleted** | stop **all** | close **all** | **force-remove all** | **delete all** | **delete all** |
 | **Manual "remove worktree"** | stop | close | **force-remove** | keep | **delete** |
 | **Accept** (In Review → Done) | stop | close | **keep** | **keep** | **delete** |
 | Agent finished its turn | leave running | leave open | keep | keep | keep |
@@ -30,9 +30,11 @@ The dials: **agent process**, **Herdr pane/workspace**, **worktree directory**, 
 
 Five rules fall out of that table, and they are the whole policy:
 
-1. **Only the first four rows destroy a worktree, and all four are explicit user actions.** Nothing
-   else removes one, ever. Accept is the fifth explicit action and deliberately spares both the
-   worktree and the branch.
+1. **Only four rows destroy a worktree, and all four are explicit user actions.** Nothing else
+   removes one, ever. Accept is the fifth explicit action and deliberately spares both the
+   worktree and the branch. Project deletion is total: every ticket goes the same way a single
+   ticket delete would take it, and **both** directories go with them — the clone under
+   `$PROJECTS_ROOT/<id>` and Herdr's separate worktree root.
 2. **A finished agent destroys nothing.** It moves its ticket to In Review and gets a checkmark
    ([operations](./operations.md)); the agent is left **running** and the port block stays held, so
    a Reject can re-prompt it with its full context. The work is only genuinely done once merged,
@@ -47,6 +49,29 @@ Five rules fall out of that table, and they are the whole policy:
    it, so read it first.
 5. **`force: true` only ever follows an explicit user action.** Reconciliation never forces, never
    deletes ([reconciliation](./reconciliation.md)).
+
+**Project deletion is total, and refuses before it destroys (verified).** `DELETE /projects/:id`
+runs `deleteProjectCompletely` in `server.ts`: it lists the project's live tickets, refuses with
+`409 pr_open` if any still has an open pull request — live-read and failing closed, exactly as
+the per-ticket delete does, because `pr_state` is null whenever no webhook has arrived — then
+runs the same teardown per ticket, drops the row (tickets cascade), and removes both the clone
+and Herdr's worktrees. Archived tickets are skipped by the teardown loop because archiving
+already ran it; their screenshots are still swept, via `listProjectTicketIds`.
+
+**The clone is only removed if it is directly under `PROJECTS_ROOT`.** A project created under
+this feature always has `repo_path = $PROJECTS_ROOT/<id>` and can never repoint it, but a project
+that predates it keeps whatever folder it was created with — the migration backfills its
+`owner`/`repo` identity without moving that folder (`db.ts`'s `backfillProjectIdentity`). Without
+the guard, deleting such a project would `rm -rf` a directory the user pointed 10x at themselves,
+not a 10x clone. The check mirrors `provision.ts`'s own "never touch a folder it did not create"
+rule; a folder outside `PROJECTS_ROOT` is left in place and reported as a warning in the response.
+
+It used to be one SQL statement, and the failure that made it worth fixing is worth remembering:
+deleting a project left **running agents 10x no longer had rows for**, and they were *invisible*
+rather than merely unowned. `board()` derives its scan set from surviving tickets — `repos` is
+`tickets.flatMap(t => byId.get(t.projectId)?.repoPath)` — so once the cascade removed the last
+ticket, that repo was never passed to `findOrphans` at all. Agents burning tokens with no card
+to show it.
 
 **Cancel is deliberately destructive**, and knowingly so: it means "discard this attempt". It does
 *not* destroy as much as it appears to, though — deleting a branch only makes its commits

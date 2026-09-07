@@ -31,6 +31,7 @@ export type {
   Playbook,
   Priority,
   Project,
+  ProvisionState,
   PullRequestState,
   ScreenshotSide,
   Status,

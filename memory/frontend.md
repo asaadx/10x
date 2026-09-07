@@ -108,7 +108,11 @@ fixtures *(verified)*.
   polling* in [parking-lot](./parking-lot.md). Do not re-argue it here.
 - `frontend/src/mock.ts` is retained for design work: fixtures covering every visual state the board
   can reach, typed against the real response shape so they cannot drift from it *(verified)*.
-  `MOCK_MODE` returns them as a static board and starts no timer.
+  `MOCK_MODE` starts no timer, and tickets stay static from `mock.ts`. **Projects do not:**
+  `use-board.ts` reads `mockProjects.list()` and subscribes to `mockProjects.subscribe`, both
+  exported from `api.ts`, so a project added or deleted in the dialog appears without a poll.
+  That store is what makes the project dialog — including the queued → downloading → ready
+  timeline — usable with no backend running *(verified)*.
 
 **The Vite dev proxy is what makes any of this same-origin.** `vite.config.ts` proxies `/tickets`,
 `/projects` and `/webhooks` to `http://127.0.0.1:4010`; in production the backend serves the built

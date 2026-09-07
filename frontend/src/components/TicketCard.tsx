@@ -58,7 +58,7 @@ import {
 } from "@/lib/api.ts";
 import { runFailed } from "@/lib/board.ts";
 import { REMOTE_TARGET, remoteCommand, type SteerMode } from "@/lib/steer-mode.ts";
-import { PRIORITIES, type Priority, type Status, type Ticket } from "@/types.ts";
+import { PRIORITIES, type Priority, type ProvisionState, type Status, type Ticket } from "@/types.ts";
 
 const PR_ICON = {
   merged: GitMerge,
@@ -310,6 +310,45 @@ type PendingAction =
   | "deleteTicket";
 
 /**
+ * Wraps a button that spawns an agent, and explains the one reason it can be dead through no
+ * fault of the click: `POST /tickets/:id/plan` and `/spawn` both answer 409
+ * `project_not_provisioned` unless the project's repo is on disk, so neither may offer the
+ * click in the first place.
+ *
+ * It takes the state rather than a boolean because the two dead states need different
+ * sentences. Telling someone to wait for a download that already failed sends them to watch a
+ * spinner that will never arrive; the fix is Retry in the banner above, so say that instead.
+ *
+ * The reason has to live on the WRAPPER. A disabled button receives no pointer events, so its
+ * own `title` never surfaces — which would leave a dead button with no stated cause, the one
+ * thing this must not be. The button inside takes `w-full`, since the actions row stretches its
+ * direct children and the wrapper is now the child.
+ */
+function spawnGateReason(state: ProvisionState | undefined, action: string): string | undefined {
+  if (state === "ready") return undefined;
+  if (state === "failed") {
+    return `This project's repo could not be downloaded, so ${action} cannot run. Retry it from the banner above.`;
+  }
+  return `10x is still downloading the repo. ${action} becomes available when it finishes.`;
+}
+
+function SpawnGate({
+  state,
+  action,
+  children,
+}: {
+  state: ProvisionState | undefined;
+  action: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <span className="w-full" title={spawnGateReason(state, action)}>
+      {children}
+    </span>
+  );
+}
+
+/**
  * One branch per status and never an `else`. Plan is scoped to `backlog`, Start to `todo`,
  * Steer and Cancel to `in_progress`, Accept and Reject to `in_review`, and the server answers
  * 409 from anywhere else — so an `else` would put a button on a card whose status cannot take
@@ -328,6 +367,7 @@ type PendingAction =
 function RunActions({
   ticket,
   steerMode,
+  provisionState,
   pending,
   onPlan,
   onMove,
@@ -341,6 +381,7 @@ function RunActions({
 }: {
   ticket: Ticket;
   steerMode: SteerMode;
+  provisionState: ProvisionState | undefined;
   pending: PendingAction;
   onPlan: () => void;
   onMove: (to: Status) => void;
@@ -369,21 +410,23 @@ function RunActions({
           nothing. Disabled for the whole of it — a second POST would answer 409
           `operation_in_flight`, and a planner that did start twice would be a paid agent.
         */}
-        <Button
-          size="sm"
-          variant={planned ? "outline" : "default"}
-          className="h-7 gap-1 px-2 text-[11px]"
-          disabled={pending !== null}
-          title="Talks the idea through with a planning agent until it is ready to start."
-          onClick={onPlan}
-        >
-          {pending === "plan" ? (
-            <Spinner aria-hidden className="size-3" />
-          ) : (
-            <NotebookPen aria-hidden className="size-3" />
-          )}
-          {pending === "plan" ? "Planning..." : "Plan"}
-        </Button>
+        <SpawnGate state={provisionState} action="Plan">
+          <Button
+            size="sm"
+            variant={planned ? "outline" : "default"}
+            className="h-7 w-full gap-1 px-2 text-[11px]"
+            disabled={pending !== null || provisionState !== "ready"}
+            title="Talks the idea through with a planning agent until it is ready to start."
+            onClick={onPlan}
+          >
+            {pending === "plan" ? (
+              <Spinner aria-hidden className="size-3" />
+            ) : (
+              <NotebookPen aria-hidden className="size-3" />
+            )}
+            {pending === "plan" ? "Planning..." : "Plan"}
+          </Button>
+        </SpawnGate>
         <Button
           size="sm"
           variant={planned ? "default" : "outline"}
@@ -414,20 +457,22 @@ function RunActions({
           `port_pool_exhausted`) both roll the claim back to To Do, so the message on the card
           is the only evidence the click did anything at all.
         */}
-        <Button
-          size="sm"
-          className="h-7 gap-1 px-2 text-[11px]"
-          disabled={pending !== null}
-          title="Spawns the agent in its own worktree, branch and port block."
-          onClick={onStart}
-        >
-          {pending === "start" ? (
-            <Spinner aria-hidden className="size-3" />
-          ) : (
-            <Play aria-hidden className="size-3" />
-          )}
-          {pending === "start" ? "Starting..." : "Start"}
-        </Button>
+        <SpawnGate state={provisionState} action="Start">
+          <Button
+            size="sm"
+            className="h-7 w-full gap-1 px-2 text-[11px]"
+            disabled={pending !== null || provisionState !== "ready"}
+            title="Spawns the agent in its own worktree, branch and port block."
+            onClick={onStart}
+          >
+            {pending === "start" ? (
+              <Spinner aria-hidden className="size-3" />
+            ) : (
+              <Play aria-hidden className="size-3" />
+            )}
+            {pending === "start" ? "Starting..." : "Start"}
+          </Button>
+        </SpawnGate>
         <Button
           size="sm"
           variant="outline"
@@ -577,11 +622,14 @@ function RunActions({
 export function TicketCard({
   ticket,
   steerMode,
+  provisionState,
   onOpen,
   onChanged,
 }: {
   ticket: Ticket;
   steerMode: SteerMode;
+  /** False while 10x is still downloading this ticket's project, which gates Plan and Start. */
+  provisionState: ProvisionState | undefined;
   /**
    * Opens this ticket's sheet, handing it the last failed action so the full message is
    * readable there — the card itself only shows a one-word chip (see `actionError` below).
@@ -849,6 +897,7 @@ export function TicketCard({
           <RunActions
             ticket={ticket}
             steerMode={steerMode}
+            provisionState={provisionState}
             pending={pending}
             onPlan={() => void runAction("plan", () => startPlanning(ticket.id))}
             onMove={(to) => void runAction("move", () => moveTicket(ticket.id, to))}

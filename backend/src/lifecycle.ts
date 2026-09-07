@@ -39,6 +39,41 @@ export function validateProjectSlug(slug: string): { ok: true } | { ok: false; m
   return { ok: true };
 }
 
+/** The character ceiling `PROJECT_SLUG_RE` enforces, named so the derivation can do arithmetic on it. */
+const PROJECT_SLUG_MAX = 20;
+
+/**
+ * A default slug for a repository name. Only a suggestion: the user edits it in the dialog
+ * before it is frozen into every branch and agent name the project will ever create, and the
+ * caller still runs it through `validateProjectSlug`.
+ *
+ * AN OVER-LONG NAME LOSES WHOLE WORDS, NOT CHARACTERS. Slicing `hearth-home-automation` at
+ * the cap gives `hearth-home-automati`, which reads like a typo — so the user hand-corrects
+ * it on every single project, which defeats deriving it at all. `hearth-home` is a name
+ * somebody would have picked themselves. Cutting at the last separator inside the budget is
+ * the same thing as dropping trailing words until it fits: a word boundary *is* a separator
+ * position, so the longest prefix of whole words that fits ends at the last one of those.
+ *
+ * No separator in the budget means the first word alone overruns it and there is nothing to
+ * cut on, so that case takes the hard slice — which cannot land on a `-`, because having no
+ * separator in the first `PROJECT_SLUG_MAX` characters is exactly the condition that got here.
+ *
+ * A name with no `[a-z0-9]` in it at all (`...`, `!!`) derives the empty string rather than a
+ * placeholder. There is nothing to derive from, and an empty field the user must fill is
+ * clearer than a plausible-looking name they have to notice is wrong; `validateProjectSlug`
+ * rejects it either way.
+ */
+export function deriveProjectSlug(repoName: string): string {
+  const full = repoName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (full.length <= PROJECT_SLUG_MAX) return full;
+
+  const boundary = full.lastIndexOf("-", PROJECT_SLUG_MAX);
+  return boundary > 0 ? full.slice(0, boundary) : full.slice(0, PROJECT_SLUG_MAX);
+}
+
 /**
  * Branch name. Slashes mirror `agentNameFor` on purpose: Herdr derives the worktree
  * directory from the branch by lowercasing and replacing `/` with `-`, so

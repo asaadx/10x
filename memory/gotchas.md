@@ -174,5 +174,50 @@ Recorded so nobody assumes these are proven.
   whose raw-socket behaviour looks wrong: the CLI adds orchestration the socket method does not
   perform ([spawn](./spawn.md)).
 
+**G7 and G8 are closed.** Both were real, both are fixed, and the mechanisms they turned on are
+now how the product works — so they live here as truth rather than as warnings.
+
+**The base branch is refreshed before every worktree (verified).** `spawn` runs
+`git fetch --prune origin` in the project's repo and then creates the worktree from
+`origin/<base>`, never from the local branch. This matters because 10x owns the clone, so no
+human pulls it: without the fetch, every ticket for the life of a project would branch off the
+commit that existed at clone time.
+
+A local fast-forward is **not** the alternative — in a normal clone the base branch is checked
+out, and git refuses: `git fetch origin main:main` →
+`fatal: refusing to fetch into branch 'refs/heads/main' checked out at '<clone>'`. Branching off
+the remote-tracking ref sidesteps that and leaves the local branch deliberately stale and
+irrelevant. Confirmed through Herdr itself, not just git (live herdr 0.8.2, one run against a
+clone two commits behind):
+
+| `worktree.create` params | resulting worktree HEAD |
+|---|---|
+| `{cwd, branch: "probe/stale", base: "main"}` | `c35f078` — the **stale** local branch |
+| `{cwd, branch: "probe/fresh", base: "origin/main"}` | `4a512b6` — the **upstream tip** |
+
+So Herdr hands `base` to git verbatim and `origin/<base>` is legal there. **`base_branch` stays
+the bare name in the column** — `openPullRequest` needs it as the PR base — and only the
+worktree call takes the prefix. Covered by `runner-base.test.ts`, which fails if either the
+fetch or the prefix is removed.
+
+**Worktrees live outside the repo (verified).** `~/.herdr/worktrees/<repo-name>/<branch-dir>`,
+e.g. `~/.herdr/worktrees/clone10x/probe-fresh` for `cwd: …/clone10x`. Deleting a project's repo
+directory therefore does **not** remove its worktrees: they are a second location, and
+orphaning them leaves `.git` links pointing at a repo that no longer exists. `DELETE
+/projects/:id` removes both.
+
+**A repo with no commits is seeded, not rejected (verified).** A branch is a label pointing at a
+commit, so a commitless repo has no base branch whatever the GitHub API says: `GET /repos`
+returns `default_branch: "main"` as a *setting*, while a clone of that repo has zero refs, a
+dangling HEAD (`git rev-parse --verify HEAD` → `fatal: Needed a single revision`), and a local
+`init.defaultBranch` name that need not match GitHub's. `git worktree add -b ticket/x/1 <path>
+main` → `fatal: invalid reference: main`.
+
+Detection needs no API call: `git ls-remote --heads <url>` returns zero refs with exit 0 on an
+empty repo, and exit 128 on one that cannot be reached. `provision.ts` uses that, then writes a
+first commit on `base_branch` — after `git symbolic-ref HEAD refs/heads/<base>`, because the
+clone's HEAD points at the local default, not GitHub's. Never trust `default_branch` as proof a
+ref exists.
+
 **G1 (`blocked`) is closed.** A prose question reports `done`; the `ask` tool reports `blocked`.
 See [agent-status](./agent-status.md).

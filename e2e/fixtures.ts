@@ -175,7 +175,17 @@ export async function makeRepo(): Promise<string> {
    * succeeds and then fails much later. Specs register with `baseBranch: "dev"` explicitly.
    */
   await git("git", ["branch", "-M", "dev"], { cwd: dir });
-  repos.push(dir);
+  /*
+   * An `origin` to fetch from. Spawn refreshes the base branch before creating a worktree so a
+   * ticket starts from the current upstream tip rather than whatever the clone last saw
+   * (memory/gotchas.md G7), and `git fetch origin` in a repo with no remote fails outright. A
+   * bare repo beside it, with `dev` pushed, is a real upstream with no network.
+   */
+  const origin = `${dir}.git`;
+  await git("git", ["init", "-q", "--bare", origin], { cwd: dir });
+  await git("git", ["remote", "add", "origin", origin], { cwd: dir });
+  await git("git", ["push", "-q", "origin", "dev"], { cwd: dir });
+  repos.push(dir, origin);
   return dir;
 }
 
@@ -337,11 +347,36 @@ export async function api(board: Board, method: string, path: string, data?: unk
   return { status: res.status, body: objectFrom(await res.json()) };
 }
 
-/** `baseBranch: "dev"` because that is the only branch `makeRepo` creates. */
+/**
+ * Seeded straight into the board's SQLite, not through `POST /projects`.
+ *
+ * A project is now identified by a GitHub repo, and creating one over HTTP makes 10x clone that
+ * repo into `$PROJECTS_ROOT/<slug>` itself. This suite's repos are local fixtures built by
+ * `makeRepo()` against a local bare upstream, and cloning a real GitHub repo per test would put
+ * network — and a token — on the critical path of every e2e run. So the row is written directly,
+ * already `ready`, pointing at the local fixture, which is exactly what the old `repoPath`
+ * contract used to produce. `storedTicket` below opens the same database the same way.
+ *
+ * The HTTP contract this bypasses is covered by `backend/src/project-routes.test.ts`, which
+ * fakes GitHub and asserts the lookup, derivation, immutability and provisioning-guard rules.
+ *
+ * `baseBranch: "dev"` because that is the only branch `makeRepo` creates. Async purely so every
+ * existing `await createProject(...)` call site stays correct.
+ */
 export async function createProject(board: Board, id: string, repoPath: string): Promise<void> {
-  const data = { id, name: `Project ${id}`, repoPath, baseBranch: "dev" };
-  const res = await api(board, "POST", "/projects", data);
-  expect(res.status, JSON.stringify(res.body)).toBe(201);
+  const stateDir = stateDirs.get(board);
+  if (stateDir === undefined) throw new Error("that board did not come from startBoard()");
+  const db = new DatabaseSync(join(stateDir, "10x.db"));
+  try {
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO projects (id, name, description, owner, repo, repo_path, base_branch,
+                             provision_state, provision_error, created_at, updated_at)
+       VALUES (?, ?, '', 'e2e', ?, ?, 'dev', 'ready', '', ?, ?)`,
+    ).run(id, `Project ${id}`, id, repoPath, now, now);
+  } finally {
+    db.close();
+  }
 }
 
 export async function createTicket(board: Board, projectId: string, title: string, description: string): Promise<string> {

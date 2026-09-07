@@ -38,10 +38,19 @@ const { spawn } = await import("./runner.ts");
 /**
  * A real git repository, because `injectPortBlock` resolves `info/exclude` with
  * `git rev-parse --git-path` rather than guessing a path, and that only answers inside a repo.
+ *
+ * It also needs an `origin`: spawn now fetches before creating a worktree, so that a ticket
+ * branches off the current upstream tip rather than whatever this clone last saw
+ * (memory/gotchas.md G7). A bare repo standing in as the remote is enough — fetching one with
+ * no commits exits 0 and changes nothing.
  */
 const worktree = join(dir, "worktree");
 mkdirSync(worktree);
 execFileSync("git", ["init", "-q", worktree], { stdio: "ignore" });
+execFileSync("git", ["init", "-q", "--bare", join(dir, "origin.git")], { stdio: "ignore" });
+execFileSync("git", ["-C", worktree, "remote", "add", "origin", join(dir, "origin.git")], {
+  stdio: "ignore",
+});
 
 const PROJECT_ID = "spawntest";
 const BLOCK = blockFor(3);
@@ -217,6 +226,8 @@ const runSpec = (over: Partial<RunSpec> = {}): RunSpec => ({
   acceptanceCriteria: [],
   repoPath: worktree,
   base: "main",
+  projectName: "Spawn Test",
+  projectDescription: "",
   apiUrl: "http://localhost:4010",
   ...over,
 });

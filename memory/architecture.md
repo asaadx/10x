@@ -145,7 +145,7 @@ Every read joins on **branch and agent name**, never on a path — in `board()` 
 
 SQLite at `$DB_PATH`, defaulting to `$STATE_DIR/10x.db`, `STATE_DIR` defaulting to `~/.10x`. Opened at module import in `db.ts` with `PRAGMA journal_mode = WAL` and `PRAGMA foreign_keys = ON`.
 
-**`projects`** — `id` TEXT PRIMARY KEY (the immutable slug, feeds branch and agent name) · `name` TEXT NOT NULL (display only, freely renameable) · `repo_path` TEXT NOT NULL (absolute, must contain a `.git` entry) · `base_branch` TEXT NOT NULL DEFAULT `'main'` (passed to `worktree.create` as `base`) · `next_number` INTEGER NOT NULL DEFAULT 1 (monotonic ticket counter) · `created_at`, `updated_at` TEXT NOT NULL (ISO instants).
+**`projects`** — `id` TEXT PRIMARY KEY (the immutable slug, feeds branch and agent name) · `name` TEXT NOT NULL (display only, freely renameable) · `description` TEXT NOT NULL DEFAULT `''` (prose, and threaded into every agent's opening turn) · `owner`, `repo` TEXT NOT NULL DEFAULT `''` (**the project's identity**: what every push and pull request targets, read from a column rather than re-derived by shelling `git remote get-url origin`) · `repo_path` TEXT NOT NULL (**derived, never supplied**: `$PROJECTS_ROOT/<id>`, which 10x clones itself) · `base_branch` TEXT NOT NULL DEFAULT `'main'` (the **bare** upstream name; `worktree.create` gets it prefixed with `origin/` at the call site, a PR needs it unprefixed) · `provision_state` TEXT NOT NULL DEFAULT `'ready'` (`pending|cloning|ready|failed`; the default backfills existing projects as usable) · `provision_error` TEXT NOT NULL DEFAULT `''` (redacted) · `next_number` INTEGER NOT NULL DEFAULT 1 (monotonic ticket counter) · `created_at`, `updated_at` TEXT NOT NULL (ISO instants).
 
 **`tickets`**
 
@@ -267,9 +267,11 @@ ahead of it), plus two static-file handlers: `/screenshots/<file>` and everythin
 | # | Method | Path | Returns |
 | --- | --- | --- | --- |
 | 1 | GET | `/projects` | `Project[]` |
-| 2 | POST | `/projects` | `201` the created `Project` |
-| 3 | PATCH | `/projects/:id` | the updated `Project`; changing `id` is a 400 |
-| 4 | DELETE | `/projects/:id` | `{ok}` — tickets cascade, worktrees deliberately do not |
+| 1a | GET | `/projects/lookup?remote=<url>` | the **admission test**: `{owner, repo, name, description, defaultBranch, private, empty}`. Matched before the `/projects/:id` regex, or `lookup` reads as a project id. `empty` comes from `git ls-remote`, never from `defaultBranch` ([gotchas](./gotchas.md)) |
+| 2 | POST | `/projects` | `201` the created `Project`, `provisionState: "pending"`. Takes `{remote, name, description?, id?, seedInitialCommit?}`; naming `repoPath` is a 400. The clone runs behind the response |
+| 2a | POST | `/projects/:id/provision` | the `Project` after a retry; `409 operation_in_flight` while one is running |
+| 3 | PATCH | `/projects/:id` | the updated `Project`; `name`, `description` and `baseBranch` only. Changing `id` or `repoPath` is a 400, and so is `owner`/`repo` unless the project is `failed` — re-linking a usable project would orphan its pull requests |
+| 4 | DELETE | `/projects/:id` | `{ok}` after **total cleanup** — every agent stopped, every worktree and branch destroyed, both directories removed, tickets cascaded. **Guarded** by the same live PR check the ticket route uses: `409 pr_open` ([teardown](./teardown.md)) |
 | 5 | GET | `/tickets[?project=<id>]` | `{tickets: LiveTicket[], unowned: Orphan[]}`; a `LiveTicket` is the stored row plus the live join `branch`, `agentName`, `agentStatus`, `hasWorktree`, `worktreePath`, `paneId`, `workspaceId`, `busy`, `diagnostics` |
 | 6 | POST | `/tickets` | `201` the created `Ticket` |
 | 7 | PATCH | `/tickets/:id` | the updated `Ticket` (`title`, `description`, `playbook`, `taskBreakdown`, `acceptanceCriteria` — each checklist field is a **full-array replace**, no per-item toggle route) |
@@ -294,9 +296,11 @@ ahead of it), plus two static-file handlers: `/screenshots/<file>` and everythin
 
 | Status | Meaning | Examples |
 | --- | --- | --- |
-| 409 | lost CAS, an illegal or misrouted transition, an operation already in flight, or no resource left to hand out | `not_in_todo`, `not_in_progress`, `not_in_review`, `not_in_status`, `illegal_transition`, `transition_has_side_effects`, `operation_in_flight`, `project_exists`, `port_pool_exhausted` |
-| 404 | unknown ticket, project, or route | `no_such_ticket`, `no_such_project`, `project_not_found`, `not_found` |
-| 400 | validation / immutability | `invalid_input`, `immutable_field`, `invalid_project_slug`, `invalid_name`, `invalid_repo_path`, `invalid_base_branch`, `invalid_body`, `project_id_immutable` |
+| 409 | lost CAS, an illegal or misrouted transition, an operation already in flight, or no resource left to hand out | `not_in_todo`, `not_in_progress`, `not_in_review`, `not_in_status`, `illegal_transition`, `transition_has_side_effects`, `operation_in_flight`, `project_exists`, `port_pool_exhausted`, `project_not_provisioned`, `github_token_missing`, `pr_open`, `pr_state_unknown` |
+| 404 | unknown ticket, project, route, or GitHub repo | `no_such_ticket`, `no_such_project`, `project_not_found`, `not_found`, `repo_not_found` |
+| 400 | validation / immutability | `invalid_input`, `immutable_field`, `invalid_project_slug`, `invalid_name`, `invalid_remote`, `invalid_description`, `invalid_base_branch`, `invalid_body`, `project_id_immutable` |
+| 403 | the token cannot see the repo | `repo_not_accessible` |
+| 502 | GitHub answered something unusable | `github_unavailable` |
 | 500 | anything else, including a Herdr failure mid-operation | `{error: <message>}`, plus `diagnostics` on a failed spawn |
 
 Two quirks, both readable in the excerpt: `GET` is matched by `path.startsWith("/tickets")` *before* the `/tickets/:id` regex, so `GET /tickets/anything` returns the whole board — there is no single-ticket GET. And `/focus` never fails the request: a dead agent is an ordinary UI outcome, so the Herdr error code is reported inside a 200 body.
@@ -329,7 +333,7 @@ JSON 404; and a 404 under an API prefix keeps the API's own envelope.)*
 3. `claimTicket(id, "todo", "in_progress")` — a lost claim is 409 `not_in_todo`. No `await` sits between the check and the write.
 4. `reservePortSlot(id)` takes the lowest free port block. Exhaustion hands the claim straight back with `claimTicket(id, "in_progress", "todo")` — a rollback restores the claim's source, never a fixed status — and answers 409 `port_pool_exhausted` carrying `cap`, because an agent with no port of its own is worse than no agent.
 5. `inFlight.add(id)`; a fresh `RunState { diagnostics, sessionDir }` goes into `runs`; `setRunFields(id, { finished: false, died: false })`.
-6. `specFor(ticket, project)` builds `RunSpec { projectId, number, title, description, taskBreakdown, acceptanceCriteria, repoPath, base, apiUrl }` — the ticket's own fields (including its checklists, threaded into the opening prompt the same way `planner.ts`'s `PlanSpec` does) plus the *project*'s repo and base branch.
+6. `specFor(ticket, project)` builds `RunSpec { projectId, number, title, description, taskBreakdown, acceptanceCriteria, repoPath, base, projectName, projectDescription, apiUrl }` — the ticket's own fields (including its checklists, threaded into the opening prompt the same way `planner.ts`'s `PlanSpec` does) plus the *project*'s repo, base branch, name and description. The project block leads the opening turn when it has a description, so a ticket need not re-explain its own repo to every agent.
 7. `spawn(spec, block, state, onStatus, onPaneExit)` in `runner.ts` talks to Herdr: `worktree.open` → `pane.list` (falling back to `worktree.create` only on `worktree_not_found`, because create is not idempotent) → **write `.env` into the worktree and exclude it from git** → `events.subscribe` **before** `agent.start`, or the first `working` transition is lost → `bootAgent` in `agent-boot.ts`, shared with Plan: `agent.start` behind the readiness guard, polling `agent.get` every 125 ms, then `agent.prompt` retried up to 40× at 250 ms on `agent_not_ready`. On `agent_name_taken` the runner instead re-attaches (`reattachAgent`, which polls too) and deliberately sends nothing. Deadlines: `PANE_WAIT_MS` 15 000, `READY_WAIT_MS` 60 000. Details in [spawn](./spawn.md).
 8. Events feed the two callbacks. `pane_agent_status_changed`, once `working` has been seen, sets `finished` **and** claims `in_progress → in_review` — the same moment is the completion record and the column move. `pane_exited`/`pane_closed` set `died: true` and nothing else, because a dead pane is not a finished ticket and must not undo a completion that really happened ([agent-status](./agent-status.md)).
 9. On success `setRunFields(id, { branch, agentName, sessionDir })` persists the three values we own. On throw, the claim *and* the port slot are released and any worktree left behind resurfaces in the board's `unowned` list.

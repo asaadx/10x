@@ -13,9 +13,11 @@
  *     it won, so a double-click cannot start two spawns.
  */
 import { DatabaseSync, type StatementSync } from "node:sqlite";
+import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { parseRemote } from "./github.ts";
 import { allocateSlot, type SlotAllocation } from "./ports.ts";
 import {
   PLAYBOOKS,
@@ -24,6 +26,7 @@ import {
   type Playbook,
   type Priority,
   type Project,
+  type ProvisionState,
   type PullRequestState,
   type ScreenshotSide,
   type Status,
@@ -33,12 +36,30 @@ import {
 export const STATE_DIR = process.env.STATE_DIR ?? join(homedir(), ".10x");
 const DB_PATH = process.env.DB_PATH ?? join(STATE_DIR, "10x.db");
 
+/**
+ * Where 10x keeps its own clone of each project. Its own, deliberately: borrowing a checkout
+ * the user also works in would mean agents branching off a dirty tree, a surprise branch, or a
+ * half-finished rebase. A project's `repo_path` is always `$PROJECTS_ROOT/<id>`.
+ */
+export const PROJECTS_ROOT = process.env.PROJECTS_ROOT ?? join(STATE_DIR, "repos");
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  -- The project's real identity. repo_path is only where this repo is materialised on this
+  -- machine; owner/repo is what every push and pull request targets, and it is read from a
+  -- column rather than re-derived by shelling "git remote get-url origin" on every call.
+  owner       TEXT NOT NULL DEFAULT '',
+  repo        TEXT NOT NULL DEFAULT '',
+  -- Derived, never user-supplied: $PROJECTS_ROOT/<id>.
   repo_path   TEXT NOT NULL,
+  -- The bare upstream branch name. Worktree creation prefixes it with "origin/" at the call
+  -- site (memory/gotchas.md G7); a pull request needs the unprefixed name as its base.
   base_branch TEXT NOT NULL DEFAULT 'main',
+  provision_state TEXT NOT NULL DEFAULT 'ready',
+  provision_error TEXT NOT NULL DEFAULT '',
   -- Monotonic ticket counter. NEVER derive the next number from MAX(number): deleting the
   -- highest ticket would hand its number to the next one, and since deleting a ticket does
   -- not remove its worktree (memory/teardown.md), the new ticket's branch would collide with the orphan
@@ -175,13 +196,74 @@ const remapPlaybook = db.prepare(
 );
 for (const playbook of PLAYBOOKS) remapPlaybook.run(playbook, playbook);
 
+// Projects gain the same treatment. 'ready' is the deliberate default for `provision_state`:
+// every project that predates this column was cloned by hand and is already usable, so the
+// migration must not park working projects in a provisioning state.
+addColumnIfMissing("projects", "description", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("projects", "owner", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("projects", "repo", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("projects", "provision_state", "TEXT NOT NULL DEFAULT 'ready'");
+addColumnIfMissing("projects", "provision_error", "TEXT NOT NULL DEFAULT ''");
+
+// A project's GitHub identity used to be re-derived from disk on every push and pull request.
+// Backfilling it needs the one thing a migration cannot do inline — read a git remote — so
+// this runs once, here, and is idempotent: only rows still holding the empty default are
+// touched, and a row that cannot be resolved is marked `failed` rather than left silently
+// blank, because a project with no GitHub remote can never reach Done (docs/plug-and-play-projects.md).
+function backfillProjectIdentity(): void {
+  const rows = db.prepare("SELECT id, repo_path FROM projects WHERE owner = '' OR repo = ''").all() as {
+    id: string;
+    repo_path: string;
+  }[];
+  if (rows.length === 0) return;
+
+  const resolved = db.prepare("UPDATE projects SET owner = ?, repo = ? WHERE id = ?");
+  const unresolved = db.prepare(
+    "UPDATE projects SET provision_state = 'failed', provision_error = ? WHERE id = ?",
+  );
+
+  for (const row of rows) {
+    // Synchronous on purpose: this is module-init code, and every consumer of `db` expects a
+    // fully migrated database the moment the import resolves. A missing folder, a directory
+    // that is not a repo, a repo with no `origin`, and a non-GitHub `origin` all land in the
+    // same bucket — unresolvable — so one catch covers the lot.
+    let parsed: { owner: string; repo: string } | null = null;
+    try {
+      const url = execFileSync("git", ["remote", "get-url", "origin"], {
+        cwd: row.repo_path,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      parsed = parseRemote(url);
+    } catch {
+      parsed = null;
+    }
+
+    if (parsed === null) {
+      unresolved.run(
+        "No GitHub repository could be read from this project's folder. Re-link it to a repo to use it.",
+        row.id,
+      );
+      continue;
+    }
+    resolved.run(parsed.owner, parsed.repo, row.id);
+  }
+}
+
+backfillProjectIdentity();
+
 export const nowIso = () => new Date().toISOString();
 
 type ProjectRow = {
   id: string;
   name: string;
+  description: string;
+  owner: string;
+  repo: string;
   repo_path: string;
   base_branch: string;
+  provision_state: string;
+  provision_error: string;
   created_at: string;
   updated_at: string;
 };
@@ -218,11 +300,26 @@ export type TicketRow = {
   archived: number;
 };
 
+/**
+ * The provision-state parse boundary, mirroring `toStatus` below: SQLite hands back a bare
+ * string, so exactly one place decides what it means. An unrecognised value decodes as
+ * `failed` rather than `ready` — a row whose state cannot be read must never be treated as a
+ * project with a working clone, because spawn would then try to create a worktree in a
+ * directory that may not exist.
+ */
+export const toProvisionState = (raw: string): ProvisionState =>
+  raw === "pending" || raw === "cloning" || raw === "ready" ? raw : "failed";
+
 export const toProject = (r: ProjectRow): Project => ({
   id: r.id,
   name: r.name,
+  description: r.description,
+  owner: r.owner,
+  repo: r.repo,
   repoPath: r.repo_path,
   baseBranch: r.base_branch,
+  provisionState: toProvisionState(r.provision_state),
+  provisionError: r.provision_error,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });
