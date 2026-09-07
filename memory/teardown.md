@@ -17,7 +17,7 @@ The dials: **agent process**, **Herdr pane/workspace**, **worktree directory**, 
 |---|---|---|---|---|---|
 | **Cancel** (In Progress → To Do) | stop | close | **force-remove** | **delete** | **delete** |
 | **Ticket deleted** | stop | close | **force-remove** | **delete** | **delete** |
-| **Project deleted** | stop all | close all, incl. source workspace | **force-remove all** | **delete all** | **delete all** |
+| **Project deleted** | leave running | leave open | keep | keep | keep | ← **not the intent; see below** |
 | **Manual "remove worktree"** | stop | close | **force-remove** | keep | **delete** |
 | **Accept** (In Review → Done) | stop | close | **keep** | **keep** | **delete** |
 | Agent finished its turn | leave running | leave open | keep | keep | keep |
@@ -30,9 +30,10 @@ The dials: **agent process**, **Herdr pane/workspace**, **worktree directory**, 
 
 Five rules fall out of that table, and they are the whole policy:
 
-1. **Only the first four rows destroy a worktree, and all four are explicit user actions.** Nothing
-   else removes one, ever. Accept is the fifth explicit action and deliberately spares both the
-   worktree and the branch.
+1. **Only three rows destroy a worktree, and all three are explicit user actions.** Nothing
+   else removes one, ever. Accept is the fourth explicit action and deliberately spares both the
+   worktree and the branch. **Project deletion is the fifth, and destroys nothing at all** — not
+   by design, but because it was never implemented.
 2. **A finished agent destroys nothing.** It moves its ticket to In Review and gets a checkmark
    ([operations](./operations.md)); the agent is left **running** and the port block stays held, so
    a Reject can re-prompt it with its full context. The work is only genuinely done once merged,
@@ -47,6 +48,21 @@ Five rules fall out of that table, and they are the whole policy:
    it, so read it first.
 5. **`force: true` only ever follows an explicit user action.** Reconciliation never forces, never
    deletes ([reconciliation](./reconciliation.md)).
+
+**Project deletion runs no teardown whatsoever (verified).** `DELETE /projects/:id` is
+`server.ts:337` calling `projects.ts`'s `deleteProject`, which is one statement —
+`DELETE FROM projects WHERE id = ?`. Tickets follow via `ON DELETE CASCADE`; nothing else moves.
+So deleting a project with live work leaves **running agents 10x no longer has rows for**, plus
+their worktrees, branches and transcripts, and — unlike `DELETE /tickets/:id` — it does **not**
+check for an open PR first. The leftovers are also **invisible to the board**, not merely
+unowned: `board()` derives its scan set from surviving tickets — `repos` is
+`tickets.flatMap(t => byId.get(t.projectId)?.repoPath)` (`server.ts:237-240`) — so once the
+cascade removes the last ticket, that repo is never passed to `findOrphans` at all.
+
+This is a **gap, not a policy**. `projects.ts`'s docstring rationalises it as "removal is always an
+explicit user action" — but deleting a project *is* an explicit user action, and the argument
+would equally forbid `DELETE /tickets/:id`, which force-removes. Closing it means teardown per
+ticket plus the source workspace, and a PR guard equivalent to the ticket route's.
 
 **Cancel is deliberately destructive**, and knowingly so: it means "discard this attempt". It does
 *not* destroy as much as it appears to, though — deleting a branch only makes its commits
