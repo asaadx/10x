@@ -391,8 +391,9 @@ export function lookupRepo(remote: string): Promise<RepoLookup> {
  */
 export async function createProject(input: CreateProjectInput): Promise<Project> {
   if (MOCK_MODE) return mockCreateProject(input);
-  const { project } = await request<{ project: Project }>("POST", "/projects", input);
-  return project;
+  // The bare row, not `{ project }`: every other write on this seam answers with the resource
+  // itself — `POST /tickets` returns the Ticket, `GET /projects` returns `Project[]`.
+  return request<Project>("POST", "/projects", input);
 }
 
 /**
@@ -402,8 +403,7 @@ export async function createProject(input: CreateProjectInput): Promise<Project>
  */
 export async function updateProject(id: string, patch: UpdateProjectInput): Promise<Project> {
   if (MOCK_MODE) return mockUpdateProject(id, patch);
-  const { project } = await request<{ project: Project }>("PATCH", `/projects/${encodeURIComponent(id)}`, patch);
-  return project;
+  return request<Project>("PATCH", `/projects/${encodeURIComponent(id)}`, patch);
 }
 
 /**
@@ -422,11 +422,7 @@ export async function deleteProject(id: string): Promise<void> {
 /** Retries a clone that failed, from the top. The project returns to `pending`. */
 export async function provisionProject(id: string): Promise<Project> {
   if (MOCK_MODE) return mockProvisionProject(id);
-  const { project } = await request<{ project: Project }>(
-    "POST",
-    `/projects/${encodeURIComponent(id)}/provision`,
-  );
-  return project;
+  return request<Project>("POST", `/projects/${encodeURIComponent(id)}/provision`);
 }
 
 /**

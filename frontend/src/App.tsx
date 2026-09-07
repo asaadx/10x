@@ -13,7 +13,7 @@ import { ALL_PROJECTS, matchesProject, ticketsForColumn } from "@/lib/board.ts";
 import { initialSteerMode, storeSteerMode, type SteerMode } from "@/lib/steer-mode.ts";
 import { useTheme } from "@/lib/theme.ts";
 import { useBoard } from "@/lib/use-board.ts";
-import { COLUMNS, type Project, type SortOrder, type Status, type Ticket } from "@/types.ts";
+import { COLUMNS, type Project, type ProvisionState, type SortOrder, type Status, type Ticket } from "@/types.ts";
 
 /**
  * The selected project's provisioning state, in flow above the columns exactly like the
@@ -128,14 +128,12 @@ export function App() {
   const selected = useMemo(() => projects.find((p) => p.id === projectId) ?? null, [projects, projectId]);
 
   // Spawning against a project whose repo is not on disk answers 409 `project_not_provisioned`,
-  // so the card must not offer Start. Keyed by project id rather than read off the selected
-  // project: `All projects` puts cards from several projects side by side, and only the ones
-  // still downloading lose the button.
-  const readyProjects = useMemo<Record<string, true>>(
-    () =>
-      Object.fromEntries(
-        projects.filter((p) => p.provisionState === "ready").map((p) => [p.id, true] as const),
-      ),
+  // so the card must not offer Plan or Start. The state travels, not a boolean: a card has to
+  // say *why* the button is dead, and "still downloading" and "the clone failed" are different
+  // sentences. Keyed by project id rather than read off the selected project, because
+  // `All projects` puts cards from several projects side by side and only some lose the button.
+  const projectStates = useMemo<Record<string, ProvisionState>>(
+    () => Object.fromEntries(projects.map((p) => [p.id, p.provisionState] as const)),
     [projects],
   );
 
@@ -202,7 +200,7 @@ export function App() {
               label={label}
               steerMode={steerMode}
               tickets={ticketsForColumn(visible, status, query, order)}
-              readyProjects={readyProjects}
+              projectStates={projectStates}
               onNewTicket={
                 status === "backlog" || status === "todo"
                   ? () => {
