@@ -106,7 +106,10 @@ export const MOCK_PROJECTS: Project[] = [
     description: "The board that spawns these agents. Dogfooding target.",
     owner: "asaadx",
     repo: "10x",
-    repoPath: "/home/asaad/.10x/repos/10x",
+    // Deliberately NOT under $PROJECTS_ROOT: this is the pre-existing project, whose folder is
+    // the user's own checkout. It is what covers the delete dialog's "left alone" branch.
+    repoPath: "/home/asaad/GitHub/10x",
+    ownsClone: false,
     baseBranch: "dev",
     provisionState: "ready",
     provisionError: "",
@@ -120,6 +123,7 @@ export const MOCK_PROJECTS: Project[] = [
     owner: "asaadx",
     repo: "10x-test",
     repoPath: "/home/asaad/.10x/repos/10x-test",
+    ownsClone: true,
     baseBranch: "master",
     provisionState: "ready",
     provisionError: "",
@@ -135,6 +139,7 @@ export const MOCK_PROJECTS: Project[] = [
     // Written at creation, not when the clone lands: it is where the download is going, which
     // is also what stops a second attempt from picking a different directory.
     repoPath: "/home/asaad/.10x/repos/hearth-home",
+    ownsClone: true,
     baseBranch: "main",
     provisionState: "cloning",
     provisionError: "",
@@ -148,6 +153,7 @@ export const MOCK_PROJECTS: Project[] = [
     owner: "asaadx",
     repo: "jarvis",
     repoPath: "/home/asaad/.10x/repos/jarvis",
+    ownsClone: true,
     baseBranch: "main",
     provisionState: "failed",
     provisionError:

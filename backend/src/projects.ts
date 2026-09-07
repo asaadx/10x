@@ -107,8 +107,7 @@ function checkName(value: unknown): Checked {
 
 /**
  * Optional, and free-form: it is prose, not an identifier. The cap is generous but finite
- * because this text is handed to every agent spawned on the project, where an unbounded field
- * would quietly eat the opening prompt.
+ * only so a runaway paste cannot bloat every board read that carries the project list.
  */
 function checkDescription(value: unknown): Checked {
   if (value === undefined || value === null) return { ok: true, value: "" };

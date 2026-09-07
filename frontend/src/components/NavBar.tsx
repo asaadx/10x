@@ -1,5 +1,5 @@
 import { IconMoonFilled, IconSunFilled } from "@tabler/icons-react";
-import { BookOpen, Columns3, LayoutDashboard, Pencil, Plus, Trash2 } from "lucide-react";
+import { BookOpen, Columns3, LayoutDashboard, Pencil, Plus } from "lucide-react";
 import { useState } from "react";
 
 import { DeleteProjectDialog, ProjectDialog } from "@/components/ProjectDialog.tsx";
@@ -7,7 +7,6 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select.
 import { ALL_PROJECTS } from "@/lib/board.ts";
 import type { SteerMode } from "@/lib/steer-mode.ts";
 import type { Theme } from "@/lib/theme.ts";
-import { cn } from "@/lib/utils.ts";
 import type { Project } from "@/types.ts";
 
 type Props = {
@@ -137,9 +136,10 @@ export function NavBar({
           */}
           <NativeSelect
             aria-label="Project"
+            size="lg"
             value={projectId}
             onChange={(e) => onProjectChange(e.target.value)}
-            className="h-9 w-44"
+            className="w-44"
           >
             <NativeSelectOption value={ALL_PROJECTS}>All projects</NativeSelectOption>
             {projects.map((p) => (
@@ -164,15 +164,22 @@ export function NavBar({
           </button>
 
           {/*
-            Both always rendered, disabled while the picker is on "All projects". Hiding them
-            behind a selection is what review rejected: a first-time user sees only `+`, never
-            learns the controls exist, and concludes a project cannot be edited at all.
+            Edit is here; DELETE IS NOT. Delete lives inside the edit dialog, because a
+            one-click destructive control sitting between the project picker and the theme
+            toggle is a control you hit by accident — and this one stops agents, destroys
+            worktrees and unmerged branches, and removes the clone. Reaching it should take a
+            deliberate second step. Edit stays rendered-but-disabled on "All projects": hiding
+            it is what review rejected, since a first-time user then never learns it exists.
           */}
           <button
             type="button"
             disabled={selected === null}
             aria-label={selected === null ? "Edit project" : `Edit ${selected.name}`}
-            title={selected === null ? "Pick a project in the picker to edit it" : `Edit ${selected.name}`}
+            title={
+              selected === null
+                ? "Pick a project in the picker to edit it"
+                : `Edit ${selected.name}, or delete it from there`
+            }
             onClick={() => {
               setEditing(selected);
               setEditorOpen(true);
@@ -180,17 +187,6 @@ export function NavBar({
             className={ICON_BUTTON}
           >
             <Pencil aria-hidden className="size-4" />
-          </button>
-
-          <button
-            type="button"
-            disabled={selected === null}
-            aria-label={selected === null ? "Delete project" : `Delete ${selected.name}`}
-            title={selected === null ? "Pick a project in the picker to delete it" : `Delete ${selected.name}`}
-            onClick={() => setDeleting(selected)}
-            className={cn(ICON_BUTTON, "hover:bg-destructive/10 hover:text-destructive")}
-          >
-            <Trash2 aria-hidden className="size-4" />
           </button>
 
           <button
@@ -216,6 +212,13 @@ export function NavBar({
         // A new project is selected the moment it exists, because its whole point is that you
         // can start filling its backlog while the clone is still running.
         onSaved={(project) => onProjectChange(project.id)}
+        // The editor hands the destructive step back rather than owning it: closing the editor
+        // first keeps exactly one dialog on screen, and the confirmation is the only place the
+        // full list of what gets destroyed belongs.
+        onRequestDelete={() => {
+          setEditorOpen(false);
+          setDeleting(editing);
+        }}
       />
 
       {deleting !== null && (

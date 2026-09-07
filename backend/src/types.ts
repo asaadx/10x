@@ -105,7 +105,7 @@ export type Project = {
   id: string;
   /** Display name. Freely renameable — nothing derived depends on it. */
   name: string;
-  /** Handed to every agent on this project, so a ticket need not re-explain its own repo. */
+  /** The user's own note about what this project is. Display only; never sent to an agent. */
   description: string;
   /**
    * GitHub identity, and the project's real identity. `repoPath` is only where this repo
@@ -128,6 +128,17 @@ export type Project = {
   provisionState: ProvisionState;
   /** Empty unless `provisionState` is `failed`. Redacted — never holds a token. */
   provisionError: string;
+  /**
+   * Whether `repoPath` is a clone 10x made, i.e. sits directly under `PROJECTS_ROOT`.
+   *
+   * Derived rather than stored, and on the wire rather than recomputed in the UI, because two
+   * things must agree about it: the delete route only removes the directory when this is true,
+   * and the confirmation dialog must only *promise* to remove it when this is true. A project
+   * that predates this feature keeps whatever folder the user pointed 10x at — often their own
+   * working checkout — and telling them it is about to be deleted would be a lie about an
+   * irreversible act.
+   */
+  ownsClone: boolean;
   createdAt: string;
   updatedAt: string;
 };

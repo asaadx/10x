@@ -22,7 +22,7 @@ import { createServer } from "node:http";
 import { existsSync } from "node:fs";
 import { readFile, realpath, rm, stat } from "node:fs/promises";
 import { request, HerdrError } from "./herdr.ts";
-import { dirname, extname, join, resolve as resolvePath, sep } from "node:path";
+import { extname, join, sep } from "node:path";
 import { freshDiagnostics } from "./diagnostics.ts";
 import { agentNameFor, branchFor, isSettled, planAgentNameFor } from "./lifecycle.ts";
 import { focusAgent } from "./panes.ts";
@@ -51,7 +51,6 @@ import {
 } from "./ticket-store.ts";
 import {
   claimTicket,
-  PROJECTS_ROOT,
   reclaimStalePortSlots,
   releasePortSlot,
   reservePortSlot,
@@ -225,10 +224,6 @@ const specFor = (t: Ticket, p: Project): RunSpec => ({
   acceptanceCriteria: t.acceptanceCriteria,
   repoPath: p.repoPath,
   base: p.baseBranch,
-  // The project, not just the ticket. Without these every ticket has to re-explain which repo
-  // it is in and what that repo is for, in its own description, for every agent.
-  projectName: p.name,
-  projectDescription: p.description,
   apiUrl: API_URL,
 });
 
@@ -564,7 +559,7 @@ async function deleteProjectCompletely(id: string): Promise<Reply> {
   // `PROJECTS_ROOT` (db.ts's `backfillProjectIdentity`). Deleting such a project must not
   // `rm -rf` a directory the user pointed 10x at themselves — the same "never touch a folder it
   // did not create" rule `provision.ts` already applies to cloning.
-  if (dirname(resolvePath(project.repoPath)) === resolvePath(PROJECTS_ROOT)) {
+  if (project.ownsClone) {
     try {
       await rm(project.repoPath, { recursive: true, force: true });
     } catch (err) {

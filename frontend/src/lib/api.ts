@@ -565,6 +565,8 @@ async function mockCreateProject(input: CreateProjectInput): Promise<Project> {
     // shows the same `~/.10x/repos/<slug>` form.
     repoPath: `~/.10x/repos/${input.id ?? parsed.repo.toLowerCase()}`,
     baseBranch: MOCK_DEFAULT_BRANCH,
+    // Anything created through this dialog is cloned by 10x, so it always owns the folder.
+    ownsClone: true,
     provisionState: "pending",
     provisionError: "",
     createdAt: now,

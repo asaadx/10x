@@ -226,8 +226,6 @@ const runSpec = (over: Partial<RunSpec> = {}): RunSpec => ({
   acceptanceCriteria: [],
   repoPath: worktree,
   base: "main",
-  projectName: "Spawn Test",
-  projectDescription: "",
   apiUrl: "http://localhost:4010",
   ...over,
 });

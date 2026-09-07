@@ -16,7 +16,7 @@ import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseRemote } from "./github.ts";
 import { allocateSlot, type SlotAllocation } from "./ports.ts";
 import {
@@ -310,6 +310,15 @@ export type TicketRow = {
 export const toProvisionState = (raw: string): ProvisionState =>
   raw === "pending" || raw === "cloning" || raw === "ready" ? raw : "failed";
 
+/**
+ * The one definition of "10x made this clone". A project created under the plug-and-play flow
+ * always has `repo_path = $PROJECTS_ROOT/<id>`; one that predates it keeps whatever folder the
+ * user originally pointed 10x at, which the migration deliberately does not move. Only the
+ * former may be deleted, and only the former may be *described* as deletable.
+ */
+export const ownsClone = (repoPath: string): boolean =>
+  dirname(resolve(repoPath)) === resolve(PROJECTS_ROOT);
+
 export const toProject = (r: ProjectRow): Project => ({
   id: r.id,
   name: r.name,
@@ -320,6 +329,7 @@ export const toProject = (r: ProjectRow): Project => ({
   baseBranch: r.base_branch,
   provisionState: toProvisionState(r.provision_state),
   provisionError: r.provision_error,
+  ownsClone: ownsClone(r.repo_path),
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });

@@ -25,6 +25,12 @@ import { COLUMNS, type Project, type ProvisionState, type SortOrder, type Status
  *
  * Re-link is deliberately absent from the failed banner: it repoints a project at a different
  * repo, which needs the dialog's lookup to say what it is repointing at.
+ *
+ * Anything OTHER than the four known states — most likely a backend that predates this field
+ * and sends no `provisionState` at all — renders nothing. Failing open is the only safe
+ * direction here: the server is the authority on whether a spawn is allowed and refuses with
+ * 409 regardless, whereas inventing a blocking state from a missing field claims a download
+ * that is not running and leaves a perfectly good project looking broken with no way out.
  */
 function ProvisionBanner({ project, onRetried }: { project: Project; onRetried: () => void }) {
   const [retrying, setRetrying] = useState(false);
@@ -46,7 +52,9 @@ function ProvisionBanner({ project, onRetried }: { project: Project; onRetried: 
     }
   };
 
-  if (project.provisionState === "ready") return null;
+  if (project.provisionState !== "pending" && project.provisionState !== "cloning" && project.provisionState !== "failed") {
+    return null;
+  }
 
   if (project.provisionState === "failed") {
     return (
@@ -73,16 +81,18 @@ function ProvisionBanner({ project, onRetried }: { project: Project; onRetried: 
     );
   }
 
+  // `owner/repo` rather than the name, because the point of this line is which repo is being
+  // downloaded. Falls back to the project's own name if identity is somehow absent, so this can
+  // never render a bare "/".
+  const repo = project.owner && project.repo ? `${project.owner}/${project.repo}` : project.name;
+
   return (
     <div className="mx-auto w-full max-w-[1600px] shrink-0 px-3 pt-1" role="status">
       <div className="flex items-center gap-2.5 rounded-md border bg-muted/40 px-3 py-2 text-xs">
         <Spinner aria-hidden className="size-3.5 shrink-0 text-blue-500" />
         <span className="min-w-0">
-          Downloading{" "}
-          <span className="font-mono">
-            {project.owner}/{project.repo}
-          </span>{" "}
-          — you can write tickets now; Start becomes available when it finishes.
+          Downloading <span className="font-mono">{repo}</span> — you can write tickets now; Start
+          becomes available when it finishes.
         </span>
       </div>
     </div>
