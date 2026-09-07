@@ -61,8 +61,11 @@ const herdr: Server = createServer((socket) => {
   await promise;
 }
 
+// `owner`/`repo` stated explicitly: PR reads take the project's identity from these columns
+// now, and this fixture has no repo on disk for the startup backfill to read a remote from.
 db.prepare(
-  "INSERT INTO projects (id, name, repo_path, base_branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+  `INSERT INTO projects (id, name, owner, repo, repo_path, base_branch, provision_state, created_at, updated_at)
+   VALUES (?, ?, 'acme', 'proj', ?, ?, 'ready', ?, ?)`,
 ).run(PROJECT_ID, PROJECT_ID, "/tmp/does-not-need-to-exist", "main", nowIso(), nowIso());
 
 // A ticket already carrying a PR number but never reconciled — the pre-existing case, what

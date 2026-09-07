@@ -20,14 +20,23 @@
 import "./env.ts";
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { readFile, realpath, rm, stat } from "node:fs/promises";
 import { request, HerdrError } from "./herdr.ts";
 import { extname, join, sep } from "node:path";
 import { freshDiagnostics } from "./diagnostics.ts";
 import { agentNameFor, branchFor, isSettled, planAgentNameFor } from "./lifecycle.ts";
 import { focusAgent } from "./panes.ts";
 import { startPlanning } from "./planner.ts";
-import { createProject, deleteProject, listProjects, getProject, updateProject } from "./projects.ts";
+import {
+  createProject,
+  deleteProject,
+  listProjects,
+  getProject,
+  normalizeRemote,
+  setProvisionState,
+  updateProject,
+} from "./projects.ts";
+import { provisionProject, remoteHasCommits } from "./provision.ts";
 import { findOrphans, listWorktrees, reconcileTickets, sweepPlanWorkspaces } from "./reconcile.ts";
 import { retireAgent, spawn, teardown, type RunSpec, type RunState } from "./runner.ts";
 import {
@@ -35,6 +44,7 @@ import {
   createTicket,
   deleteTicket,
   getTicket,
+  listProjectTicketIds,
   listTickets,
   setRunFields,
   updateTicket,
@@ -57,10 +67,13 @@ import type {
 } from "./types.ts";
 import {
   fetchPullRequestSnapshot,
+  fetchRepoMetadata,
   needsLiveCheck,
   openPullRequest,
+  parseRemote,
   pullRequestUpdate,
   pushTicketBranch,
+  GitHubApiError,
   type PullRequest,
   type PullRequestSnapshot,
 } from "./github.ts";
@@ -110,6 +123,75 @@ const runs = new Map<string, RunState>();
 const inFlight = new Set<string>();
 
 /**
+ * Projects whose clone is running. Same reason as `inFlight` above, different key space: a
+ * second POST while a repo is still downloading must lose rather than start a second clone into
+ * the same directory.
+ */
+const provisioning = new Set<string>();
+
+/**
+ * Runs the clone, in the background, and owns the `provision_state` column while it does.
+ *
+ * Deliberately not awaited by the route that starts it. A large repo is minutes of work, and
+ * `POST /projects` has already done the part that can fail fast and informatively — parsing the
+ * remote and proving the repo exists and is readable. Making the caller wait for the clone would
+ * turn a stalled network into a hung dialog with nothing to show, so the row lands `pending` and
+ * the board's existing one-second poll reports the rest.
+ */
+async function runProvisioning(projectId: string, seedInitialCommit: boolean): Promise<void> {
+  if (provisioning.has(projectId)) return;
+  provisioning.add(projectId);
+  try {
+    const token = process.env.GITHUB_TOKEN;
+    if (!token) {
+      setProvisionState(projectId, "failed", "GITHUB_TOKEN is not set, so the repo cannot be cloned");
+      return;
+    }
+    const project = getProject(projectId);
+    if (project === undefined) return;
+
+    setProvisionState(projectId, "cloning");
+    const outcome = await provisionProject(project, {
+      token,
+      seedInitialCommit,
+      ...(await seedIdentity(token)),
+    });
+    setProvisionState(projectId, outcome.ok ? "ready" : "failed", outcome.ok ? "" : outcome.message);
+  } catch (err) {
+    // A throw here is a bug rather than an expected failure, but leaving the row on `cloning`
+    // forever would be worse than reporting it: that state disables Start with no way out.
+    setProvisionState(projectId, "failed", err instanceof Error ? err.message : String(err));
+  } finally {
+    provisioning.delete(projectId);
+  }
+}
+
+/**
+ * Who authors the initial commit on an empty repo. The token's own GitHub identity, so the
+ * first commit in the user's new repo reads like theirs rather than a tool's — it sits at the
+ * bottom of that history permanently. Falls back to a generic identity rather than failing the
+ * whole provision over an author name.
+ */
+async function seedIdentity(token: string): Promise<{ authorName: string; authorEmail: string }> {
+  try {
+    const res = await fetch("https://api.github.com/user", {
+      headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) throw new Error(`github /user answered ${res.status}`);
+    const user = (await res.json()) as { login?: unknown; id?: unknown };
+    if (typeof user.login !== "string" || typeof user.id !== "number") {
+      throw new Error("github /user answered an unexpected shape");
+    }
+    return {
+      authorName: user.login,
+      authorEmail: `${user.id}+${user.login}@users.noreply.github.com`,
+    };
+  } catch {
+    return { authorName: "10x", authorEmail: "10x@localhost" };
+  }
+}
+
+/**
  * Reconcile-on-read cache for PR state: a ticket's PR is asked about live at most once per TTL
  * window rather than on every one-second board poll. Keyed by ticket id, not PR URL — every
  * other per-ticket map in this module (`runs`, `inFlight`) is keyed by id, and a URL does not
@@ -142,6 +224,10 @@ const specFor = (t: Ticket, p: Project): RunSpec => ({
   acceptanceCriteria: t.acceptanceCriteria,
   repoPath: p.repoPath,
   base: p.baseBranch,
+  // The project, not just the ticket. Without these every ticket has to re-explain which repo
+  // it is in and what that repo is for, in its own description, for every agent.
+  projectName: p.name,
+  projectDescription: p.description,
   apiUrl: API_URL,
 });
 
@@ -214,7 +300,7 @@ async function reconcilePullRequests(
       const project = byId.get(t.projectId);
       if (!project || t.prNumber === null || !t.prUrl) return;
       try {
-        const snapshot = await fetchPullRequestSnapshot(project.repoPath, t.prNumber, token);
+        const snapshot = await fetchPullRequestSnapshot(project, t.prNumber, token);
         setPullRequestState(t.prUrl, snapshot.state, snapshot.additions, snapshot.deletions);
         reconciled.set(t.id, snapshot);
       } catch (err) {
@@ -320,21 +406,208 @@ async function readBody(req: { on: (e: string, f: (c?: unknown) => void) => void
   return promise;
 }
 
-async function handle(method: string, path: string, body: unknown): Promise<Reply> {
-  if (method === "GET" && path === "/projects") return json(listProjects());
-  if (method === "POST" && path === "/projects") {
-    const r = createProject(body);
-    return r.ok ? json(r.project, 201) : json(r.body, r.status);
+/**
+ * The admission test, and the reason a bad link fails in the dialog instead of at Accept three
+ * days later: one GitHub read proves the URL parses, the repo exists and the token can see it,
+ * and hands back the name, description and default branch so none of them has to be a field.
+ *
+ * Emptiness comes from `git ls-remote`, not from this response: `default_branch` is a setting
+ * GitHub reports even for a repo with no commits, where that branch does not exist as a ref
+ * (memory/gotchas.md G8). Answering `empty: true` there is what lets the dialog offer to make
+ * the first commit rather than letting the first spawn fail.
+ */
+async function lookupRemote(remote: string | null): Promise<Reply> {
+  if (remote === null || remote.trim() === "") {
+    return json({ error: "invalid_remote", field: "remote", message: "remote is required" }, 400);
+  }
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) {
+    return json(
+      { error: "github_token_missing", message: "GITHUB_TOKEN is not set, so the repo cannot be verified" },
+      409,
+    );
   }
 
-  const projectMatch = /^\/projects\/([^/]+)$/.exec(path);
+  let owner: string;
+  let repo: string;
+  try {
+    ({ owner, repo } = parseRemote(normalizeRemote(remote)));
+  } catch {
+    return json(
+      {
+        error: "invalid_remote",
+        field: "remote",
+        message: `not a GitHub repository: "${remote}". Expected https://github.com/owner/repo.`,
+      },
+      400,
+    );
+  }
+
+  try {
+    const meta = await fetchRepoMetadata(owner, repo, token);
+    const empty = !(await remoteHasCommits(meta.owner, meta.repo, token));
+    return json({ ...meta, empty });
+  } catch (err) {
+    if (err instanceof GitHubApiError) {
+      const status = err.code === "repo_not_found" ? 404 : err.code === "repo_not_accessible" ? 403 : 502;
+      return json({ error: err.code, field: "remote", message: err.message }, status);
+    }
+    return json({ error: "github_unavailable", message: err instanceof Error ? err.message : String(err) }, 502);
+  }
+}
+
+/**
+ * Deleting a project destroys the work inside it, and says so first.
+ *
+ * This used to be one SQL statement. Tickets cascaded and nothing else moved, which left agents
+ * running that no row pointed at any more — and worse, invisible: `board()` derives its orphan
+ * scan set from surviving tickets, so once the cascade took the last one, that repo was never
+ * handed to `findOrphans` at all. Agents burning tokens with no card to show it
+ * (memory/teardown.md).
+ *
+ * So: refuse if any ticket still has an open pull request, then run the same destructive
+ * teardown `DELETE /tickets/:id` runs, per ticket, and finally remove both directories. Two
+ * directories, not one — Herdr keeps worktrees under its own root, not inside the repo, so
+ * deleting only the clone would strand them with a `.git` link pointing at nothing.
+ */
+async function deleteProjectCompletely(id: string): Promise<Reply> {
+  const project = getProject(id);
+  if (project === undefined) {
+    return json({ error: "project_not_found", field: "id", message: `no project with id "${id}"` }, 404);
+  }
+  // Archived tickets are deliberately excluded from the teardown loop: archiving already ran
+  // the same destructive teardown, so they have no agent, worktree or branch left. Their rows
+  // still go, via ON DELETE CASCADE, and their screenshots are swept below.
+  const tickets = listTickets(id);
+  if (tickets.some((t) => inFlight.has(t.id))) {
+    return json({ error: "operation_in_flight", id }, 409);
+  }
+
+  // The same guard the per-ticket delete uses, and for the same reason: `prState` is null
+  // whenever no webhook has arrived, so a check reading only the column would fail open exactly
+  // when it matters. Live-read anything non-terminal, and fail closed if it cannot be read.
+  const needsCheck = tickets.filter((t) => t.prNumber !== null && needsLiveCheck(t.prState));
+  if (needsCheck.length > 0) {
+    const token = process.env.GITHUB_TOKEN;
+    if (!token) {
+      return json(
+        {
+          error: "pr_state_unknown",
+          message: "GITHUB_TOKEN is not set; open pull requests cannot be verified before deleting",
+        },
+        409,
+      );
+    }
+    const open: { ticketId: string; prNumber: number; prUrl: string | null }[] = [];
+    for (const ticket of needsCheck) {
+      if (ticket.prNumber === null) continue;
+      try {
+        const live = await fetchPullRequestSnapshot(project, ticket.prNumber, token);
+        if (live.state === "open") {
+          open.push({ ticketId: ticket.id, prNumber: ticket.prNumber, prUrl: ticket.prUrl });
+        } else if (ticket.prUrl) {
+          setPullRequestState(ticket.prUrl, live.state, live.additions, live.deletions);
+        }
+      } catch (err) {
+        return json(
+          { error: "pr_state_unknown", message: err instanceof Error ? err.message : String(err) },
+          409,
+        );
+      }
+    }
+    if (open.length > 0) {
+      return json(
+        {
+          error: "pr_open",
+          message:
+            open.length === 1
+              ? `PR #${open[0]?.prNumber} is still open — merge or close it on GitHub first`
+              : `${open.length} pull requests are still open — merge or close them on GitHub first`,
+          openPullRequests: open,
+        },
+        409,
+      );
+    }
+  }
+
+  // Past the point of refusal. Each ticket goes the same way a single DELETE /tickets/:id would
+  // take it — agent retired, worktree forced, branch deleted, transcript removed. A failure on
+  // one must not abandon the rest, so they are collected rather than thrown.
+  const failures: string[] = [];
+  for (const ticket of tickets) {
+    inFlight.add(ticket.id);
+    try {
+      await teardown(specFor(ticket, project), runStateFor(ticket), true);
+    } catch (err) {
+      failures.push(`${ticket.id}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      runs.delete(ticket.id);
+      releasePortSlot(ticket.id);
+      inFlight.delete(ticket.id);
+    }
+  }
+
+  // Screenshots are 10x's own bookkeeping rather than the user's work, so they follow the row
+  // automatically — including for archived tickets, whose worktrees are long gone but whose
+  // files are still on disk.
+  for (const ticketId of listProjectTicketIds(id)) await deleteScreenshots(ticketId);
+
+  deleteProject(id);
+
+  // Last, and only now: the row is gone, so nothing can hand this path to a spawn mid-removal.
+  try {
+    await rm(project.repoPath, { recursive: true, force: true });
+  } catch (err) {
+    failures.push(`clone: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  return json(failures.length === 0 ? { ok: true } : { ok: true, warnings: failures });
+}
+
+async function handle(method: string, path: string, body: unknown): Promise<Reply> {
+  if (method === "GET" && path === "/projects") return json(listProjects());
+
+  // Before the /projects/:id match below, which would otherwise read "lookup" as a project id.
+  if (method === "GET" && path.startsWith("/projects/lookup")) {
+    const query = path.includes("?") ? new URLSearchParams(path.split("?")[1]) : undefined;
+    return lookupRemote(query?.get("remote") ?? null);
+  }
+
+  if (method === "POST" && path === "/projects") {
+    const r = createProject(body);
+    if (!r.ok) return json(r.body, r.status);
+    // Not awaited: the clone is the slow half and the row already carries `pending`, so the
+    // dialog closes now and the board's poll reports the rest.
+    const seed = (body as { seedInitialCommit?: unknown } | undefined)?.seedInitialCommit === true;
+    void runProvisioning(r.project.id, seed);
+    return json(r.project, 201);
+  }
+
+  const provisionMatch = /^\/projects\/([^/?]+)\/provision$/.exec(path);
+  if (provisionMatch?.[1] && method === "POST") {
+    const id = provisionMatch[1];
+    const project = getProject(id);
+    if (project === undefined) {
+      return json({ error: "project_not_found", field: "id", message: `no project with id "${id}"` }, 404);
+    }
+    if (provisioning.has(id)) return json({ error: "operation_in_flight", id }, 409);
+    const seed = (body as { seedInitialCommit?: unknown } | undefined)?.seedInitialCommit !== false;
+    await runProvisioning(id, seed);
+    return json(getProject(id) ?? project);
+  }
+
+  const projectMatch = /^\/projects\/([^/?]+)$/.exec(path);
   if (projectMatch?.[1]) {
     const id = projectMatch[1];
     if (method === "PATCH") {
       const r = updateProject(id, body);
-      return r.ok ? json(r.project) : json(r.body, r.status);
+      if (!r.ok) return json(r.body, r.status);
+      // Re-linking a failed project resets it to `pending`; start the retry rather than
+      // leaving it queued with nothing driving it.
+      if (r.project.provisionState === "pending") void runProvisioning(id, true);
+      return json(r.project);
     }
-    if (method === "DELETE") return json(deleteProject(id));
+    if (method === "DELETE") return deleteProjectCompletely(id);
   }
 
   if (method === "GET" && path.startsWith("/tickets")) {
@@ -372,6 +645,27 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
 
   if (inFlight.has(id)) return json({ error: "operation_in_flight", id }, 409);
 
+  // Before any claim, so a refusal never moves the ticket. The two routes that boot an agent
+  // need a repository on disk to create a worktree in; without one, `worktree.create` fails and
+  // the card is left in `in_progress` with nothing running. Refusing here is what lets the
+  // board disable Start with an explanation instead of offering an action that cannot work.
+  if ((action === "/spawn" || action === "/plan") && method === "POST") {
+    if (project.provisionState !== "ready") {
+      return json(
+        {
+          error: "project_not_provisioned",
+          projectId: project.id,
+          provisionState: project.provisionState,
+          message:
+            project.provisionState === "failed"
+              ? `project "${project.id}" could not be set up: ${project.provisionError}`
+              : `project "${project.id}" is still downloading its repository`,
+        },
+        409,
+      );
+    }
+  }
+
   if (!action && method === "DELETE") {
     // memory/teardown.md: deleting a ticket is an explicit user action, so a full destructive teardown
     // is correct — worktree forced, branch deleted, transcript removed.
@@ -390,7 +684,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       }
       let live: PullRequestSnapshot;
       try {
-        live = await fetchPullRequestSnapshot(project.repoPath, ticket.prNumber, token);
+        live = await fetchPullRequestSnapshot(project, ticket.prNumber, token);
       } catch (err) {
         // Fail closed: we cannot verify the PR is safe to orphan, and the teardown is irreversible.
         const message = err instanceof Error ? err.message : String(err);
@@ -706,9 +1000,9 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     try {
       let pr: PullRequest;
       try {
-        await pushTicketBranch(project.repoPath, ticket.branch, token);
+        await pushTicketBranch(project.repoPath, project, ticket.branch, token);
         pr = await openPullRequest(
-          project.repoPath,
+          project,
           {
             branch: ticket.branch,
             base: project.baseBranch,
@@ -830,7 +1124,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       }
       let live: PullRequestSnapshot;
       try {
-        live = await fetchPullRequestSnapshot(project.repoPath, ticket.prNumber, token);
+        live = await fetchPullRequestSnapshot(project, ticket.prNumber, token);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return json({ error: "pr_state_unknown", message }, 409);
