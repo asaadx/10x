@@ -1,7 +1,7 @@
 /**
- * Publish a ticket's branch as a GitHub pull request: push the branch with a scoped
- * token, then open (or adopt) the PR. No client class, no injected transport — these
- * are the two network calls the app needs, calling `fetch` and `git` directly.
+ * The app's GitHub calls, made with `fetch` and `git` directly — no client class, no injected
+ * transport. Publishing a ticket's branch as a pull request (push with a scoped token, then open
+ * or adopt the PR), and the repo read that admits a project onto the board in the first place.
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -33,21 +33,24 @@ export const parseRemote = (remoteUrl: string): { owner: string; repo: string } 
 export const pullRequestBody = (description: string, ticketId: string): string =>
   `${description}\n\n10x opened this pull request for ticket ${ticketId}.`;
 
-/** Reads the repo's `origin` remote and resolves it to `{ owner, repo }`. */
-async function originOwnerRepo(repoPath: string): Promise<{ owner: string; repo: string }> {
-  const { stdout } = await run("git", ["remote", "get-url", "origin"], { cwd: repoPath });
-  return parseRemote(stdout.trim());
-}
-
 /**
- * Pushes `branch` to `origin` using a token-authenticated URL, bypassing whatever
- * credential helper (or lack of one) the worktree has configured. A ref that is
- * already up to date is success — git exits 0 and says so — so no special casing.
+ * Every call below takes `owner`/`repo` as arguments. They used to be re-derived by shelling
+ * `git remote get-url origin` inside the repo on every push, PR open and PR read — a subprocess
+ * per call to recover something the project row now stores. It also meant the project's GitHub
+ * identity lived only on disk, so a repo whose remote was missing or non-GitHub failed here, at
+ * the finish line, rather than when it was added.
+ *
+ * `repoPath` stays where git itself needs a working tree to push from; it is no longer where
+ * the identity comes from.
  */
-export const pushTicketBranch = async (repoPath: string, branch: string, token: string): Promise<void> => {
+export const pushTicketBranch = async (
+  repoPath: string,
+  identity: { owner: string; repo: string },
+  branch: string,
+  token: string,
+): Promise<void> => {
   try {
-    const { owner, repo } = await originOwnerRepo(repoPath);
-    const url = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
+    const url = `https://x-access-token:${token}@github.com/${identity.owner}/${identity.repo}.git`;
     await run("git", ["push", url, `${branch}:${branch}`], { cwd: repoPath });
   } catch (error) {
     throw new Error(redact(String(error), token));
@@ -104,11 +107,11 @@ function isAlreadyExistsError(body: unknown): boolean {
  * failure) — adopts it. Adopting is correct behaviour here, not an error path.
  */
 export const openPullRequest = async (
-  repoPath: string,
+  identity: { owner: string; repo: string },
   spec: { branch: string; base: string; title: string; description: string; ticketId: string },
   token: string,
 ): Promise<PullRequest> => {
-  const { owner, repo } = await originOwnerRepo(repoPath);
+  const { owner, repo } = identity;
   const headers = {
     Authorization: `Bearer ${token}`,
     Accept: "application/vnd.github+json",
@@ -166,11 +169,11 @@ export type PullRequestSnapshot = { state: PullRequestState; additions: number |
  * this one. Throws on any non-200, with the token redacted.
  */
 export const fetchPullRequestSnapshot = async (
-  repoPath: string,
+  identity: { owner: string; repo: string },
   prNumber: number,
   token: string,
 ): Promise<PullRequestSnapshot> => {
-  const { owner, repo } = await originOwnerRepo(repoPath);
+  const { owner, repo } = identity;
   const headers = {
     Authorization: `Bearer ${token}`,
     Accept: "application/vnd.github+json",
@@ -213,5 +216,103 @@ export const pullRequestUpdate = (payload: unknown): PullRequestUpdate | null =>
     state,
     additions: numberField(pr, "additions") ?? null,
     deletions: numberField(pr, "deletions") ?? null,
+  };
+};
+
+export type RepoMetadata = {
+  owner: string;
+  repo: string;
+  name: string;
+  description: string;
+  defaultBranch: string;
+  private: boolean;
+};
+
+export type GitHubApiErrorCode = "repo_not_found" | "repo_not_accessible" | "github_unavailable";
+
+/**
+ * Same shape as `HerdrError`: the route layer switches on `code`, never on message text. The
+ * codes are the wire codes the route answers with, so mapping one to a status is a lookup rather
+ * than a translation.
+ */
+export class GitHubApiError extends Error {
+  readonly code: GitHubApiErrorCode;
+
+  constructor(code: GitHubApiErrorCode, message: string) {
+    super(`${code}: ${message}`);
+    this.name = "GitHubApiError";
+    this.code = code;
+  }
+}
+
+/**
+ * The admission test behind adding a project: one `GET /repos/{owner}/{repo}` proves the link
+ * parses, the repo exists, and the token can read it. Because it is that test, its failures must
+ * stay distinguishable — the dialog says something different for each — so it throws a coded
+ * `GitHubApiError` instead of the flat `Error` the publishing calls get away with.
+ *
+ * `default_branch` is a *setting*, not a promise that the branch exists: a commitless repo
+ * reports `main` and has no refs at all (memory/gotchas.md G8). Emptiness is `provision.ts`'s
+ * question, asked of the remote's refs, not of this response.
+ */
+export const fetchRepoMetadata = async (owner: string, repo: string, token: string): Promise<RepoMetadata> => {
+  let response: Response;
+  try {
+    response = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+      },
+    });
+  } catch (error) {
+    // DNS failure, TLS failure, dropped connection: no status to classify, and the dialog should
+    // read it the same way it reads a 502 rather than as an unhandled crash.
+    throw new GitHubApiError("github_unavailable", redact(String(error), token));
+  }
+
+  const body = await response.text();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body) as unknown;
+  } catch {
+    // GitHub answers a 5xx with an HTML error page or an empty body often enough that
+    // `response.json()` would throw a SyntaxError, losing the status this call exists to classify.
+    parsed = undefined;
+  }
+
+  if (response.status !== 200) {
+    // A 404 covers both "no such repo" and "your token cannot see this private one" — GitHub
+    // refuses to distinguish them, so as not to leak the existence of private repos, and
+    // `repo_not_found` is the most we can honestly claim. A 401/403 is the opposite case: the
+    // repo was acknowledged and the credential was refused.
+    const code: GitHubApiErrorCode =
+      response.status === 404
+        ? "repo_not_found"
+        : response.status === 401 || response.status === 403
+          ? "repo_not_accessible"
+          : "github_unavailable";
+    const message = stringField(parsed, "message") ?? `GitHub answered ${response.status}`;
+    throw new GitHubApiError(code, redact(message, token));
+  }
+
+  const name = stringField(parsed, "name");
+  const defaultBranch = stringField(parsed, "default_branch");
+  if (name === undefined || defaultBranch === undefined) {
+    throw new GitHubApiError(
+      "github_unavailable",
+      redact(`GitHub returned an unrecognized repository: ${JSON.stringify(parsed)}`, token),
+    );
+  }
+
+  return {
+    // A renamed or transferred repo still answers on its old path, via a redirect `fetch` follows,
+    // so the response's own pair is canonical and the pasted link may be stale.
+    owner: stringField(field(parsed, "owner", (v): v is object => typeof v === "object" && v !== null), "login") ?? owner,
+    repo: name,
+    name,
+    // `description` is null for a repo without one; the dialog prefills a text input with it.
+    description: stringField(parsed, "description") ?? "",
+    defaultBranch,
+    private: field(parsed, "private", (v): v is boolean => typeof v === "boolean") ?? false,
   };
 };

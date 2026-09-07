@@ -2,8 +2,9 @@
  * Tests for the pure pieces of GitHub publishing: redaction, remote parsing, and PR
  * body construction — plus `openPullRequest` and `fetchPullRequestSnapshot`'s metadata
  * extraction, against a real local git repo (for `origin` remote resolution, no network) with
- * `fetch` swapped for a queue of canned responses. `pushTicketBranch` still needs a real push
- * and stays covered only by the end-to-end test against a real throwaway repo.
+ * `fetch` swapped for a queue of canned responses. `fetchRepoMetadata` needs no repo at all,
+ * only the same canned `fetch`. `pushTicketBranch` still needs a real push and stays covered
+ * only by the end-to-end test against a real throwaway repo.
  */
 import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
@@ -19,6 +20,8 @@ import {
   needsLiveCheck,
   openPullRequest,
   fetchPullRequestSnapshot,
+  fetchRepoMetadata,
+  GitHubApiError,
 } from "./github.ts";
 
 describe("redact", () => {
@@ -132,14 +135,16 @@ describe("needsLiveCheck", () => {
 // objects, restored in `after`.
 // ---------------------------------------------------------------------------
 
-const repoPath = mkdtempSync(join(tmpdir(), "10x-github-test-"));
-execFileSync("git", ["init", "-q", repoPath]);
-execFileSync("git", ["remote", "add", "origin", "https://github.com/acme/proj.git"], { cwd: repoPath });
+/**
+ * No temp repo any more: these calls take the project's `{ owner, repo }` directly, so there is
+ * nothing left to read a git remote from. The fixture used to exist purely to satisfy the
+ * `git remote get-url origin` subprocess these functions ran on every call.
+ */
+const identity = { owner: "acme", repo: "proj" };
 
 const realFetch = globalThis.fetch;
 after(() => {
   globalThis.fetch = realFetch;
-  rmSync(repoPath, { recursive: true, force: true });
 });
 
 /** Queues canned responses in call order; a call past the end of the queue is a test bug. */
@@ -159,7 +164,7 @@ describe("openPullRequest surfaces PR metadata", () => {
     queueFetch([
       { status: 201, body: { number: 42, html_url: "https://github.com/acme/proj/pull/42", state: "open", merged: false, additions: 10, deletions: 4 } },
     ]);
-    const pr = await openPullRequest(repoPath, spec, "tok");
+    const pr = await openPullRequest(identity, spec, "tok");
     assert.deepEqual(pr, { number: 42, url: "https://github.com/acme/proj/pull/42", state: "open", additions: 10, deletions: 4 });
   });
 
@@ -167,7 +172,7 @@ describe("openPullRequest surfaces PR metadata", () => {
     queueFetch([
       { status: 201, body: { number: 43, html_url: "https://github.com/acme/proj/pull/43", state: "closed", merged: true, additions: 1, deletions: 1 } },
     ]);
-    const pr = await openPullRequest(repoPath, spec, "tok");
+    const pr = await openPullRequest(identity, spec, "tok");
     assert.equal(pr.state, "merged");
   });
 
@@ -176,13 +181,13 @@ describe("openPullRequest surfaces PR metadata", () => {
       { status: 422, body: { message: "Validation Failed", errors: [{ message: "A pull request already exists for acme:b." }] } },
       { status: 200, body: [{ number: 7, html_url: "https://github.com/acme/proj/pull/7", state: "open", merged: false, additions: 3, deletions: 1 }] },
     ]);
-    const pr = await openPullRequest(repoPath, spec, "tok");
+    const pr = await openPullRequest(identity, spec, "tok");
     assert.deepEqual(pr, { number: 7, url: "https://github.com/acme/proj/pull/7", state: "open", additions: 3, deletions: 1 });
   });
 
   test("a create response missing additions/deletions still yields a PR, with null LOC", async () => {
     queueFetch([{ status: 201, body: { number: 44, html_url: "https://github.com/acme/proj/pull/44", state: "open", merged: false } }]);
-    const pr = await openPullRequest(repoPath, spec, "tok");
+    const pr = await openPullRequest(identity, spec, "tok");
     assert.equal(pr.additions, null);
     assert.equal(pr.deletions, null);
   });
@@ -191,18 +196,111 @@ describe("openPullRequest surfaces PR metadata", () => {
 describe("fetchPullRequestSnapshot", () => {
   test("returns state, additions and deletions from a single GET call", async () => {
     queueFetch([{ status: 200, body: { number: 9, state: "closed", merged: true, additions: 20, deletions: 5 } }]);
-    const snapshot = await fetchPullRequestSnapshot(repoPath, 9, "tok");
+    const snapshot = await fetchPullRequestSnapshot(identity, 9, "tok");
     assert.deepEqual(snapshot, { state: "merged", additions: 20, deletions: 5 });
   });
 
   test("an open PR reads state open with its LOC", async () => {
     queueFetch([{ status: 200, body: { number: 9, state: "open", merged: false, additions: 2, deletions: 0 } }]);
-    const snapshot = await fetchPullRequestSnapshot(repoPath, 9, "tok");
+    const snapshot = await fetchPullRequestSnapshot(identity, 9, "tok");
     assert.deepEqual(snapshot, { state: "open", additions: 2, deletions: 0 });
   });
 
   test("throws on a non-200 response, with the token redacted", async () => {
     queueFetch([{ status: 404, body: { message: "Not Found" } }]);
-    await assert.rejects(() => fetchPullRequestSnapshot(repoPath, 9, "secret-tok"), /GitHub API error \(404\)/);
+    await assert.rejects(() => fetchPullRequestSnapshot(identity, 9, "secret-tok"), /GitHub API error \(404\)/);
+  });
+});
+
+describe("fetchRepoMetadata is the admission test, so its failures stay distinguishable", () => {
+  test("a 200 maps default_branch, a null description and the visibility flag", async () => {
+    queueFetch([
+      {
+        status: 200,
+        body: {
+          name: "10x-test",
+          full_name: "asaadx/10x-test",
+          owner: { login: "asaadx" },
+          description: null,
+          default_branch: "master",
+          private: true,
+        },
+      },
+    ]);
+    assert.deepEqual(await fetchRepoMetadata("asaadx", "10x-test", "tok"), {
+      owner: "asaadx",
+      repo: "10x-test",
+      name: "10x-test",
+      description: "",
+      defaultBranch: "master",
+      private: true,
+    });
+  });
+
+  test("a redirect to a renamed repo is followed, and the response's owner/name wins over the pasted pair", async () => {
+    queueFetch([
+      {
+        status: 200,
+        body: { name: "hearth-home", owner: { login: "newowner" }, description: "d", default_branch: "main", private: false },
+      },
+    ]);
+    const metadata = await fetchRepoMetadata("oldowner", "old-name", "tok");
+    assert.equal(metadata.owner, "newowner");
+    assert.equal(metadata.repo, "hearth-home");
+  });
+
+  test("a 404 is repo_not_found", async () => {
+    queueFetch([{ status: 404, body: { message: "Not Found" } }]);
+    await assert.rejects(() => fetchRepoMetadata("acme", "nope", "tok"), (err: unknown) => {
+      assert.ok(err instanceof GitHubApiError);
+      assert.equal(err.code, "repo_not_found");
+      return true;
+    });
+  });
+
+  test("a 403 is repo_not_accessible — the repo was acknowledged and the token was refused", async () => {
+    queueFetch([{ status: 403, body: { message: "Resource not accessible by personal access token" } }]);
+    await assert.rejects(() => fetchRepoMetadata("acme", "proj", "tok"), (err: unknown) => {
+      assert.ok(err instanceof GitHubApiError);
+      assert.equal(err.code, "repo_not_accessible");
+      return true;
+    });
+  });
+
+  test("a 500 is github_unavailable", async () => {
+    queueFetch([{ status: 500, body: { message: "Server Error" } }]);
+    await assert.rejects(() => fetchRepoMetadata("acme", "proj", "tok"), (err: unknown) => {
+      assert.ok(err instanceof GitHubApiError);
+      assert.equal(err.code, "github_unavailable");
+      return true;
+    });
+  });
+
+  test("a 200 with no default_branch is github_unavailable, not a repo with an empty base", async () => {
+    queueFetch([{ status: 200, body: { name: "proj", owner: { login: "acme" } } }]);
+    await assert.rejects(() => fetchRepoMetadata("acme", "proj", "tok"), (err: unknown) => {
+      assert.ok(err instanceof GitHubApiError);
+      assert.equal(err.code, "github_unavailable");
+      return true;
+    });
+  });
+
+  test("a non-JSON body — GitHub's 5xx HTML error page — still classifies by status instead of throwing a SyntaxError", async () => {
+    globalThis.fetch = (async () => new Response("<html>502 Bad Gateway</html>", { status: 502 })) as typeof fetch;
+    await assert.rejects(() => fetchRepoMetadata("acme", "proj", "tok"), (err: unknown) => {
+      assert.ok(err instanceof GitHubApiError);
+      assert.equal(err.code, "github_unavailable");
+      return true;
+    });
+  });
+
+  test("a thrown error never carries the token, however GitHub echoed it back", async () => {
+    queueFetch([{ status: 404, body: { message: "Not Found for token ghp_secret123" } }]);
+    await assert.rejects(() => fetchRepoMetadata("acme", "proj", "ghp_secret123"), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.doesNotMatch(err.message, /ghp_secret123/);
+      assert.doesNotMatch(String(err.stack), /ghp_secret123/);
+      return true;
+    });
   });
 });
