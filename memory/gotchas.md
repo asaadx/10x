@@ -173,6 +173,47 @@ Recorded so nobody assumes these are proven.
   and re-run the [verification](./verification.md) probes. Also re-`strace` the CLI for any command
   whose raw-socket behaviour looks wrong: the CLI adds orchestration the socket method does not
   perform ([spawn](./spawn.md)).
+- **G7 — every ticket branches off a base branch nothing refreshes (verified).** `runner.ts`
+  contains no `fetch`: `worktree.create` is called with `base: spec.base`, the project's
+  `base_branch` verbatim, and no step brings that branch up to date first. It is survivable only
+  by accident — `repo_path` is the user's own checkout, so a human pulling it is what keeps the
+  base current. A ticket started while that checkout is behind branches off stale code silently.
+
+  **The obvious fix does not work.** In a normal clone the base branch is checked out, so git
+  refuses to update it: `git fetch origin main:main` →
+  `fatal: refusing to fetch into branch 'refs/heads/main' checked out at '<clone>'` (verified).
+
+  **What does work: never touch the local base branch — branch off the remote-tracking ref.**
+  **Confirmed through Herdr itself, not just git** (live herdr 0.8.2, one run against a clone
+  deliberately two commits behind, after `git fetch --prune origin`):
+
+  | `worktree.create` params | resulting worktree HEAD |
+  |---|---|
+  | `{cwd, branch: "probe/stale", base: "main"}` | `c35f078` — the **stale** local branch |
+  | `{cwd, branch: "probe/fresh", base: "origin/main"}` | `4a512b6` — the **upstream tip** |
+
+  So Herdr hands `base` to git verbatim, `origin/<base>` is legal there, and the whole fix is
+  `git fetch --prune origin` before the call plus an `origin/` prefix on `base`. `base_branch`
+  must stay the bare name in the column, because `openPullRequest` needs it for the PR base;
+  only the worktree call takes the prefix.
+
+  The same run also confirms **worktrees live outside the repo** —
+  `~/.herdr/worktrees/<repo-name>/<branch-dir>`, e.g. `~/.herdr/worktrees/clone10x/probe-fresh`
+  for `cwd: …/clone10x`. Deleting a project's repo directory therefore does **not** remove its
+  worktrees; they are a second location, and orphaning them leaves `.git` links pointing at a
+  repo that no longer exists.
+
+- **G8 — a repo with no commits cannot be ticketed at all (verified).** A branch is a label
+  pointing at a commit, so a commitless repo has no base branch whatever the GitHub API reports:
+  `GET /repos` returns `default_branch: "main"` as a *setting*, and a clone of such a repo has
+  zero refs, a dangling HEAD (`git rev-parse --verify HEAD` → `fatal: Needed a single revision`),
+  and a local `init.defaultBranch` name that need not match GitHub's. `worktree.create`'s
+  underlying command then fails outright: `git worktree add -b ticket/x/1 <path> main` →
+  `fatal: invalid reference: main`. So the first ticket on a brand-new repo dies at worktree
+  creation, and its PR would have no base to target (inferred). Detecting it needs no API:
+  `git ls-remote --heads <url>` returns zero refs with exit 0 on an empty repo, and exit 128 on
+  one that cannot be reached (verified). The fix is to seed an initial commit — what GitHub's own
+  *Add a README* checkbox does. Proposed in `docs/plug-and-play-projects.md`; unimplemented.
 
 **G1 (`blocked`) is closed.** A prose question reports `done`; the `ask` tool reports `blocked`.
 See [agent-status](./agent-status.md).
