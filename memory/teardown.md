@@ -58,6 +58,14 @@ runs the same teardown per ticket, drops the row (tickets cascade), and removes 
 and Herdr's worktrees. Archived tickets are skipped by the teardown loop because archiving
 already ran it; their screenshots are still swept, via `listProjectTicketIds`.
 
+**The clone is only removed if it is directly under `PROJECTS_ROOT`.** A project created under
+this feature always has `repo_path = $PROJECTS_ROOT/<id>` and can never repoint it, but a project
+that predates it keeps whatever folder it was created with — the migration backfills its
+`owner`/`repo` identity without moving that folder (`db.ts`'s `backfillProjectIdentity`). Without
+the guard, deleting such a project would `rm -rf` a directory the user pointed 10x at themselves,
+not a 10x clone. The check mirrors `provision.ts`'s own "never touch a folder it did not create"
+rule; a folder outside `PROJECTS_ROOT` is left in place and reported as a warning in the response.
+
 It used to be one SQL statement, and the failure that made it worth fixing is worth remembering:
 deleting a project left **running agents 10x no longer had rows for**, and they were *invisible*
 rather than merely unowned. `board()` derives its scan set from surviving tickets — `repos` is

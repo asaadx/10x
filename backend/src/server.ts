@@ -22,7 +22,7 @@ import { createServer } from "node:http";
 import { existsSync } from "node:fs";
 import { readFile, realpath, rm, stat } from "node:fs/promises";
 import { request, HerdrError } from "./herdr.ts";
-import { extname, join, sep } from "node:path";
+import { dirname, extname, join, resolve as resolvePath, sep } from "node:path";
 import { freshDiagnostics } from "./diagnostics.ts";
 import { agentNameFor, branchFor, isSettled, planAgentNameFor } from "./lifecycle.ts";
 import { focusAgent } from "./panes.ts";
@@ -51,6 +51,7 @@ import {
 } from "./ticket-store.ts";
 import {
   claimTicket,
+  PROJECTS_ROOT,
   reclaimStalePortSlots,
   releasePortSlot,
   reservePortSlot,
@@ -555,10 +556,24 @@ async function deleteProjectCompletely(id: string): Promise<Reply> {
   deleteProject(id);
 
   // Last, and only now: the row is gone, so nothing can hand this path to a spawn mid-removal.
-  try {
-    await rm(project.repoPath, { recursive: true, force: true });
-  } catch (err) {
-    failures.push(`clone: ${err instanceof Error ? err.message : String(err)}`);
+  //
+  // Only if 10x actually owns that directory. Every project created under this feature has
+  // `repoPath` derived as `$PROJECTS_ROOT/<id>` and can never repoint it (memory/plug-and-play
+  // projects.md), but a project that predates this feature keeps whatever folder it was created
+  // with, and the migration backfills its identity without moving that folder under
+  // `PROJECTS_ROOT` (db.ts's `backfillProjectIdentity`). Deleting such a project must not
+  // `rm -rf` a directory the user pointed 10x at themselves — the same "never touch a folder it
+  // did not create" rule `provision.ts` already applies to cloning.
+  if (dirname(resolvePath(project.repoPath)) === resolvePath(PROJECTS_ROOT)) {
+    try {
+      await rm(project.repoPath, { recursive: true, force: true });
+    } catch (err) {
+      failures.push(`clone: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  } else {
+    failures.push(
+      `clone: ${project.repoPath} predates 10x's own clones and was left in place — remove it yourself if you want it gone`,
+    );
   }
 
   return json(failures.length === 0 ? { ok: true } : { ok: true, warnings: failures });

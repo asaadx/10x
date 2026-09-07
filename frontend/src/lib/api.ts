@@ -1,5 +1,5 @@
 import { ALL_PROJECTS } from "@/lib/board.ts";
-import { MOCK_PROJECTS } from "@/mock.ts";
+import { MOCK_PROJECTS, MOCK_TICKETS } from "@/mock.ts";
 import type { BoardResponse, Playbook, Priority, Project, Status, Ticket } from "@/types.ts";
 
 /**
@@ -318,9 +318,9 @@ export async function rejectTicket(id: string, reason: string): Promise<void> {
 /**
  * Adding a project is three typed fields and one admission test: `GET /projects/lookup` proves
  * the link parses, the repo exists and the token can read it, and hands back everything the
- * dialog would otherwise have had to ask for. `POST`, `PATCH` and `/provision` answer
- * `{project}` rather than the row itself, so the wrapper is unwrapped here and every caller
- * sees a `Project`.
+ * dialog would otherwise have had to ask for. `POST`, `PATCH` and `/provision` all answer the
+ * bare `Project`, same as every other write on this seam — there is no `{project}` envelope to
+ * unwrap.
  */
 export type RepoLookup = {
   owner: string;
@@ -610,6 +610,23 @@ async function mockDeleteProject(id: string): Promise<void> {
   await sleep(MOCK_LOOKUP_MS);
   if (!mockSnapshot.some((project) => project.id === id)) {
     throw mockRefusal("DELETE", `/projects/${id}`, 404, "project_not_found", `No project ${id}.`);
+  }
+  // The same refusal the real route answers, so the dialog's blocking-PR banner is reachable in
+  // mock mode too — `jarvis-3` is the fixture built to exercise exactly this.
+  const open = MOCK_TICKETS.filter((t) => t.projectId === id && t.prState === "open" && t.prNumber !== null);
+  if (open.length > 0) {
+    const path = `/projects/${id}`;
+    const message =
+      open.length === 1
+        ? `PR #${open[0]?.prNumber} is still open — merge or close it on GitHub first`
+        : `${open.length} pull requests are still open — merge or close them on GitHub first`;
+    throw requestFailed(
+      "DELETE",
+      path,
+      `409 pr_open: ${message}`,
+      "pr_open",
+      { error: "pr_open", message, openPullRequests: open.map((t) => ({ ticketId: t.id, prNumber: t.prNumber, prUrl: t.prUrl })) },
+    );
   }
   publishMock(mockSnapshot.filter((project) => project.id !== id));
 }

@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { createServer, type Server, type Socket } from "node:net";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -158,6 +158,32 @@ const seedTicket = (id: string, projectId: string, number: number, status: strin
 };
 seedTicket("cloningproj-1", "cloningproj", 1, "todo");
 seedTicket("cloningproj-2", "cloningproj", 2, "backlog");
+
+// A project whose clone already lives where 10x would put one — the case the delete route
+// must actually remove.
+const projectsRoot = join(dir, "repos");
+const ownedRepo = join(projectsRoot, "ownedclone");
+mkdirSync(ownedRepo, { recursive: true });
+writeFileSync(join(ownedRepo, "sentinel"), "10x's own clone\n");
+
+db.prepare(
+  `INSERT INTO projects (id, name, description, owner, repo, repo_path, base_branch,
+                         provision_state, provision_error, created_at, updated_at)
+   VALUES (?, ?, '', 'acme', 'ownedclone', ?, 'main', 'ready', '', ?, ?)`,
+).run("ownedclone", "Owned clone", ownedRepo, nowIso(), nowIso());
+
+// A project that predates this feature: its `repo_path` is a folder the user pointed 10x at
+// directly, sitting outside `PROJECTS_ROOT` entirely — the migration backfills identity without
+// ever moving it there (db.ts's `backfillProjectIdentity`).
+const alienRepo = join(dir, "alien-repo");
+mkdirSync(alienRepo, { recursive: true });
+writeFileSync(join(alienRepo, "sentinel"), "the user's own checkout\n");
+
+db.prepare(
+  `INSERT INTO projects (id, name, description, owner, repo, repo_path, base_branch,
+                         provision_state, provision_error, created_at, updated_at)
+   VALUES (?, ?, '', 'acme', 'alien', ?, 'main', 'ready', '', ?, ?)`,
+).run("alienclone", "Alien clone", alienRepo, nowIso(), nowIso());
 
 // ---------------------------------------------------------------------------
 // The server child.
@@ -393,5 +419,30 @@ describe("starting work needs a repository on disk", () => {
     const res = await api("POST", "/tickets/cloningproj-2/plan");
     assert.equal(res.status, 409);
     assert.equal(res.body["error"], "project_not_provisioned");
+  });
+});
+
+
+describe("DELETE /projects/:id only removes a clone 10x actually owns", () => {
+  test("a repo_path under PROJECTS_ROOT is removed along with the project", async () => {
+    assert.ok(existsSync(ownedRepo));
+    const res = await api("DELETE", "/projects/ownedclone");
+    assert.equal(res.status, 200);
+    assert.equal(res.body["ok"], true);
+    assert.equal(res.body["warnings"], undefined);
+    assert.equal(existsSync(ownedRepo), false);
+    assert.equal((await api("GET", "/projects/lookup?remote=x")).status, 400); // server still alive
+  });
+
+  test("a repo_path outside PROJECTS_ROOT — a project that predates this feature — is left in place", async () => {
+    assert.ok(existsSync(alienRepo));
+    const res = await api("DELETE", "/projects/alienclone");
+    assert.equal(res.status, 200);
+    assert.equal(res.body["ok"], true);
+    // The project row is still gone even though its folder was not 10x's to remove.
+    assert.ok(Array.isArray(res.body["warnings"]));
+    assert.match((res.body["warnings"] as string[])[0] ?? "", /predates 10x/);
+    assert.equal(existsSync(alienRepo), true);
+    assert.equal(readFileSync(join(alienRepo, "sentinel"), "utf8"), "the user's own checkout\n");
   });
 });
