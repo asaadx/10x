@@ -93,13 +93,41 @@ export type Attachment = { name: string; size: number; mime: string; path: strin
  */
 export type ScreenshotSide = "before" | "after";
 
+/**
+ * How far along a project's local clone is. A project is only usable at `ready`: spawn and plan
+ * refuse anything else, because there is no repository on disk to create a worktree in yet.
+ */
+export const PROVISION_STATES = ["pending", "cloning", "ready", "failed"] as const;
+export type ProvisionState = (typeof PROVISION_STATES)[number];
+
 export type Project = {
   /** Immutable slug used in branch and agent names. Renaming would orphan worktrees. */
   id: string;
   /** Display name. Freely renameable — nothing derived depends on it. */
   name: string;
+  /** Handed to every agent on this project, so a ticket need not re-explain its own repo. */
+  description: string;
+  /**
+   * GitHub identity, and the project's real identity. `repoPath` is only where this repo
+   * happens to be materialised on this machine; owner/repo is what the project *is*, and what
+   * every push and pull request targets.
+   */
+  owner: string;
+  repo: string;
+  /**
+   * Derived, never user-supplied: `$PROJECTS_ROOT/<id>`. 10x clones here itself rather than
+   * borrowing a checkout you also work in, so the base branch is never dirty or mid-rebase.
+   */
   repoPath: string;
+  /**
+   * The bare upstream branch name, e.g. `main` — never `origin/main`. Pull requests need the
+   * real branch name as their base; only worktree creation takes the `origin/` prefix
+   * (memory/gotchas.md G7).
+   */
   baseBranch: string;
+  provisionState: ProvisionState;
+  /** Empty unless `provisionState` is `failed`. Redacted — never holds a token. */
+  provisionError: string;
   createdAt: string;
   updatedAt: string;
 };

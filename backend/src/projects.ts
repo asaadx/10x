@@ -42,18 +42,47 @@ function fail(status: number, error: string, message: string, field?: string): P
  * later, far from the cause.
  */
 function rowToProject(row: Record<string, SQLOutputValue>): Project {
-  const { id, name, repo_path, base_branch, created_at, updated_at } = row;
+  const {
+    id,
+    name,
+    description,
+    owner,
+    repo,
+    repo_path,
+    base_branch,
+    provision_state,
+    provision_error,
+    created_at,
+    updated_at,
+  } = row;
   if (
     typeof id !== "string" ||
     typeof name !== "string" ||
+    typeof description !== "string" ||
+    typeof owner !== "string" ||
+    typeof repo !== "string" ||
     typeof repo_path !== "string" ||
     typeof base_branch !== "string" ||
+    typeof provision_state !== "string" ||
+    typeof provision_error !== "string" ||
     typeof created_at !== "string" ||
     typeof updated_at !== "string"
   ) {
     throw new Error(`projects row has an unexpected shape: ${JSON.stringify(row)}`);
   }
-  return toProject({ id, name, repo_path, base_branch, created_at, updated_at });
+  return toProject({
+    id,
+    name,
+    description,
+    owner,
+    repo,
+    repo_path,
+    base_branch,
+    provision_state,
+    provision_error,
+    created_at,
+    updated_at,
+  });
 }
 
 function checkSlug(value: unknown): Checked {
@@ -140,17 +169,14 @@ export function createProject(input: unknown): ProjectResult {
     return fail(409, "project_exists", `a project with id "${id.value}" already exists`, "id");
   }
 
-  return {
-    ok: true,
-    project: {
-      id: id.value,
-      name: name.value,
-      repoPath: repoPath.value,
-      baseBranch: baseBranch.value,
-      createdAt: now,
-      updatedAt: now,
-    },
-  };
+  // Read back rather than reassembling the row by hand: the table owns the defaults for
+  // description, owner, repo and provisioning state, and a second construction site here
+  // would be free to drift from them.
+  const project = getProject(id.value);
+  if (project === undefined) {
+    throw new Error(`project "${id.value}" vanished immediately after being inserted`);
+  }
+  return { ok: true, project };
 }
 
 export function updateProject(id: string, input: unknown): ProjectResult {
