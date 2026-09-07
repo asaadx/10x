@@ -14,6 +14,10 @@ import type { Project, Ticket } from "@/types.ts";
  * only ever seen on one value, and tickets spread across all three priorities so the star
  * badge and the sheet's Priority picker are not only ever seen on one value either.
  *
+ * Projects cover provisioning as well as tickets: two ready, one still downloading, and one that
+ * failed with a re-link message. The failed one keeps a Done ticket with an open pull request,
+ * because deleting a broken project is exactly the moment the open-PR guard has to refuse.
+ *
  * These are checked against the real `GET /tickets` shape now, not a local copy of it, so the
  * resolved fields have to be internally consistent: `branch` and `agentName` are always present
  * because the board derives them, `agentStatus`/`paneId`/`workspaceId` are non-null only while
@@ -121,6 +125,35 @@ export const MOCK_PROJECTS: Project[] = [
     provisionError: "",
     createdAt: iso(20),
     updatedAt: iso(20),
+  },
+  {
+    id: "hearth-home",
+    name: "Hearth Home",
+    description: "Home automation dashboard. Added from a paste and still coming down the wire.",
+    owner: "asaadx",
+    repo: "hearth-home",
+    // Written at creation, not when the clone lands: it is where the download is going, which
+    // is also what stops a second attempt from picking a different directory.
+    repoPath: "/home/asaad/.10x/repos/hearth-home",
+    baseBranch: "main",
+    provisionState: "cloning",
+    provisionError: "",
+    createdAt: iso(0, 8),
+    updatedAt: iso(0, 8),
+  },
+  {
+    id: "jarvis",
+    name: "Jarvis",
+    description: "Voice assistant. Its remote moved, so nothing here can be started until it is re-linked.",
+    owner: "asaadx",
+    repo: "jarvis",
+    repoPath: "/home/asaad/.10x/repos/jarvis",
+    baseBranch: "main",
+    provisionState: "failed",
+    provisionError:
+      "Clone failed: repository asaadx/jarvis not found. It may have been renamed, made private or deleted — re-link the project to its current URL.",
+    createdAt: iso(14),
+    updatedAt: iso(0, 7),
   },
 ];
 
@@ -549,5 +582,59 @@ export const MOCK_TICKETS: Ticket[] = [
     updatedAt: iso(0, 8),
     // Screenshots stay inherited `{ before: null, after: null }`: no shot was ever captured
     // for this ticket, unlike 10x-3's partial pair.
+  },
+  {
+    ...base,
+    id: "hearth-home-1",
+    projectId: "hearth-home",
+    number: 1,
+    title: "Group the thermostat cards by floor",
+    description: "Written while the repo is still downloading — a backlog does not need the code.",
+    status: "todo",
+    branch: "ticket/hearth-home/1",
+    agentName: "ticket-hearth-home-1",
+    playbook: "Frontend",
+    createdAt: iso(0, 8),
+    updatedAt: iso(0, 8),
+  },
+  {
+    ...base,
+    id: "hearth-home-2",
+    projectId: "hearth-home",
+    number: 2,
+    // Backlog as well as To Do, because Plan spawns an agent too: both buttons are gated while
+    // the repo is downloading, and only a card in each column proves it.
+    title: "Work out why the hallway sensor drops off overnight",
+    description: "",
+    status: "backlog",
+    branch: "ticket/hearth-home/2",
+    agentName: "ticket-hearth-home-2",
+    playbook: "Backend",
+    createdAt: iso(0, 9),
+    updatedAt: iso(0, 9),
+  },
+  {
+    ...base,
+    id: "jarvis-3",
+    projectId: "jarvis",
+    number: 3,
+    title: "Stream partial transcripts to the client",
+    description: "The PR is still open on GitHub, so deleting this project has to be refused rather than destroy its branch.",
+    status: "done",
+    branch: "ticket/jarvis/3",
+    agentName: "ticket-jarvis-3",
+    playbook: "Backend",
+    priority: "medium",
+    finished: true,
+    sessionDir: "/home/asaad/.omp/sessions/ticket-jarvis-3",
+    hasWorktree: true,
+    worktreePath: worktree("jarvis", 3),
+    prNumber: 7,
+    prUrl: "https://github.com/asaadx/jarvis/pull/7",
+    prState: "open",
+    prAdditions: 203,
+    prDeletions: 41,
+    createdAt: iso(8),
+    updatedAt: iso(1, 16),
   },
 ];

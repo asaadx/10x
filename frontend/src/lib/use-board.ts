@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getBoard, getProjects, MOCK_MODE } from "@/lib/api.ts";
-import { MOCK_PROJECTS, MOCK_TICKETS } from "@/mock.ts";
+import { getBoard, getProjects, MOCK_MODE, mockProjects } from "@/lib/api.ts";
+import { MOCK_TICKETS } from "@/mock.ts";
 import type { Orphan, Project, Ticket } from "@/types.ts";
 
 /**
@@ -24,13 +24,18 @@ export type Board = {
  */
 const POLL_MS = 1000;
 
-const MOCK_BOARD: Board = {
+/**
+ * Fixture tickets are static, but the projects are not: the dialog writes to `mockProjects`, so
+ * mock mode reads through that store rather than the module-level array a newly added project
+ * would never appear in.
+ */
+const mockBoard = (): Board => ({
   tickets: MOCK_TICKETS,
-  projects: MOCK_PROJECTS,
+  projects: mockProjects.list(),
   // The fixtures have no orphaned worktrees; the reconciler is what produces these.
   unowned: [],
   error: null,
-};
+});
 
 /**
  * `refresh` is how a write gets its own result on screen: a mutation awaits its POST and then
@@ -38,7 +43,9 @@ const MOCK_BOARD: Board = {
  * behind the state it just changed.
  */
 export function useBoard(projectId: string): Board & { refresh: () => void } {
-  const [board, setBoard] = useState<Board>({ tickets: [], projects: [], unowned: [], error: null });
+  const [board, setBoard] = useState<Board>(() =>
+    MOCK_MODE ? mockBoard() : { tickets: [], projects: [], unowned: [], error: null },
+  );
   // Written by the effect below and read by `refresh`, so a manual refresh runs the effect's
   // OWN poll — the current project's, sharing its in-flight guard — rather than a second
   // request that would race it. A no-op until the first effect run, which is also what makes
@@ -46,8 +53,9 @@ export function useBoard(projectId: string): Board & { refresh: () => void } {
   const poll = useRef<(manual: boolean) => Promise<void>>(async () => {});
 
   useEffect(() => {
-    // Fixtures are static, so there is nothing to poll for and no timer is started.
-    if (MOCK_MODE) return;
+    // Nothing to poll for and no timer started: a mock write announces itself, so the store's
+    // own notification is the whole update path.
+    if (MOCK_MODE) return mockProjects.subscribe(() => setBoard(mockBoard()));
 
     // Guards every resolution below: a response that lands after unmount, or after the project
     // picker moved on, must not overwrite the board that replaced it.
@@ -110,5 +118,5 @@ export function useBoard(projectId: string): Board & { refresh: () => void } {
   }, [projectId]);
 
   const refresh = useCallback(() => void poll.current(true), []);
-  return { ...(MOCK_MODE ? MOCK_BOARD : board), refresh };
+  return { ...board, refresh };
 }

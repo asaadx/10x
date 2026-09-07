@@ -31,6 +31,12 @@ type Props = {
   label: string;
   tickets: Ticket[];
   steerMode: SteerMode;
+  /**
+   * Which projects have their repo on disk. Keyed by id rather than a single flag, because
+   * `All projects` mixes cards from several projects into one column and Start is refused per
+   * project, not per column.
+   */
+  readyProjects: Record<string, true>;
   onNewTicket?: () => void;
   /** The card hands over its last failed action so the sheet can show the full message. */
   onOpenTicket: (ticket: Ticket, actionError: string | null) => void;
@@ -43,6 +49,7 @@ export function Column({
   label,
   tickets,
   steerMode,
+  readyProjects,
   onNewTicket,
   onOpenTicket,
   onTicketChanged,
@@ -102,6 +109,7 @@ export function Column({
             key={t.id}
             ticket={t}
             steerMode={steerMode}
+            projectReady={readyProjects[t.projectId] === true}
             onOpen={(actionError) => onOpenTicket(t, actionError)}
             onChanged={onTicketChanged}
           />
