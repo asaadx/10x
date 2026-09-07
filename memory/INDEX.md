@@ -83,8 +83,10 @@ trap, and why a planner's `-plan` suffix is load-bearing rather than decoration.
 
 **[teardown](./teardown.md)** — the trigger/depth matrix, and **the only authority on when a
 worktree is removed**: always an explicit user action, never automatic. Result codes, the
-single-path algorithm, and why cancel is less destructive than it looks.
-`cancel · force · dirty_worktree_requires_force · workspace_not_found · branch deletion · gc.pruneExpire`
+single-path algorithm, why cancel is less destructive than it looks, and **the one row that is a
+gap rather than a policy — project deletion runs no teardown at all, leaving live agents whose
+rows are gone and leftovers the board cannot even report.**
+`cancel · force · dirty_worktree_requires_force · workspace_not_found · branch deletion · gc.pruneExpire · project deleted · no teardown`
 
 **[reconciliation](./reconciliation.md)** — **reconciliation reports; it never deletes**, with
 exactly two carve-outs. The read model, the ticket-worktree invariant, the divergence table, the
@@ -132,8 +134,9 @@ budgets, and what the suite reads outside the HTTP API.
 ### Reference
 
 **[gotchas](./gotchas.md)** — the assorted traps that do not belong to one subsystem, plus known
-gaps **G2–G6** (restart resilience, concurrency, pnpm, attention-aware transition, version pinning).
-`gotchas · gaps · G6 · headless geometry · agent_not_ready`
+gaps **G2–G8** (restart resilience, concurrency, pnpm, attention-aware transition, version pinning,
+**the base branch nothing refreshes**, and **a commitless repo being unticketable**).
+`gotchas · gaps · G6 · G7 · G8 · headless geometry · agent_not_ready · stale base · origin/main · empty repo · ls-remote`
 
 **[verification](./verification.md)** — how to reproduce every claim from scratch, and **how to
 verify a Herdr name against the schema before writing code against it**. The schema proves a name
