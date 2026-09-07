@@ -324,12 +324,25 @@ type PendingAction =
  * thing this must not be. The button inside takes `w-full`, since the actions row stretches its
  * direct children and the wrapper is now the child.
  */
+/**
+ * Undefined and any unrecognised value read as "no reason to block" — the same fail-open
+ * direction the banner takes. A backend that predates `provision_state` sends no such field,
+ * and disabling Plan and Start on every project because a field is missing would break the
+ * board outright. The server refuses a genuine non-ready spawn with 409 either way, so the
+ * cost of being wrong here is a visible error message, not a bad worktree.
+ */
+const SPAWN_BLOCKED: Record<string, (action: string) => string> = {
+  pending: (action) => `10x is still downloading the repo. ${action} becomes available when it finishes.`,
+  cloning: (action) => `10x is still downloading the repo. ${action} becomes available when it finishes.`,
+  failed: (action) =>
+    `This project's repo could not be downloaded, so ${action} cannot run. Retry it from the banner above.`,
+};
+
+const spawnBlocked = (state: ProvisionState | undefined): boolean =>
+  state !== undefined && SPAWN_BLOCKED[state] !== undefined;
+
 function spawnGateReason(state: ProvisionState | undefined, action: string): string | undefined {
-  if (state === "ready") return undefined;
-  if (state === "failed") {
-    return `This project's repo could not be downloaded, so ${action} cannot run. Retry it from the banner above.`;
-  }
-  return `10x is still downloading the repo. ${action} becomes available when it finishes.`;
+  return state === undefined ? undefined : SPAWN_BLOCKED[state]?.(action);
 }
 
 function SpawnGate({
@@ -415,7 +428,7 @@ function RunActions({
             size="sm"
             variant={planned ? "outline" : "default"}
             className="h-7 w-full gap-1 px-2 text-[11px]"
-            disabled={pending !== null || provisionState !== "ready"}
+            disabled={pending !== null || spawnBlocked(provisionState)}
             title="Talks the idea through with a planning agent until it is ready to start."
             onClick={onPlan}
           >
@@ -461,7 +474,7 @@ function RunActions({
           <Button
             size="sm"
             className="h-7 w-full gap-1 px-2 text-[11px]"
-            disabled={pending !== null || provisionState !== "ready"}
+            disabled={pending !== null || spawnBlocked(provisionState)}
             title="Spawns the agent in its own worktree, branch and port block."
             onClick={onStart}
           >

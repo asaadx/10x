@@ -86,6 +86,8 @@ const projectOn = (id: string, remote: { owner: string; repo: string }): Project
   repo: remote.repo,
   repoPath: projectRepoPath(id),
   baseBranch: "main",
+  // Every project in this file is rooted at projectRepoPath(), so 10x owns all of them.
+  ownsClone: true,
   provisionState: "pending",
   provisionError: "",
   createdAt: "2026-01-01T00:00:00.000Z",

@@ -28,8 +28,7 @@ import type { ChecklistItem, Diagnostics } from "./types.ts";
 
 /**
  * Everything a run needs, passed explicitly so this module never touches the store.
- * `repoPath`, `base`, `projectName` and `projectDescription` come from the ticket's project,
- * not the ticket.
+ * `repoPath` and `base` come from the ticket's project, not the ticket.
  */
 export type RunSpec = {
   projectId: string;
@@ -45,9 +44,6 @@ export type RunSpec = {
    * branch (memory/gotchas.md G7); the unprefixed name is what a pull request needs as its base.
    */
   base: string;
-  projectName: string;
-  /** What this project IS, so a ticket need not re-explain its own repo to every agent. */
-  projectDescription: string;
   /** Where THIS 10x server answers, so visual-diff knows where to upload and ticket-api knows where to read/PATCH. */
   apiUrl: string;
 };
@@ -79,25 +75,19 @@ type WorktreeCreated = {
 type WorktreeOpened = { workspace: { workspace_id: string }; worktree: WorktreeInfo };
 
 /**
- * The opening turn: the project, the ticket, and nothing about how to work on either — that is
- * the system prompt's job, and saying it twice would make two places to change. Same shape as
+ * The opening turn: the ticket, and nothing about how to work on it — that is the system
+ * prompt's job, and saying it twice would make two places to change. Same shape as
  * `planner.ts`'s `openingMessage`: the checklists are why the ticket sheet collects them, and
  * an agent that never sees them cannot act on them.
  *
- * The project block leads because it is the context the ticket is written against. Without it
- * every ticket has to describe its own repo in its own description, for every agent, forever.
- * Omitted entirely when the project has no description rather than emitted empty, so a project
- * that never filled it in costs nothing.
+ * The project's own description is deliberately NOT here. It is the user's note about what the
+ * project is, kept for the board; putting it in front of every agent makes an editable field
+ * silently part of every prompt, which is a bigger commitment than a description box implies.
  */
 function openingMessage(spec: RunSpec): string {
   const checked = (item: ChecklistItem) => `- [${item.done ? "x" : " "}] ${item.text}`;
-  const project =
-    spec.projectDescription.trim() === ""
-      ? []
-      : [`PROJECT ${spec.projectName}: ${spec.projectDescription}`, ""];
 
   return [
-    ...project,
     `TICKET ${spec.projectId.toUpperCase()}-${spec.number}: ${spec.title}`,
     "",
     spec.description,

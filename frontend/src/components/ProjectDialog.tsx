@@ -133,6 +133,7 @@ export function ProjectDialog({
   projects,
   editing,
   onSaved,
+  onRequestDelete,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -142,6 +143,11 @@ export function ProjectDialog({
   editing: Project | null;
   /** The created or saved project, so the caller can select it. */
   onSaved: (project: Project) => void;
+  /**
+   * Hands the destructive step back to the caller, which owns `DeleteProjectDialog`. Edit mode
+   * only — there is nothing to delete before a project exists.
+   */
+  onRequestDelete?: () => void;
 }) {
   const isEdit = editing !== null;
 
@@ -165,9 +171,13 @@ export function ProjectDialog({
     setFailure(null);
     slugEdited.current = false;
     if (editing !== null) {
-      setLink(`https://github.com/${editing.owner}/${editing.repo}`);
+      // Only when the identity is actually there. A project whose migration could not resolve a
+      // GitHub remote has empty owner/repo, and a backend that predates those columns sends
+      // neither — interpolating regardless produced `https://github.com/undefined/undefined`,
+      // which reads as a real link to a repo that does not exist.
+      setLink(editing.owner && editing.repo ? `https://github.com/${editing.owner}/${editing.repo}` : "");
       setName(editing.name);
-      setDescription(editing.description);
+      setDescription(editing.description ?? "");
       setSlug(editing.id);
       setBaseBranch(editing.baseBranch);
       setLookup({ phase: "idle" });
@@ -332,7 +342,7 @@ export function ProjectDialog({
           </div>
 
           <div className="grid gap-1.5">
-            <FieldLabel htmlFor="p-desc" hint="goes to every agent on this project">
+            <FieldLabel htmlFor="p-desc" hint="optional">
               Description
             </FieldLabel>
             <textarea
@@ -344,7 +354,7 @@ export function ProjectDialog({
               className="min-h-16 resize-y rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
             />
             <p className="text-[11px] text-muted-foreground">
-              Handed to every agent that works here, so you stop re-explaining the project in each ticket.
+              Your own note about what this project is. Not sent to agents.
             </p>
           </div>
 
@@ -479,9 +489,24 @@ export function ProjectDialog({
 
         <div className="mt-6 flex items-center justify-end gap-2 border-t pt-4">
           {isEdit && (
-            <span className="mr-auto text-[11px] text-muted-foreground">
-              Editable: name, description, main branch.
-            </span>
+            <>
+              {/*
+                Delete lives here rather than in the nav bar, where it used to sit one click from
+                the project picker and the theme toggle. It stops agents, destroys worktrees and
+                unmerged branches and removes the clone, so reaching it should cost a deliberate
+                step. Left-aligned and text-only: present, findable, and not competing with Save.
+              */}
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={pending}
+                onClick={() => onRequestDelete?.()}
+                className="mr-auto text-destructive hover:bg-destructive/10 hover:text-destructive"
+              >
+                <Trash2 aria-hidden className="size-3.5" />
+                Delete project
+              </Button>
+            </>
           )}
           <Button variant="outline" size="lg" disabled={pending} onClick={() => onOpenChange(false)}>
             Cancel
@@ -583,15 +608,28 @@ export function DeleteProjectDialog({
               <span className="font-mono text-xs">~/.herdr/worktrees/{project.id}/</span>
             </span>
           </li>
+          {/*
+            Only claimed when the server will actually do it. `ownsClone` is false for a project
+            that predates this feature, whose folder is wherever the user pointed 10x — often
+            their own working checkout. The delete route refuses to touch it, so promising to
+            delete it here would be a lie about an irreversible act.
+          */}
           <li className="flex gap-2">
             <span aria-hidden className="text-muted-foreground">
               •
             </span>
-            <span>
-              10x's downloaded copy of the repo, deleted from{" "}
-              <span className="font-mono text-xs">{project.repoPath}</span>
-              <span className="ml-1.5 text-xs text-muted-foreground">(re-adding downloads it again)</span>
-            </span>
+            {project.ownsClone ? (
+              <span>
+                10x's downloaded copy of the repo, deleted from{" "}
+                <span className="font-mono text-xs">{project.repoPath}</span>
+                <span className="ml-1.5 text-xs text-muted-foreground">(re-adding downloads it again)</span>
+              </span>
+            ) : (
+              <span className="text-muted-foreground">
+                <span className="font-mono text-xs">{project.repoPath}</span> is <strong>left alone</strong> — 10x
+                did not create that folder, so it is yours to keep or remove.
+              </span>
+            )}
           </li>
           <li className="flex gap-2">
             <span aria-hidden className="text-muted-foreground">
