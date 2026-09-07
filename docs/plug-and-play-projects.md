@@ -301,8 +301,9 @@ or it is not finished.
 **T8. Guards and the agent prompt.**
 `409 project_not_provisioned` on spawn and plan, placed **before** the status claim so a refusal
 never moves a ticket. Project name and description into `RunSpec` and `openingMessage`
-([§2](#2-what-happens-on-its-own)). Delete `originOwnerRepo` and pass `owner`/`repo` to its three
-call sites.
+([§2](#2-what-happens-on-its-own)) — reverted after real use: the description is prose the user
+edits for the board, not a contract with every future agent, so it stays display-only and never
+reaches `RunSpec`. Delete `originOwnerRepo` and pass `owner`/`repo` to its three call sites.
 
 **T9. Project delete becomes total cleanup.**
 The gap in [§5.2](#52-deleting-a-project-ends-the-work-inside-it-): `DELETE /projects/:id` is one
