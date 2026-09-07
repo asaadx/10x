@@ -1,0 +1,1272 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>10x — plug-and-play project setup (prototype)</title>
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource-variable/geist/index.min.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!--
+      Theme tokens copied verbatim from frontend/src/index.css so the prototype's colours,
+      radii and font are the real board's, not an approximation of them.
+    -->
+    <style type="text/tailwindcss">
+      @custom-variant dark (&:where(.dark, .dark *));
+
+      @theme inline {
+        --font-sans: "Geist Variable", sans-serif;
+        --color-ring: var(--ring);
+        --color-input: var(--input);
+        --color-border: var(--border);
+        --color-destructive: var(--destructive);
+        --color-accent-foreground: var(--accent-foreground);
+        --color-accent: var(--accent);
+        --color-muted-foreground: var(--muted-foreground);
+        --color-muted: var(--muted);
+        --color-secondary-foreground: var(--secondary-foreground);
+        --color-secondary: var(--secondary);
+        --color-primary-foreground: var(--primary-foreground);
+        --color-primary: var(--primary);
+        --color-popover-foreground: var(--popover-foreground);
+        --color-popover: var(--popover);
+        --color-card-foreground: var(--card-foreground);
+        --color-card: var(--card);
+        --color-foreground: var(--foreground);
+        --color-background: var(--background);
+        --radius-sm: calc(var(--radius) * 0.6);
+        --radius-md: calc(var(--radius) * 0.8);
+        --radius-lg: var(--radius);
+        --radius-xl: calc(var(--radius) * 1.4);
+      }
+
+      :root {
+        --background: oklch(1 0 0);
+        --foreground: oklch(0.145 0 0);
+        --card: oklch(1 0 0);
+        --card-foreground: oklch(0.145 0 0);
+        --popover: oklch(1 0 0);
+        --popover-foreground: oklch(0.145 0 0);
+        --primary: oklch(0.205 0 0);
+        --primary-foreground: oklch(0.985 0 0);
+        --secondary: oklch(0.97 0 0);
+        --secondary-foreground: oklch(0.205 0 0);
+        --muted: oklch(0.97 0 0);
+        --muted-foreground: oklch(0.556 0 0);
+        --accent: oklch(0.97 0 0);
+        --accent-foreground: oklch(0.205 0 0);
+        --destructive: oklch(0.577 0.245 27.325);
+        --border: oklch(0.922 0 0);
+        --input: oklch(0.922 0 0);
+        --ring: oklch(0.708 0 0);
+        --radius: 0.625rem;
+      }
+
+      .dark {
+        --background: oklch(0.145 0 0);
+        --foreground: oklch(0.985 0 0);
+        --card: oklch(0.205 0 0);
+        --card-foreground: oklch(0.985 0 0);
+        --popover: oklch(0.205 0 0);
+        --popover-foreground: oklch(0.985 0 0);
+        --primary: oklch(0.922 0 0);
+        --primary-foreground: oklch(0.205 0 0);
+        --secondary: oklch(0.269 0 0);
+        --secondary-foreground: oklch(0.985 0 0);
+        --muted: oklch(0.269 0 0);
+        --muted-foreground: oklch(0.708 0 0);
+        --accent: oklch(0.269 0 0);
+        --accent-foreground: oklch(0.985 0 0);
+        --destructive: oklch(0.704 0.191 22.216);
+        --border: oklch(1 0 0 / 10%);
+        --input: oklch(1 0 0 / 15%);
+        --ring: oklch(0.556 0 0);
+      }
+
+      html { font-family: var(--font-sans); }
+      body { background: var(--background); color: var(--foreground); }
+      * { border-color: var(--border); }
+    </style>
+  </head>
+
+  <body class="dark">
+    <div id="root" class="h-screen"></div>
+
+    <script type="text/babel" data-type="module">
+      const { useEffect, useMemo, useRef, useState } = React;
+
+      // ───────────────────────────────────────────────────────────────────────────────────
+      // Icons — inline so the prototype has no icon dependency.
+      // ───────────────────────────────────────────────────────────────────────────────────
+      const Icon = ({ d, className = "size-4", fill = "none" }) => (
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          fill={fill}
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className={className}
+        >
+          {d.map((path, i) => (
+            <path key={i} d={path} />
+          ))}
+        </svg>
+      );
+
+      const I = {
+        plus: ["M5 12h14", "M12 5v14"],
+        search: ["M21 21l-4.35-4.35", "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14"],
+        sortDesc: ["M11 5h10", "M11 9h7", "M11 13h4", "M3 17l3 3 3-3", "M6 6v14"],
+        filter: ["M3 6h18", "M7 12h10", "M10 18h4"],
+        moon: ["M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9"],
+        board: ["M3 3h6v18H3z", "M10.5 3h3v18h-3z", "M15 3h6v18h-6z"],
+        gauge: ["M3 3h8v8H3z", "M13 3h8v5h-8z", "M13 10h8v11h-8z", "M3 13h8v8H3z"],
+        book: ["M4 19.5A2.5 2.5 0 0 1 6.5 17H20", "M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"],
+        terminal: ["M4 17l6-6-6-6", "M12 19h8"],
+        settings: ["M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6", "M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.5-2.6l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 4.6a2 2 0 1 1 4 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 11a2 2 0 1 1 0 4"],
+        trash: ["M3 6h18", "M8 6V4h8v2", "M19 6l-1 14H6L5 6", "M10 11v6", "M14 11v6"],
+        check: ["M20 6L9 17l-5-5"],
+        alert: ["M12 9v4", "M12 17h.01", "M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L14.7 3.9a2 2 0 0 0-3.4 0z"],
+        github: [
+          "M9 19c-5 1.5-5-2.5-7-3m14 6v-3.9a3.4 3.4 0 0 0-.9-2.6c3-.3 6.2-1.5 6.2-6.7A5.2 5.2 0 0 0 19 5.3 4.9 4.9 0 0 0 18.9 1S17.6.6 15 2.4a12.5 12.5 0 0 0-6 0C6.4.6 5.1 1 5.1 1A4.9 4.9 0 0 0 5 5.3 5.2 5.2 0 0 0 3.7 8.8c0 5.2 3.2 6.4 6.2 6.7A3.4 3.4 0 0 0 9 18.1V22",
+        ],
+        x: ["M18 6 6 18", "M6 6l12 12"],
+        arrowRight: ["M5 12h14", "M13 6l6 6-6 6"],
+        git: ["M12 3v6", "M12 15v6", "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6"],
+      };
+
+      const Spinner = ({ className = "size-4" }) => (
+        <svg viewBox="0 0 24 24" className={`animate-spin ${className}`} aria-hidden="true">
+          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
+          <path d="M21 12a9 9 0 0 0-9-9" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+        </svg>
+      );
+
+      // ───────────────────────────────────────────────────────────────────────────────────
+      // Primitives matching the board's shadcn classes.
+      // ───────────────────────────────────────────────────────────────────────────────────
+      const Btn = ({ variant = "outline", className = "", children, ...rest }) => {
+        const base =
+          "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none";
+        const variants = {
+          outline: "border border-input bg-transparent hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:hover:bg-input/50",
+          primary: "bg-primary text-primary-foreground hover:bg-primary/90",
+          ghost: "hover:bg-accent hover:text-accent-foreground",
+          destructive: "bg-destructive text-white hover:bg-destructive/90",
+        };
+        return (
+          <button type="button" className={`${base} ${variants[variant]} ${className}`} {...rest}>
+            {children}
+          </button>
+        );
+      };
+
+      const Field = ({ className = "", invalid = false, ...rest }) => (
+        <input
+          className={`h-9 w-full min-w-0 rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:ring-3 focus-visible:outline-none dark:bg-input/30 ${
+            invalid
+              ? "border-destructive focus-visible:border-destructive focus-visible:ring-destructive/40"
+              : "border-input focus-visible:border-ring focus-visible:ring-ring/50"
+          } ${className}`}
+          {...rest}
+        />
+      );
+
+      const Area = ({ className = "", ...rest }) => (
+        <textarea
+          className={`w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none dark:bg-input/30 ${className}`}
+          {...rest}
+        />
+      );
+
+      const Select = ({ className = "", children, ...rest }) => (
+        <select
+          className={`rounded-md border border-input bg-transparent px-2.5 text-sm shadow-xs transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none dark:bg-input/30 ${className}`}
+          {...rest}
+        >
+          {children}
+        </select>
+      );
+
+      const Label = ({ children, hint }) => (
+        <div className="mb-1.5 flex items-baseline justify-between gap-3">
+          <label className="text-sm font-medium">{children}</label>
+          {hint && <span className="text-[11px] text-muted-foreground">{hint}</span>}
+        </div>
+      );
+
+      const Modal = ({ open, onClose, className = "max-w-lg", children }) => {
+        if (!open) return null;
+        return (
+          <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-6 pt-[8vh]">
+            <div className="fixed inset-0 bg-black/60" onClick={onClose} />
+            <div className={`relative w-full ${className} rounded-xl border bg-background p-6 shadow-2xl`}>
+              <button
+                type="button"
+                aria-label="Close"
+                onClick={onClose}
+                className="absolute top-4 right-4 rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <Icon d={I.x} className="size-4" />
+              </button>
+              {children}
+            </div>
+          </div>
+        );
+      };
+
+      // ───────────────────────────────────────────────────────────────────────────────────
+      // Slug derivation — mirrors PROJECT_SLUG_RE: /^[a-z0-9][a-z0-9-]{0,19}$/
+      // ───────────────────────────────────────────────────────────────────────────────────
+      const SLUG_MAX = 20;
+
+      /**
+       * Truncating mid-word gives `hearth-home-automati`, which reads like a typo and which
+       * you would then fix by hand every single time — so the default has to be good, not
+       * merely fixable. Drop whole trailing words instead: `hearth-home`. Only a name with
+       * no dash left to cut falls back to a hard slice.
+       */
+      function slugify(repoName) {
+        const full = repoName
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+/, "")
+          .replace(/-+$/, "");
+        if (full.length <= SLUG_MAX) return full;
+
+        const words = full.split("-");
+        let kept = words[0];
+        for (const word of words.slice(1)) {
+          if (`${kept}-${word}`.length > SLUG_MAX) break;
+          kept = `${kept}-${word}`;
+        }
+        return kept.length <= SLUG_MAX ? kept : full.slice(0, SLUG_MAX).replace(/-+$/, "");
+      }
+
+      const slugValid = (s) => /^[a-z0-9][a-z0-9-]{0,19}$/.test(s);
+
+      // `https://github.com/owner/repo(.git)` and `git@github.com:owner/repo(.git)` — the
+      // two shapes github.ts's parseRemote already accepts, and nothing else.
+      function parseRemote(input) {
+        const raw = input.trim().replace(/\/+$/, "");
+        if (raw === "") return { kind: "empty" };
+        const https = raw.match(/^(?:https:\/\/)?(?:www\.)?github\.com\/([^/\s]+)\/([^/\s]+?)(?:\.git)?$/i);
+        const ssh = raw.match(/^git@github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?$/i);
+        const m = https ?? ssh;
+        if (m) return { kind: "ok", owner: m[1], repo: m[2] };
+        if (/gitlab|bitbucket|codeberg|git\.sr\.ht/i.test(raw)) return { kind: "other-host" };
+        return { kind: "unparseable" };
+      }
+
+      // A freshly seeded repo really is ~0 MB, and "(0 MB)" reads like a bug rather than a fact.
+      const formatSize = (mb) =>
+        mb <= 0 ? "under 1 MB" : mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
+
+      // ───────────────────────────────────────────────────────────────────────────────────
+      // Fake backend. Latency and outcomes are driven by the prototype strip so every
+      // state is reachable without waiting on a real clone.
+      // ───────────────────────────────────────────────────────────────────────────────────
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      const SEEDED = [
+        {
+          id: "10x-test",
+          name: "10x-test",
+          description: "Throwaway target repo the e2e suite spawns real agents against.",
+          owner: "asaad",
+          repo: "10x-test",
+          baseBranch: "master",
+          provisionState: "ready",
+          cloneSizeMb: 46,
+        },
+        {
+          id: "jarvis",
+          name: "Jarvis",
+          description: "Voice assistant that runs entirely on the home network.",
+          owner: "asaad",
+          repo: "jarvis",
+          baseBranch: "main",
+          provisionState: "ready",
+          cloneSizeMb: 812,
+        },
+        {
+          id: "legacy-billing",
+          name: "Billing (legacy row)",
+          description: "",
+          owner: "",
+          repo: "",
+          baseBranch: "main",
+          provisionState: "failed",
+          provisionError:
+            "No GitHub remote could be read from this project's folder during the upgrade. Re-link it to a repo to use it.",
+          cloneSizeMb: 0,
+        },
+      ];
+
+      const TICKETS = {
+        "10x-test": [
+          { id: "10x-test-4", title: "Give 10x-test its own port block", status: "todo", priority: "high" },
+          { id: "10x-test-3", title: "Reject should keep the agent alive", status: "in_review", priority: "med" },
+        ],
+        jarvis: [
+          { id: "jarvis-9", title: "Wake-word false positives after 10pm", status: "backlog", priority: "low" },
+          { id: "jarvis-8", title: "Stream TTS instead of buffering it", status: "in_progress", priority: "high" },
+          // Accepted, PR opened, not yet merged — the state that must block a project delete.
+          { id: "jarvis-6", title: "Swap the intent parser for the local model", status: "done", priority: "med", prNumber: 41, prState: "open", prUrl: "https://github.com/asaad/jarvis/pull/41" },
+        ],
+      };
+
+      // ───────────────────────────────────────────────────────────────────────────────────
+      // The dialog. Three fields; everything else is derived and shown, never asked for.
+      // ───────────────────────────────────────────────────────────────────────────────────
+      function ProjectDialog({ open, onClose, onCreate, onSave, existingIds, editing, lookupOutcome }) {
+        const isEdit = editing != null;
+
+        const [link, setLink] = useState("");
+        const [name, setName] = useState("");
+        const [description, setDescription] = useState("");
+        const [slug, setSlug] = useState("");
+        const [slugTouched, setSlugTouched] = useState(false);
+        const [baseBranch, setBaseBranch] = useState("main");
+        const [seedCommit, setSeedCommit] = useState(true);
+        const [lookup, setLookup] = useState({ phase: "idle" });
+        const timer = useRef(null);
+
+        useEffect(() => {
+          if (!open) return;
+          if (isEdit) {
+            setLink(`https://github.com/${editing.owner}/${editing.repo}`);
+            setName(editing.name);
+            setDescription(editing.description);
+            setSlug(editing.id);
+            setBaseBranch(editing.baseBranch);
+            setLookup({
+              phase: "resolved",
+              owner: editing.owner,
+              repo: editing.repo,
+              defaultBranch: editing.baseBranch,
+              empty: false,
+              visibility: "private",
+              sizeMb: editing.cloneSizeMb,
+            });
+          } else {
+            setLink("");
+            setName("");
+            setDescription("");
+            setSlug("");
+            setSlugTouched(false);
+            setBaseBranch("main");
+            setSeedCommit(true);
+            setLookup({ phase: "idle" });
+          }
+        }, [open, isEdit, editing]);
+
+        // Debounced "look the repo up on GitHub". This is the admission test: it proves the
+        // URL parses, the repo exists and the token can see it — and hands back the name,
+        // description and default branch so none of them is a field.
+        useEffect(() => {
+          if (!open || isEdit) return;
+          clearTimeout(timer.current);
+          const parsed = parseRemote(link);
+
+          if (parsed.kind === "empty") return setLookup({ phase: "idle" });
+          if (parsed.kind === "other-host")
+            return setLookup({
+              phase: "error",
+              error: "other-host",
+              message:
+                "10x can only take GitHub repos. Finishing a ticket pushes a branch and opens a pull request, so a repo it cannot open a PR against would be a dead end.",
+            });
+          if (parsed.kind === "unparseable")
+            return setLookup({
+              phase: "error",
+              error: "unparseable",
+              message: "That is not a GitHub repo link. Expected something like https://github.com/you/your-repo.",
+            });
+
+          setLookup({ phase: "looking", owner: parsed.owner, repo: parsed.repo });
+          timer.current = setTimeout(async () => {
+            await sleep(320);
+            if (lookupOutcome === "not-found")
+              return setLookup({
+                phase: "error",
+                error: "not-found",
+                message: `No repo at ${parsed.owner}/${parsed.repo}. Check the spelling, or the owner.`,
+              });
+            if (lookupOutcome === "no-access")
+              return setLookup({
+                phase: "error",
+                error: "no-access",
+                message: `${parsed.owner}/${parsed.repo} exists but your GitHub token cannot see it. If it belongs to an org, the token needs access to that org.`,
+              });
+
+            const empty = lookupOutcome === "empty";
+            const resolved = {
+              phase: "resolved",
+              owner: parsed.owner,
+              repo: parsed.repo,
+              defaultBranch: "main",
+              empty,
+              visibility: "private",
+              sizeMb: empty ? 0 : 128,
+              ghName: parsed.repo,
+              ghDescription: empty ? "" : "Everything I keep meaning to automate around the house.",
+            };
+            setLookup(resolved);
+            setBaseBranch(resolved.defaultBranch);
+            setName((n) => (n.trim() === "" ? resolved.ghName : n));
+            setDescription((d) => (d.trim() === "" ? resolved.ghDescription : d));
+            if (!slugTouched) setSlug(slugify(parsed.repo));
+          }, 420);
+
+          return () => clearTimeout(timer.current);
+        }, [link, open, isEdit, lookupOutcome, slugTouched]);
+
+        const slugCollides = !isEdit && existingIds.includes(slug);
+        const slugOk = slugValid(slug) && !slugCollides;
+        // "Shortened" means whole words were dropped, not that the cap was hit exactly.
+        const truncated =
+          lookup.phase === "resolved" && slugify(lookup.repo) !== lookup.repo.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+
+        const canSubmit = isEdit
+          ? name.trim() !== ""
+          : lookup.phase === "resolved" && name.trim() !== "" && slugOk && (!lookup.empty || seedCommit);
+
+        return (
+          <Modal open={open} onClose={onClose} className="max-w-xl">
+            <h2 className="pr-8 text-lg leading-none font-semibold tracking-tight">
+              {isEdit ? `Edit ${editing.name}` : "Add a project"}
+            </h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {isEdit
+                ? "The short name and the repo are fixed — every branch this project has ever created is built from them."
+                : "Paste a GitHub repo. 10x works out the rest and downloads its own copy."}
+            </p>
+
+            <div className="mt-5 space-y-4">
+              {/* ── GitHub link ─────────────────────────────────────────────────────── */}
+              <div>
+                <Label hint={isEdit ? "cannot be changed" : "required"}>GitHub repo</Label>
+                <div className="relative">
+                  <span className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-muted-foreground">
+                    <Icon d={I.github} className="size-3.5" />
+                  </span>
+                  <Field
+                    value={link}
+                    disabled={isEdit}
+                    onChange={(e) => setLink(e.target.value)}
+                    placeholder="https://github.com/you/your-new-repo"
+                    className="pr-9 pl-8 disabled:cursor-not-allowed disabled:opacity-60"
+                    invalid={lookup.phase === "error"}
+                  />
+                  {lookup.phase === "looking" && (
+                    <span className="absolute top-1/2 right-3 -translate-y-1/2 text-muted-foreground">
+                      <Spinner className="size-3.5" />
+                    </span>
+                  )}
+                  {lookup.phase === "resolved" && (
+                    <span className="absolute top-1/2 right-3 -translate-y-1/2 text-emerald-500">
+                      <Icon d={I.check} className="size-4" />
+                    </span>
+                  )}
+                </div>
+
+                {lookup.phase === "error" && (
+                  <p className="mt-2 flex gap-1.5 text-xs text-destructive">
+                    <Icon d={I.alert} className="mt-px size-3.5 shrink-0" />
+                    <span>{lookup.message}</span>
+                  </p>
+                )}
+                {lookup.phase === "looking" && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Checking {lookup.owner}/{lookup.repo} on GitHub…
+                  </p>
+                )}
+              </div>
+
+              {/* ── Name + description ──────────────────────────────────────────────── */}
+              <div>
+                <Label hint="required">Name</Label>
+                <Field value={name} onChange={(e) => setName(e.target.value)} placeholder="What you want to call it" />
+              </div>
+
+              <div>
+                <Label hint="goes to every agent on this project">Description</Label>
+                <Area
+                  rows={2}
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="One or two lines about what this project is."
+                />
+                <p className="mt-1.5 text-[11px] text-muted-foreground">
+                  Handed to every agent that works here, so you stop re-explaining the project in each ticket.
+                </p>
+              </div>
+
+              {/* ── Derived, shown rather than asked for ────────────────────────────── */}
+              {lookup.phase === "resolved" && (
+                <div className="rounded-lg border bg-muted/40 p-3.5">
+                  <div className="mb-3 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                    <Icon d={I.git} className="size-3.5" />
+                    Worked out from the repo
+                  </div>
+
+                  <dl className="grid grid-cols-[9rem_1fr] gap-x-3 gap-y-2 text-xs">
+                    <dt className="text-muted-foreground">Repo</dt>
+                    <dd className="font-mono">
+                      {lookup.owner}/{lookup.repo}
+                      <span className="ml-2 rounded border px-1 py-px font-sans text-[10px] text-muted-foreground">
+                        {lookup.visibility}
+                      </span>
+                    </dd>
+
+                    <dt className="text-muted-foreground">Main branch</dt>
+                    <dd className="font-mono">{baseBranch}</dd>
+
+                    <dt className="text-muted-foreground">10x's copy</dt>
+                    <dd className="truncate font-mono text-muted-foreground">
+                      ~/.10x/repos/{slug || "…"}
+                    </dd>
+                  </dl>
+
+                  <div className="mt-3.5 border-t pt-3.5">
+                    <Label hint="fixed once created">Short name</Label>
+                    <Field
+                      value={slug}
+                      disabled={isEdit}
+                      onChange={(e) => {
+                        setSlugTouched(true);
+                        setSlug(e.target.value);
+                      }}
+                      className="h-8 font-mono text-xs disabled:cursor-not-allowed disabled:opacity-60"
+                      invalid={slug !== "" && !slugOk}
+                    />
+                    <p className="mt-1.5 text-[11px] text-muted-foreground">
+                      Used in every branch and agent name — <span className="font-mono">ticket/{slug || "…"}/1</span>.
+                      It can never be changed afterwards, so it is worth a look now.
+                    </p>
+                    {slug !== "" && !slugValid(slug) && (
+                      <p className="mt-1.5 text-[11px] text-destructive">
+                        Lowercase letters, digits and dashes only, 20 characters max, and it cannot start with a dash.
+                      </p>
+                    )}
+                    {slugCollides && (
+                      <p className="mt-1.5 text-[11px] text-destructive">
+                        You already have a project called <span className="font-mono">{slug}</span>. Pick another.
+                      </p>
+                    )}
+                    {truncated && slugOk && (
+                      <p className="mt-1.5 text-[11px] text-amber-500">
+                        Shortened to fit the 20-character limit. Edit it if that reads badly.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Empty repo: the case a brand-new GitHub repo actually hits ──────── */}
+              {lookup.phase === "resolved" && lookup.empty && (
+                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3.5">
+                  <div className="flex gap-2">
+                    <span className="mt-px text-amber-500">
+                      <Icon d={I.alert} className="size-4" />
+                    </span>
+                    <div className="min-w-0 text-xs">
+                      <p className="font-medium text-amber-500">This repo is empty — it has no commits yet.</p>
+                      <p className="mt-1.5 text-muted-foreground">
+                        Agents branch off <span className="font-mono">{baseBranch}</span>, and on an empty repo that
+                        branch does not exist yet, so the first ticket you started would fail. 10x can make the first
+                        commit for you.
+                      </p>
+                      <label className="mt-2.5 flex cursor-pointer items-start gap-2">
+                        <input
+                          type="checkbox"
+                          checked={seedCommit}
+                          onChange={(e) => setSeedCommit(e.target.checked)}
+                          className="mt-0.5 size-3.5 accent-current"
+                        />
+                        <span>
+                          Create an initial commit on <span className="font-mono">{baseBranch}</span> with a README
+                          from the name and description above.
+                          <span className="mt-1 block text-[11px] text-muted-foreground">
+                            This is the only time 10x writes to the repo itself outside of a ticket.
+                          </span>
+                        </span>
+                      </label>
+                      {!seedCommit && (
+                        <p className="mt-2 text-[11px] text-destructive">
+                          Without a first commit there is nothing to branch from. Either tick this, or push a commit to{" "}
+                          {baseBranch} yourself and come back.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-6 flex items-center justify-end gap-2 border-t pt-4">
+              {isEdit && (
+                <span className="mr-auto text-[11px] text-muted-foreground">
+                  Editable: name, description, main branch.
+                </span>
+              )}
+              <Btn onClick={onClose} className="h-9 px-4">
+                Cancel
+              </Btn>
+              <Btn
+                variant="primary"
+                className="h-9 px-4"
+                disabled={!canSubmit}
+                onClick={() =>
+                  isEdit
+                    ? onSave({ ...editing, name: name.trim(), description: description.trim(), baseBranch })
+                    : onCreate({
+                        id: slug,
+                        name: name.trim(),
+                        description: description.trim(),
+                        owner: lookup.owner,
+                        repo: lookup.repo,
+                        baseBranch,
+                        seedCommit: lookup.empty && seedCommit,
+                        cloneSizeMb: lookup.sizeMb,
+                      })
+                }
+              >
+                {isEdit ? "Save" : "Add project"}
+                {!isEdit && <Icon d={I.arrowRight} className="size-3.5" />}
+              </Btn>
+            </div>
+          </Modal>
+        );
+      }
+
+      // ───────────────────────────────────────────────────────────────────────────────────
+      // Delete. Today's `DELETE /projects/:id` is one SQL statement: agents keep running,
+      // worktrees and branches stay, and the rows that would have reported them are gone, so
+      // the board cannot even list them as unowned. This dialog proposes the opposite — say
+      // what will be destroyed, and destroy it — because "left behind" was never a decision.
+      // ───────────────────────────────────────────────────────────────────────────────────
+      function DeleteDialog({ open, onClose, project, projectTickets, onConfirm }) {
+        if (project == null) return null;
+
+        // Which dials this delete actually turns, per memory/teardown.md's matrix: an agent is
+        // alive from In Progress until it is retired, and Accept deliberately keeps a worktree
+        // and branch, so Done still holds both.
+        const agents = projectTickets.filter((t) => t.status === "in_progress" || t.status === "in_review");
+        const worktrees = projectTickets.filter(
+          (t) => t.status === "in_progress" || t.status === "in_review" || t.status === "done",
+        );
+        // The same guard DELETE /tickets/:id runs: never orphan a PR someone is reviewing.
+        const openPrs = projectTickets.filter((t) => t.prState === "open");
+        const blocked = openPrs.length > 0;
+
+        const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+        return (
+          <Modal open={open} onClose={onClose}>
+            <h2 className="pr-8 text-lg leading-none font-semibold tracking-tight">Delete {project.name}?</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Total cleanup — the project leaves this machine entirely. Nothing is left running or
+              lying around.
+            </p>
+
+            <ul className="mt-4 space-y-1.5 text-sm">
+              <li className="flex gap-2">
+                <span className="text-muted-foreground">•</span>
+                <span>
+                  {plural(projectTickets.length, "ticket")} removed from the board
+                </span>
+              </li>
+              {agents.length > 0 && (
+                <li className="flex gap-2">
+                  <span className="text-muted-foreground">•</span>
+                  <span>
+                    {plural(agents.length, "running agent")} stopped
+                    <span className="ml-1.5 text-xs text-muted-foreground">
+                      ({agents.map((t) => t.id).join(", ")})
+                    </span>
+                  </span>
+                </li>
+              )}
+              {worktrees.length > 0 && (
+                <li className="flex gap-2">
+                  <span className="text-muted-foreground">•</span>
+                  <span>
+                    {plural(worktrees.length, "working copy", "working copies")} and{" "}
+                    {worktrees.length === 1 ? "its unmerged branch" : "their unmerged branches"} deleted
+                  </span>
+                </li>
+              )}
+              <li className="flex gap-2">
+                <span className="text-muted-foreground">•</span>
+                <span>
+                  10x's downloaded copy of the repo deleted
+                  <span className="ml-1.5 text-xs text-muted-foreground">
+                    ({formatSize(project.cloneSizeMb)} — re-adding downloads it again)
+                  </span>
+                </span>
+              </li>
+              <li className="flex gap-2">
+                <span className="text-muted-foreground">•</span>
+                <span className="text-muted-foreground">
+                  Your repo on GitHub is untouched — anything pushed or merged is safe.
+                </span>
+              </li>
+            </ul>
+
+            {blocked && (
+              <div className="mt-4 flex gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-xs">
+                <span className="mt-px text-destructive">
+                  <Icon d={I.alert} className="size-4" />
+                </span>
+                <span>
+                  <span className="font-medium text-destructive">
+                    {plural(openPrs.length, "pull request")} still open.
+                  </span>{" "}
+                  <span className="text-muted-foreground">
+                    Deleting now would throw away the branch someone is reviewing — the same rule that
+                    already guards deleting a single ticket. Merge or close{" "}
+                    {openPrs.map((t, i) => (
+                      <React.Fragment key={t.id}>
+                        {i > 0 && ", "}
+                        {/* Linked, not just named: the fix is on GitHub, so the dialog should take
+                            you there rather than make you go and find it. */}
+                        <a
+                          href={t.prUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-mono text-foreground underline underline-offset-2"
+                        >
+                          #{t.prNumber}
+                        </a>
+                        <span className="text-muted-foreground"> ({t.id})</span>
+                      </React.Fragment>
+                    ))}{" "}
+                    on GitHub first.
+                  </span>
+                </span>
+              </div>
+            )}
+
+            <div className="mt-6 flex justify-end gap-2 border-t pt-4">
+              <Btn onClick={onClose} className="h-9 px-4">
+                Cancel
+              </Btn>
+              <Btn
+                variant="destructive"
+                className="h-9 px-4"
+                disabled={blocked}
+                onClick={() => onConfirm()}
+              >
+                <Icon d={I.trash} className="size-3.5" />
+                Delete project
+              </Btn>
+            </div>
+          </Modal>
+        );
+      }
+
+      // ───────────────────────────────────────────────────────────────────────────────────
+      // Board chrome — classes lifted from NavBar / BoardToolbar / Column so the new
+      // controls are judged in their real surroundings.
+      // ───────────────────────────────────────────────────────────────────────────────────
+      const COLUMNS = [
+        { status: "backlog", label: "Backlog", dot: "bg-neutral-400" },
+        { status: "todo", label: "To Do", dot: "bg-blue-500" },
+        { status: "in_progress", label: "In Progress", dot: "bg-amber-500" },
+        { status: "in_review", label: "In Review", dot: "bg-orange-500" },
+        { status: "done", label: "Done", dot: "bg-emerald-500" },
+      ];
+
+      const ALL_PROJECTS = "all:projects";
+
+      const STATE_SUFFIX = {
+        ready: "",
+        pending: " (queued)",
+        cloning: " (downloading…)",
+        failed: " (needs attention)",
+      };
+
+      function TicketCard({ ticket, project }) {
+        const blocked = project != null && project.provisionState !== "ready";
+        return (
+          <div className="rounded-md border bg-card p-2.5 text-card-foreground shadow-xs">
+            <p className="text-sm leading-snug font-medium">{ticket.title}</p>
+            <div className="mt-2 flex items-center gap-1.5">
+              <span className="rounded border px-1.5 py-px font-mono text-[10px] text-muted-foreground">
+                {ticket.id}
+              </span>
+              <span className="rounded border px-1.5 py-px text-[10px] text-muted-foreground capitalize">
+                {ticket.priority}
+              </span>
+              {ticket.status === "todo" && (
+                <span className="ml-auto" title={blocked ? "Downloading the repo — Start is available once it finishes" : ""}>
+                  <Btn className="h-7 px-2.5 text-xs" disabled={blocked}>
+                    {blocked ? (
+                      <>
+                        <Spinner className="size-3" />
+                        Start
+                      </>
+                    ) : (
+                      "Start"
+                    )}
+                  </Btn>
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      function Column({ column, tickets, project, onNewTicket }) {
+        return (
+          <section className="flex min-w-0 flex-col rounded-md border bg-muted/40">
+            <div className="flex h-10 shrink-0 items-center gap-2.5 border-b px-3">
+              <span aria-hidden className={`size-2 shrink-0 rounded-full ${column.dot}`} />
+              <h2 className="flex min-w-0 items-center gap-2 text-sm font-medium tracking-tight">
+                <span className="truncate">{column.label}</span>{" "}
+                <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-muted px-1.5 text-[11px] font-normal text-muted-foreground tabular-nums">
+                  {tickets.length}
+                </span>
+              </h2>
+            </div>
+
+            <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
+              {tickets.length === 0 && (
+                <p className="px-1 py-6 text-center text-xs text-muted-foreground">nothing here</p>
+              )}
+              {tickets.map((t) => (
+                <TicketCard key={t.id} ticket={t} project={project} />
+              ))}
+            </div>
+
+            {onNewTicket && (
+              <div className="shrink-0 border-t p-2">
+                <Btn
+                  variant="ghost"
+                  className="h-8 w-full justify-center gap-1 text-xs text-muted-foreground"
+                  onClick={onNewTicket}
+                >
+                  <Icon d={I.plus} className="size-3.5" />
+                  New ticket
+                </Btn>
+              </div>
+            )}
+          </section>
+        );
+      }
+
+      function App() {
+        const [projects, setProjects] = useState([]);
+        const [tickets, setTickets] = useState([]);
+        const [projectId, setProjectId] = useState(ALL_PROJECTS);
+        const [dialogOpen, setDialogOpen] = useState(false);
+        const [editing, setEditing] = useState(null);
+        const [deleting, setDeleting] = useState(null);
+        const [lookupOutcome, setLookupOutcome] = useState("empty");
+        const [cloneOutcome, setCloneOutcome] = useState("ok");
+        const [toast, setToast] = useState(null);
+
+        const selected = projects.find((p) => p.id === projectId) ?? null;
+        const visible = tickets.filter((t) => projectId === ALL_PROJECTS || t.projectId === projectId);
+
+        useEffect(() => {
+          if (toast == null) return;
+          const t = setTimeout(() => setToast(null), 4200);
+          return () => clearTimeout(t);
+        }, [toast]);
+
+        // Provisioning: the row lands immediately, the download runs behind it.
+        async function provision(project) {
+          setProjects((ps) => [...ps, { ...project, provisionState: "pending" }]);
+          setProjectId(project.id);
+          setDialogOpen(false);
+
+          const set = (patch) =>
+            setProjects((ps) => ps.map((p) => (p.id === project.id ? { ...p, ...patch } : p)));
+
+          await sleep(700);
+          set({ provisionState: "cloning" });
+          await sleep(3200);
+
+          if (cloneOutcome === "fail") {
+            set({
+              provisionState: "failed",
+              provisionError:
+                "Could not download the repo: the connection dropped partway through. Nothing was left behind — retry when you are ready.",
+            });
+            setToast({ tone: "bad", text: `${project.name} could not be downloaded.` });
+            return;
+          }
+
+          set({ provisionState: "ready" });
+          setToast({
+            tone: "good",
+            text: project.seedCommit
+              ? `${project.name} is ready — first commit pushed to ${project.baseBranch}.`
+              : `${project.name} is ready.`,
+          });
+        }
+
+        function retry(project) {
+          setProjects((ps) =>
+            ps.map((p) => (p.id === project.id ? { ...p, provisionState: "pending", provisionError: undefined } : p)),
+          );
+          provision({ ...project, provisionState: "pending" });
+        }
+
+        function addTicket(status) {
+          if (selected == null) return;
+          const n = tickets.filter((t) => t.projectId === selected.id).length + 1;
+          setTickets((ts) => [
+            {
+              id: `${selected.id}-${n}`,
+              projectId: selected.id,
+              title: "New ticket — write it while the repo downloads",
+              status,
+              priority: "low",
+            },
+            ...ts,
+          ]);
+        }
+
+        function seed() {
+          setProjects(SEEDED);
+          setTickets(
+            Object.entries(TICKETS).flatMap(([projectId, list]) => list.map((t) => ({ ...t, projectId }))),
+          );
+          setProjectId(ALL_PROJECTS);
+        }
+
+        function wipe() {
+          setProjects([]);
+          setTickets([]);
+          setProjectId(ALL_PROJECTS);
+        }
+
+        return (
+          <div className="flex h-full flex-col bg-background text-foreground">
+            {/* ── NavBar ──────────────────────────────────────────────────────────────── */}
+            <header className="shrink-0 border-b">
+              <div className="mx-auto grid h-14 w-full max-w-[1600px] grid-cols-[1fr_auto_1fr] items-center gap-4 px-4">
+                <div />
+
+                <nav className="inline-flex items-center gap-1.5 justify-self-center rounded-full border bg-muted/50 p-1.5">
+                  {[
+                    { label: "Dashboard", icon: I.gauge, active: false },
+                    { label: "Board", icon: I.board, active: true },
+                    { label: "Playbooks", icon: I.book, active: false },
+                  ].map((d) => (
+                    <span
+                      key={d.label}
+                      className={`inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-medium ${
+                        d.active ? "bg-background shadow-xs" : "text-muted-foreground"
+                      }`}
+                    >
+                      <Icon d={d.icon} className="size-3.5" />
+                      {d.label}
+                    </span>
+                  ))}
+                </nav>
+
+                <div className="flex items-center gap-3 justify-self-end">
+                  <button
+                    type="button"
+                    className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-input px-3 text-xs text-muted-foreground hover:bg-accent hover:text-foreground dark:bg-input/30"
+                  >
+                    <Icon d={I.terminal} className="size-3.5" />
+                    Steer <span className="capitalize">local</span>
+                  </button>
+
+                  {/* The picker itself is untouched: still a real <select>, still just a
+                      filter. It only gains state suffixes on the option labels. */}
+                  <Select
+                    aria-label="Project"
+                    value={projectId}
+                    onChange={(e) => setProjectId(e.target.value)}
+                    className="h-9 w-44"
+                  >
+                    <option value={ALL_PROJECTS}>All projects</option>
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                        {STATE_SUFFIX[p.provisionState]}
+                      </option>
+                    ))}
+                  </Select>
+
+                  {/* NEW — a neighbour, not a menu item inside the select. */}
+                  <button
+                    type="button"
+                    aria-label="Add project"
+                    title="Add project"
+                    onClick={() => {
+                      setEditing(null);
+                      setDialogOpen(true);
+                    }}
+                    className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-input bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-foreground dark:bg-input/30 dark:hover:bg-input/50"
+                  >
+                    <Icon d={I.plus} className="size-5" />
+                  </button>
+
+                  {/*
+                    Always present, disabled while the picker is on "All projects". Hiding them
+                    made them undiscoverable: a first-time user sees only `+`, never learns the
+                    controls exist, and concludes a project cannot be edited at all.
+                  */}
+                  <button
+                    type="button"
+                    disabled={selected == null}
+                    aria-label={selected == null ? "Edit project (pick a project first)" : `Edit ${selected.name}`}
+                    title={selected == null ? "Pick a project to edit it" : `Edit ${selected.name}`}
+                    onClick={() => {
+                      setEditing(selected);
+                      setDialogOpen(true);
+                    }}
+                    className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-input bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40 dark:bg-input/30 dark:hover:bg-input/50"
+                  >
+                    <Icon d={I.settings} className="size-4" />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={selected == null}
+                    aria-label={selected == null ? "Delete project (pick a project first)" : `Delete ${selected.name}`}
+                    title={selected == null ? "Pick a project to delete it" : `Delete ${selected.name}`}
+                    onClick={() => setDeleting(selected)}
+                    className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-input bg-transparent text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:pointer-events-none disabled:opacity-40 dark:bg-input/30"
+                  >
+                    <Icon d={I.trash} className="size-4" />
+                  </button>
+
+                  <button
+                    type="button"
+                    aria-label="Switch to light theme"
+                    className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-input bg-transparent text-muted-foreground hover:bg-accent hover:text-foreground dark:bg-input/30"
+                  >
+                    <Icon d={I.moon} className="size-5" />
+                  </button>
+                </div>
+              </div>
+            </header>
+
+            {/* ── BoardToolbar ────────────────────────────────────────────────────────── */}
+            <div className="h-14 shrink-0 border-b">
+              <div className="mx-auto flex h-full w-full max-w-[1600px] items-center gap-3 px-4">
+                <div className="relative max-w-sm min-w-40 flex-1">
+                  <span className="pointer-events-none absolute top-1/2 left-2 -translate-y-1/2 text-muted-foreground">
+                    <Icon d={I.search} className="size-3.5" />
+                  </span>
+                  <Field placeholder="Search title, description or id" className="h-8 pl-7" />
+                </div>
+                <div className="ml-auto flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Sort by</span>
+                  <Select className="h-8 w-28" defaultValue="date">
+                    <option value="date">Date</option>
+                    <option value="priority">Priority</option>
+                  </Select>
+                  <Btn className="h-8 w-8 p-0">
+                    <Icon d={I.sortDesc} className="size-3.5" />
+                  </Btn>
+                  <Btn className="h-8 gap-1.5 px-3 text-xs">
+                    Filters
+                    <Icon d={I.filter} className="size-3.5" />
+                  </Btn>
+                </div>
+              </div>
+            </div>
+
+            {/* ── NEW: provisioning banner, in flow above the columns ─────────────────── */}
+            {selected != null && selected.provisionState === "cloning" && (
+              <div className="mx-auto w-full max-w-[1600px] shrink-0 px-3 pt-3">
+                <div className="flex items-center gap-2.5 rounded-md border bg-muted/40 px-3 py-2 text-xs">
+                  <Spinner className="size-3.5 text-blue-500" />
+                  <span>
+                    Downloading <span className="font-mono">{selected.owner}/{selected.repo}</span> — you can write
+                    tickets now; Start becomes available when it finishes.
+                  </span>
+                </div>
+              </div>
+            )}
+            {selected != null && selected.provisionState === "pending" && (
+              <div className="mx-auto w-full max-w-[1600px] shrink-0 px-3 pt-3">
+                <div className="flex items-center gap-2.5 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                  <Spinner className="size-3.5" />
+                  Queued — starting the download.
+                </div>
+              </div>
+            )}
+            {selected != null && selected.provisionState === "failed" && (
+              <div className="mx-auto w-full max-w-[1600px] shrink-0 px-3 pt-3">
+                <div className="flex items-start gap-2.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs">
+                  <span className="mt-px text-destructive">
+                    <Icon d={I.alert} className="size-3.5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="font-medium text-destructive">{selected.name} is not usable yet.</span>{" "}
+                    <span className="text-muted-foreground">{selected.provisionError}</span>
+                  </span>
+                  <Btn className="h-6 shrink-0 px-2 text-[11px]" onClick={() => retry(selected)}>
+                    Retry
+                  </Btn>
+                  <Btn
+                    className="h-6 shrink-0 px-2 text-[11px]"
+                    onClick={() => {
+                      setEditing(selected);
+                      setDialogOpen(true);
+                    }}
+                  >
+                    Re-link
+                  </Btn>
+                </div>
+              </div>
+            )}
+
+            {/* ── Board ───────────────────────────────────────────────────────────────── */}
+            {projects.length === 0 ? (
+              // NEW: a first run that is not four empty columns and no way forward.
+              <main className="flex flex-1 items-center justify-center p-8">
+                <div className="max-w-md text-center">
+                  <div className="mx-auto mb-4 inline-flex size-11 items-center justify-center rounded-xl border bg-muted/40 text-muted-foreground">
+                    <Icon d={I.github} className="size-5" />
+                  </div>
+                  <h2 className="text-base font-semibold tracking-tight">Add your first project</h2>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Paste a GitHub repo and 10x downloads its own copy, works out the main branch, and is ready for
+                    tickets. Nothing to clone or configure by hand.
+                  </p>
+                  <Btn
+                    variant="primary"
+                    className="mt-5 h-9 px-4"
+                    onClick={() => {
+                      setEditing(null);
+                      setDialogOpen(true);
+                    }}
+                  >
+                    <Icon d={I.plus} className="size-4" />
+                    Add a project
+                  </Btn>
+                </div>
+              </main>
+            ) : (
+              <main className="mx-auto grid min-h-0 w-full max-w-[1600px] flex-1 grid-cols-5 grid-rows-[minmax(0,1fr)] gap-3 p-3">
+                {COLUMNS.map((column) => (
+                  <Column
+                    key={column.status}
+                    column={column}
+                    project={selected}
+                    tickets={visible.filter((t) => t.status === column.status)}
+                    onNewTicket={
+                      (column.status === "backlog" || column.status === "todo") && selected != null
+                        ? () => addTicket(column.status)
+                        : undefined
+                    }
+                  />
+                ))}
+              </main>
+            )}
+
+            {toast != null && (
+              <div className="pointer-events-none fixed bottom-20 left-1/2 z-40 -translate-x-1/2">
+                <div
+                  className={`flex items-center gap-2 rounded-lg border px-3.5 py-2 text-xs shadow-lg ${
+                    toast.tone === "good" ? "bg-background" : "border-destructive/40 bg-destructive/10"
+                  }`}
+                >
+                  <span className={toast.tone === "good" ? "text-emerald-500" : "text-destructive"}>
+                    <Icon d={toast.tone === "good" ? I.check : I.alert} className="size-3.5" />
+                  </span>
+                  {toast.text}
+                </div>
+              </div>
+            )}
+
+            <ProjectDialog
+              open={dialogOpen}
+              editing={editing}
+              existingIds={projects.map((p) => p.id)}
+              lookupOutcome={lookupOutcome}
+              onClose={() => setDialogOpen(false)}
+              onCreate={provision}
+              onSave={(next) => {
+                setProjects((ps) => ps.map((p) => (p.id === next.id ? next : p)));
+                setDialogOpen(false);
+                setToast({ tone: "good", text: `${next.name} updated.` });
+              }}
+            />
+
+            <DeleteDialog
+              open={deleting != null}
+              project={deleting}
+              projectTickets={tickets.filter((t) => deleting != null && t.projectId === deleting.id)}
+              onClose={() => setDeleting(null)}
+              onConfirm={() => {
+                const gone = deleting;
+                setProjects((ps) => ps.filter((p) => p.id !== gone.id));
+                setTickets((ts) => ts.filter((t) => t.projectId !== gone.id));
+                setProjectId(ALL_PROJECTS);
+                setDeleting(null);
+                setToast({
+                  tone: "good",
+                  text: `${gone.name} deleted — agents stopped, working copies and the ${formatSize(gone.cloneSizeMb)} download removed.`,
+                });
+              }}
+            />
+
+            {/* ── Prototype-only strip. Not part of the design. ───────────────────────── */}
+            <div className="shrink-0 border-t bg-muted/50">
+              <div className="mx-auto flex w-full max-w-[1600px] flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5 text-[11px]">
+                <span className="font-medium tracking-wide text-muted-foreground uppercase">Prototype controls</span>
+
+                <label className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">GitHub lookup returns</span>
+                  <Select
+                    className="h-7"
+                    value={lookupOutcome}
+                    onChange={(e) => setLookupOutcome(e.target.value)}
+                  >
+                    <option value="empty">an empty repo (your test path)</option>
+                    <option value="ok">a repo with commits</option>
+                    <option value="not-found">not found</option>
+                    <option value="no-access">no access</option>
+                  </Select>
+                </label>
+
+                <label className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">Download</span>
+                  <Select className="h-7" value={cloneOutcome} onChange={(e) => setCloneOutcome(e.target.value)}>
+                    <option value="ok">succeeds</option>
+                    <option value="fail">fails</option>
+                  </Select>
+                </label>
+
+                <div className="ml-auto flex items-center gap-2">
+                  <Btn className="h-7 px-2" onClick={seed}>
+                    Seed 3 projects
+                  </Btn>
+                  <Btn className="h-7 px-2" onClick={wipe}>
+                    First run (no projects)
+                  </Btn>
+                  <Btn
+                    className="h-7 px-2"
+                    onClick={() => document.body.classList.toggle("dark")}
+                  >
+                    Toggle theme
+                  </Btn>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    </script>
+  </body>
+</html>
