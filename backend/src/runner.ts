@@ -20,11 +20,11 @@ import {
 } from "./agent-boot.ts";
 import { excludeFromGit } from "./git.ts";
 import { HerdrError, request, subscribe } from "./herdr.ts";
-import { agentNameFor, branchFor, normalizeEvent } from "./lifecycle.ts";
+import { agentNameFor, branchFor, liveAgentNameFor, normalizeEvent } from "./lifecycle.ts";
 import { ENV_FILE, envFileFor, type PortBlock } from "./ports.ts";
 import { loadPrompt } from "./prompts.ts";
 import { provisionSkill } from "./skills.ts";
-import type { ChecklistItem, Diagnostics } from "./types.ts";
+import type { ChecklistItem, Diagnostics, Status } from "./types.ts";
 
 /**
  * Everything a run needs, passed explicitly so this module never touches the store.
@@ -46,6 +46,16 @@ export type RunSpec = {
   base: string;
   /** Where THIS 10x server answers, so visual-diff knows where to upload and ticket-api knows where to read/PATCH. */
   apiUrl: string;
+  /**
+   * The ticket's CURRENT status, so `teardown`/`retireAgent` can resolve the agent that is
+   * actually live — the planner in backlog, the implementation agent otherwise — the same
+   * status-aware lookup `liveAgentNameFor` gives the board (memory/naming.md). `spawn` never
+   * reads this: it always creates the bare implementation name, because it only ever runs
+   * from `todo`.
+   */
+  status: Status;
+  /** The persisted agent name override, if any (db.ts rule 1); `liveAgentNameFor`'s last resort. */
+  agentName: string | null;
 };
 
 /** Mutable per-run state the caller owns and persists. */
@@ -349,8 +359,35 @@ export async function teardown(spec: RunSpec, state: RunState, deleteBranch: boo
   state.stream?.close();
   state.stream = undefined;
 
+  const name = liveAgentNameFor(spec.status, spec.projectId, spec.number, spec.agentName);
+
+  // A backlog ticket has, at most, a PLANNER: `/spawn` claims from `todo`, so nothing in
+  // `backlog` ever gets a worktree, a branch or a port block (planner.ts). Its only Herdr
+  // fingerprint is the bare `workspace.create` the planner made in the main checkout, so
+  // closing that workspace IS teardown here — there is nothing on disk to remove, and running
+  // the worktree path below would only ask about a branch that was never created.
+  if (spec.status === "backlog") {
+    let sessionDir = state.sessionDir;
+    try {
+      const live = await request<AgentEnvelope>("agent.get", { target: name });
+      const value = live.agent?.agent_session?.value;
+      if (value) sessionDir = dirname(value);
+      const workspaceId = live.agent?.workspace_id;
+      if (workspaceId) await request("workspace.close", { workspace_id: workspaceId });
+    } catch (err) {
+      // `agent_not_found` is the common case — most backlog tickets never had Plan clicked —
+      // and unambiguously means there is nothing to contact, so it is not worth a warning.
+      if (!(err instanceof HerdrError) || err.code !== "agent_not_found") throw err;
+    }
+
+    if (sessionDir) {
+      await rm(sessionDir, { recursive: true, force: true });
+      state.sessionDir = null;
+    }
+    return;
+  }
+
   const branch = branchFor(spec.projectId, spec.number);
-  const name = agentNameFor(spec.projectId, spec.number);
 
   // Resolve the session directory BEFORE killing the pane, while the agent can still
   // be asked. `state.sessionDir` is a fallback for when the agent is already gone
@@ -414,7 +451,7 @@ export async function retireAgent(spec: RunSpec, state: RunState): Promise<void>
   state.stream?.close();
   state.stream = undefined;
 
-  const name = agentNameFor(spec.projectId, spec.number);
+  const name = liveAgentNameFor(spec.status, spec.projectId, spec.number, spec.agentName);
 
   // Resolve the session directory AND the pane id BEFORE closing the pane, while the agent
   // can still be asked — exactly teardown's ordering, for exactly its reason: once the pane
