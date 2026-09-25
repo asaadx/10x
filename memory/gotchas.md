@@ -174,6 +174,29 @@ Recorded so nobody assumes these are proven.
   whose raw-socket behaviour looks wrong: the CLI adds orchestration the socket method does not
   perform ([spawn](./spawn.md)).
 
+- **G9 — `sweepPlanWorkspaces` at boot is not scoped to the ticket DB it is given (verified,
+  the hard way).** Booting `server.ts` against a **fresh, empty ticket database** while
+  `HERDR_SOCKET_PATH` still points at the **real, shared Herdr socket** closed a live plan
+  workspace belonging to a ticket that only existed in the real database — logged plainly
+  (`plan sweep closed <ticket>-plan: no ticket owns this label`), by design
+  ([reconciliation](./reconciliation.md), the plan-workspace sweep section): the
+  sweep's "no ticket owns this label" check reads `listTickets()` from whichever DB it was given,
+  then closes any Herdr workspace labelled as a planner that this (possibly unrelated) list does
+  not recognise. An empty or partial ticket DB therefore reads every real planner on the host as
+  orphaned. `e2e/fixtures.ts`'s `startBoard()` has exactly this shape — throwaway `STATE_DIR` and
+  `DB_PATH`, real `HERDR_SOCKET_PATH` — so **any** e2e run, not just a manual one, can close
+  another ticket's live plan conversation if one happens to be open at that moment. Closing a
+  plan workspace destroys no worktree, branch or commit, but it does end a live conversation
+  with no warning to whoever was in it.
+
+  **The only fully safe way to boot this server against throwaway state on a host with other
+  live tickets:** also point `HERDR_SOCKET_PATH` at a socket that does not exist. Every Herdr
+  call then fails fast and every reconciliation step degrades to a logged warning instead of a
+  mutation — the same technique [testing](./testing.md) already documents for proving reads
+  survive Herdr being absent. Do **not** boot this server with a throwaway ticket DB against the
+  real socket "just to check a static route" or similar — verify HTTP-surface-only changes that
+  way instead.
+
 **G7 and G8 are closed.** Both were real, both are fixed, and the mechanisms they turned on are
 now how the product works — so they live here as truth rather than as warnings.
 

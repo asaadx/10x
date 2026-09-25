@@ -210,3 +210,23 @@ test("serves the frontend's assets, and refuses everything else", async ({ reque
   expect(posted.status()).toBe(404);
   expect(posted.headers()["content-type"]).toContain("application/json");
 });
+
+/**
+ * `/board`, `/dashboard`, `/playbooks` and `/list` are client-side routes React Router owns
+ * (`frontend/src/App.tsx`); the backend has no handler for any of them and no file on disk
+ * named after them. A hard refresh or a direct load must still get the app shell, not a 404,
+ * or production breaks the moment someone bookmarks or reloads anything but `/`.
+ */
+test("serves the app shell for the client-side routes, and still refuses an unknown one", async ({ request }) => {
+  for (const path of ["/board", "/dashboard", "/playbooks", "/list"]) {
+    const res = await request.get(`${board.baseUrl}${path}`);
+    expect(res.status(), path).toBe(200);
+    expect(res.headers()["content-type"], path).toContain("text/html");
+  }
+
+  // Narrow allow-list, not "any GET with no file extension" — an unrecognised extensionless
+  // path must keep 404ing as JSON, the same as `/js` in the static-asset test above.
+  const unknown = await request.get(`${board.baseUrl}/not-a-real-route`);
+  expect(unknown.status()).toBe(404);
+  expect(unknown.headers()["content-type"]).toContain("application/json");
+});

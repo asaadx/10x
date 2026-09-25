@@ -134,9 +134,11 @@ budgets, and what the suite reads outside the HTTP API.
 ### Reference
 
 **[gotchas](./gotchas.md)** — the assorted traps that do not belong to one subsystem, plus known
-gaps **G2–G8** (restart resilience, concurrency, pnpm, attention-aware transition, version pinning,
-**the base branch nothing refreshes**, and **a commitless repo being unticketable**).
-`gotchas · gaps · G6 · G7 · G8 · headless geometry · agent_not_ready · stale base · origin/main · empty repo · ls-remote`
+gaps **G2–G9** (restart resilience, concurrency, pnpm, attention-aware transition, version pinning,
+**the base branch nothing refreshes**, **a commitless repo being unticketable**, and **a plan
+sweep that closes another ticket's live conversation when booted against a throwaway DB and the
+real Herdr socket**).
+`gotchas · gaps · G6 · G7 · G8 · G9 · sweepPlanWorkspaces · headless geometry · agent_not_ready · stale base · origin/main · empty repo · ls-remote`
 
 **[verification](./verification.md)** — how to reproduce every claim from scratch, and **how to
 verify a Herdr name against the schema before writing code against it**. The schema proves a name

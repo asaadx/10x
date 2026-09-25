@@ -113,6 +113,18 @@ const CONTENT_TYPES: Record<string, string> = {
 };
 
 /**
+ * The client-side routes React Router owns (`frontend/src/App.tsx`'s `<Routes>`). A hard
+ * refresh or a direct load of one of these hits the backend with no matching API route and
+ * no file on disk, so the fallback below serves the app shell exactly as `/` already does —
+ * the router then reads the URL client-side and renders the right page.
+ *
+ * A named allow-list, not "any GET with no file extension": the same reasoning as
+ * `CONTENT_TYPES` above. `/js` (a directory, no extension) must keep 404ing rather than
+ * silently becoming the app shell.
+ */
+const SPA_ROUTES: Record<string, true> = { "/board": true, "/dashboard": true, "/playbooks": true, "/list": true };
+
+/**
  * Per-run state: diagnostics and the live event-subscription handle. Not persisted, so a
  * restart forgets them — which is why `spawn` can re-attach to an agent that is still
  * running (memory/teardown.md re-dispatch).
@@ -1352,6 +1364,14 @@ createServer(async (req, res) => {
         res.writeHead(200, { "content-type": asset.type });
         res.end(await readFile(asset.file));
         return;
+      }
+      if (SPA_ROUTES[bare]) {
+        const shell = await resolvePublicAsset("/");
+        if (shell) {
+          res.writeHead(200, { "content-type": shell.type });
+          res.end(await readFile(shell.file));
+          return;
+        }
       }
     }
 

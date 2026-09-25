@@ -288,7 +288,7 @@ ahead of it), plus two static-file handlers: `/screenshots/<file>` and everythin
 | 18 | POST | `/webhooks/github` | `{ok:true, matched}` when a ticket owns that `pr_url`, `{ok:true, ignored:true}` for anything that is not a `pull_request` payload. **Always 2xx**, unauthenticated by decision ([github](./github.md)) |
 | 19 | POST | `/tickets/:id/screenshots/:side` | raw PNG bytes in (`side` is `before` \| `after`), `{ok, path}` out; `404 no_such_ticket`, `400 empty_body`. Resolved ahead of `handle()` — see above |
 | — | GET | `/screenshots/<file>` | the PNG `saveScreenshot` wrote, realpath-contained the same way as the static route below |
-| — | GET | `/`, `/index.html`, `/styles.css`, `/js/*.js` | the board's static assets |
+| — | GET | `/`, `/index.html`, `/styles.css`, `/js/*.js`, or any of `SPA_ROUTES` | the board's static assets, or the app shell for a client-side route |
 
 **Naming and shape decisions.** The spawn endpoint is canonically **`/spawn`**; earlier drafts called it `/start`, `spawn` is the name, it is the only spelling in the code, and `/start` must not be reintroduced. `spawn`, `cancel`, `accept` and `reject` are **separate endpoints** because each is an irreversible act with its own side effects. `/status` is the one endpoint that takes a target state, and it is safe precisely because it refuses every move those four own: one verb per irreversible act, so a destructive path still cannot be reached by passing a different string.
 
@@ -323,6 +323,14 @@ JSON 404; and a 404 under an API prefix keeps the API's own envelope.)*
 `resolveScreenshotAsset` runs first and is checked the same way: realpath containment against
 `SCREENSHOTS_DIR` rather than `PUBLIC_DIR`, and narrowed to the one extension
 `screenshots.ts` ever writes (`.png`) rather than the frontend's allow-list.
+
+**The SPA fallback.** `SPA_ROUTES` (`server.ts`) is a fixed allow-list — `/board`, `/dashboard`,
+`/playbooks`, `/list` — matched only after both the API router and `resolvePublicAsset` have
+declined. A hard refresh or a direct load of one of these has no file on disk and no API route,
+so the server answers with `index.html` at 200 exactly as `/` already does, and React Router
+reads the URL client-side. A named list, not "any GET with no extension": `/js` (a directory,
+no extension) must keep 404ing, which is exactly what pinned it as an allow-list rather than a
+guess in the first place.
 
 ## 7. Request lifecycle for a spawn
 
