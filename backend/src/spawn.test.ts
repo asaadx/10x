@@ -227,6 +227,8 @@ const runSpec = (over: Partial<RunSpec> = {}): RunSpec => ({
   repoPath: worktree,
   base: "main",
   apiUrl: "http://localhost:4010",
+  status: "in_progress",
+  agentName: null,
   ...over,
 });
 
