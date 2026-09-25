@@ -23,6 +23,7 @@ import { HerdrError, request, subscribe } from "./herdr.ts";
 import { agentNameFor, branchFor, normalizeEvent } from "./lifecycle.ts";
 import { ENV_FILE, envFileFor, type PortBlock } from "./ports.ts";
 import { loadPrompt } from "./prompts.ts";
+import { listWorktrees } from "./reconcile.ts";
 import { provisionSkill } from "./skills.ts";
 import type { ChecklistItem, Diagnostics } from "./types.ts";
 
@@ -339,6 +340,20 @@ export async function spawn(
 }
 
 /**
+ * The Herdr workspace id backing THIS ticket's own worktree, resolved by (repoPath, branch)
+ * rather than by the ticket's agent name. A Herdr agent name is unique only within the WHOLE
+ * Herdr session, never per 10x backend instance (memory/naming.md): a second backend process
+ * sharing the same Herdr daemon can legitimately compute this exact name for an unrelated ticket
+ * of its own, and `agent.get` would hand back that ticket's live pane with no error at all
+ * (memory/reconciliation.md). `listWorktrees` degrades to `[]` on any Herdr trouble rather than
+ * throwing, so on a hiccup this reads as "cannot confirm ownership" — abstain, don't guess.
+ */
+async function ownWorkspaceId(repoPath: string, branch: string): Promise<string | undefined> {
+  const worktrees = await listWorktrees(repoPath);
+  return worktrees.find((w) => w.branch === branch)?.open_workspace_id ?? undefined;
+}
+
+/**
  * Teardown. One path, resolved by branch, so it works whether the workspace is
  * open, was closed behind our back, or is already gone (memory/teardown.md).
  *
@@ -352,6 +367,12 @@ export async function teardown(spec: RunSpec, state: RunState, deleteBranch: boo
   const branch = branchFor(spec.projectId, spec.number);
   const name = agentNameFor(spec.projectId, spec.number);
 
+  // A Herdr agent name collides across backend instances sharing a Herdr daemon
+  // (memory/naming.md), so resolve THIS ticket's own workspace by (repoPath, branch) — the
+  // pair a collision cannot forge — before trusting anything `agent.get` hands back under
+  // `name`.
+  const ownWorkspace = await ownWorkspaceId(spec.repoPath, branch);
+
   // Resolve the session directory BEFORE killing the pane, while the agent can still
   // be asked. `state.sessionDir` is a fallback for when the agent is already gone
   // (crash, Herdr restart, backend restart). Never derive the path — the slug is a
@@ -359,8 +380,17 @@ export async function teardown(spec: RunSpec, state: RunState, deleteBranch: boo
   let sessionDir = state.sessionDir;
   try {
     const live = await request<AgentEnvelope>("agent.get", { target: name });
-    const value = live.agent?.agent_session?.value;
-    if (value) sessionDir = dirname(value);
+    if (ownWorkspace !== undefined && live.agent?.workspace_id === ownWorkspace) {
+      const value = live.agent?.agent_session?.value;
+      if (value) sessionDir = dirname(value);
+    } else if (live.agent !== undefined) {
+      console.warn(
+        `[${name}] agent.get resolved to workspace ${live.agent.workspace_id ?? "unknown"}, but ` +
+          `this ticket's own worktree is workspace ${ownWorkspace ?? "none"} — leaving its ` +
+          "session directory alone; likely a Herdr agent-name collision with another 10x " +
+          "backend instance (memory/reconciliation.md)",
+      );
+    }
   } catch (err) {
     if (!sessionDir) {
       console.warn(
@@ -414,7 +444,15 @@ export async function retireAgent(spec: RunSpec, state: RunState): Promise<void>
   state.stream?.close();
   state.stream = undefined;
 
+  const branch = branchFor(spec.projectId, spec.number);
   const name = agentNameFor(spec.projectId, spec.number);
+
+  // A Herdr agent name collides across backend instances sharing a Herdr daemon
+  // (memory/naming.md): a second backend process can legitimately compute this exact name for
+  // an unrelated ticket of its own, and `agent.get` would hand back that ticket's live pane
+  // with no error at all. Resolve THIS ticket's own workspace by (repoPath, branch) — the pair
+  // a collision cannot forge — before trusting anything `agent.get` hands back under `name`.
+  const ownWorkspace = await ownWorkspaceId(spec.repoPath, branch);
 
   // Resolve the session directory AND the pane id BEFORE closing the pane, while the agent
   // can still be asked — exactly teardown's ordering, for exactly its reason: once the pane
@@ -424,9 +462,18 @@ export async function retireAgent(spec: RunSpec, state: RunState): Promise<void>
   let paneId: string | undefined;
   try {
     const live = await request<AgentEnvelope>("agent.get", { target: name });
-    const value = live.agent?.agent_session?.value;
-    if (value) sessionDir = dirname(value);
-    paneId = live.agent?.pane_id;
+    if (ownWorkspace !== undefined && live.agent?.workspace_id === ownWorkspace) {
+      const value = live.agent?.agent_session?.value;
+      if (value) sessionDir = dirname(value);
+      paneId = live.agent?.pane_id;
+    } else if (live.agent !== undefined) {
+      console.warn(
+        `[${name}] agent.get resolved to workspace ${live.agent.workspace_id ?? "unknown"}, but ` +
+          `this ticket's own worktree is workspace ${ownWorkspace ?? "none"} — refusing to ` +
+          "close a pane that is not this ticket's own; likely a Herdr agent-name collision " +
+          "with another 10x backend instance (memory/reconciliation.md)",
+      );
+    }
   } catch (err) {
     // Agent already gone (crash, hand-closed tab, prior retire) — nothing left to close.
     if (!sessionDir) {
