@@ -93,6 +93,20 @@ fixtures *(verified)*.
   half-working handler in a component *(verified: the file's own header states this)*.
   One write still bypasses the seam: a bare `fetch("/tickets/:id/focus", {method: "POST"})` in
   `TicketCard.tsx`'s `SteerButton` *(verified)*. `docs/wiring-checklist.md` tracks what is left.
+  **`VITE_MOCK_MODE` covers reads and project CRUD only — every ticket-mutating write is real,
+  always** *(verified)*. `getBoard`/`getProjects` and `createProject`/`updateProject`/
+  `deleteProject`/`provisionProject`/`lookupRepo` all branch on `MOCK_MODE` before touching the
+  network. `createTicket`, `moveTicket`, `updateTicket`, `spawnAgent`, `acceptTicket`,
+  `cancelTicket`, `deleteTicket`, `archiveTicket`, `deleteWorktree` and `rejectTicket` do not —
+  they call `request()` unconditionally. The dev proxy also always points at
+  `http://127.0.0.1:4010` regardless of mock mode, and that port is 10x's own live board, not a
+  disposable target — a project ticket's own worktree gets its dev server from `.env`'s
+  `PORT_RANGE_START..END`, never 4010. Clicking Add/Save/Delete/Accept/Reject/Cancel-run while
+  "smoke-testing in mock mode" therefore mutates the **real** board over that proxy; this created
+  a stray real ticket during 10x-30's own smoke test, cleaned up with `DELETE /tickets/<id>`
+  directly against 4010. Mock-mode UI testing of a ticket-mutating button needs either a
+  throwaway backend on that port or verification some other way (unit test, code review, or a
+  single real click immediately reverted).
 - `lib/use-board.ts` owns the only timer: `POLL_MS = 1000`, `setInterval`, both GETs in one
   `Promise.all`. An in-flight tick is **skipped, not queued** — `GET /tickets` does real Herdr work
   per call (an `agent.list` plus a `worktree.list` per repo), so overlapping polls multiply load for

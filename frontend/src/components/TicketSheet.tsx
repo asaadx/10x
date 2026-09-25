@@ -1,5 +1,5 @@
 import { ChevronLeftIcon, ChevronRightIcon, ImageIcon, Trash2, Upload } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { DeleteTicketDialog } from "@/components/DeleteTicketDialog.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -9,7 +9,6 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select.
 import { Separator } from "@/components/ui/separator.tsx";
 import {
   Sheet,
-  SheetClose,
   SheetContent,
   SheetDescription,
   SheetFooter,
@@ -20,6 +19,7 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog.tsx";
 import { Spinner } from "@/components/ui/spinner.tsx";
 import { createTicket, moveTicket, updateTicket } from "@/lib/api.ts";
 import { runFailed } from "@/lib/board.ts";
+import { clearNewTicketDraft, readNewTicketDraft, writeNewTicketDraft } from "@/lib/new-ticket-draft.ts";
 import { cn } from "@/lib/utils.ts";
 import {
   PLAYBOOKS,
@@ -409,6 +409,77 @@ export function TicketSheet({
   // `ScreenshotPane` so Before and After share one dialog instead of each mounting its own —
   // see `ScreenshotLightbox`'s own comment for why that matters.
   const [lightboxSide, setLightboxSide] = useState<ScreenshotSide | null>(null);
+  // True whenever this create-mode session was seeded from a stored draft, so the "Restored
+  // unsaved draft" note can stay up for as long as this open/close session lasts (`App.tsx`
+  // keys the composer "new" for every creation attempt, so a Cancel- or Escape-driven close
+  // does not remount it) — set for real by the seeding effect below, on every open, not just
+  // the first.
+  const [restoredDraft, setRestoredDraft] = useState(false);
+  // Refs, not state: neither is meant to trigger a render, and a scheduled re-render landing a
+  // new value in either is exactly the bug they exist to prevent (see the two effects below).
+  const wasOpenRef = useRef(false);
+  const skipNextDraftSyncRef = useRef(false);
+
+  // Re-seeds the composer from this scope's stored draft on every open — including a reopen
+  // with no remount, since the composer's `key` is the constant "new" (see the comment on
+  // `close` below), so Escape/backdrop-dismiss-then-reopen is the SAME instance, not a fresh
+  // mount. Gated on the open:false -> true edge via `wasOpenRef` rather than firing whenever
+  // `defaultProjectId`/`projects` merely change while already open — the board polls every
+  // second, and re-seeding mid-type would fight typing.
+  useEffect(() => {
+    const justOpened = open && !wasOpenRef.current;
+    wasOpenRef.current = open;
+    if (!creating || !justOpened) return;
+    // The sync effect below must not immediately persist this seeded (or, with no stored
+    // draft, still-default) snapshot back — that write belongs to a real subsequent change.
+    skipNextDraftSyncRef.current = true;
+    const stored = readNewTicketDraft(defaultProjectId);
+    setRestoredDraft(stored !== null);
+    if (stored === null) return;
+    // A draft's project can have been deleted since it was written; fall back to today's
+    // default rather than seeding the `<select>` with a value that names no option.
+    setProjectId(projects.some((p) => p.id === stored.projectId) ? stored.projectId : defaultProjectId);
+    setPlaybook(stored.playbook);
+    setPriority(stored.priority);
+    setTitle(stored.title);
+    setDescription(stored.description);
+    setTaskBreakdown(normalizeChecklistRows(stored.taskBreakdown));
+    setAcceptanceCriteria(normalizeChecklistRows(stored.acceptanceCriteria));
+  }, [open, creating, defaultProjectId, projects]);
+
+  // Mirrors every create-mode field into this scope's draft as it changes, so an Escape or
+  // backdrop click — which close the sheet without clearing anything; see `cancel` below for
+  // the path that does clear — has already saved whatever was typed. Skips the write that
+  // immediately follows the seeding effect above: that snapshot is either a fresh default or
+  // the very value just read back out of storage, and persisting it again would turn "no draft
+  // yet" into a stray draft containing nothing but defaults.
+  useEffect(() => {
+    if (!creating || !open) return;
+    if (skipNextDraftSyncRef.current) {
+      skipNextDraftSyncRef.current = false;
+      return;
+    }
+    writeNewTicketDraft(defaultProjectId, {
+      projectId,
+      playbook,
+      priority,
+      title,
+      description,
+      taskBreakdown,
+      acceptanceCriteria,
+    });
+  }, [
+    creating,
+    open,
+    defaultProjectId,
+    projectId,
+    playbook,
+    priority,
+    title,
+    description,
+    taskBreakdown,
+    acceptanceCriteria,
+  ]);
 
   // The callsite's `key` re-seeds this component when a *different* ticket is opened, but the
   // create key is the constant "new", so the composer never remounts between one creation
@@ -467,6 +538,7 @@ export function TicketSheet({
         });
       }
       if (createInto === "todo") await moveTicket(created.id, "todo");
+      clearNewTicketDraft(defaultProjectId);
       onCreated();
       close(false);
     } catch (cause) {
@@ -517,6 +589,11 @@ export function TicketSheet({
           <SheetTitle>{creating ? "New ticket" : ticket.id}</SheetTitle>
           {creating && (
             <SheetDescription>Describe the work. The agent reads the title and description.</SheetDescription>
+          )}
+          {creating && restoredDraft && (
+            <p role="status" className="text-xs text-muted-foreground">
+              Restored unsaved draft.
+            </p>
           )}
         </SheetHeader>
 
@@ -791,9 +868,18 @@ export function TicketSheet({
               Delete
             </Button>
           )}
-          <SheetClose asChild>
-            <Button variant="outline">Cancel</Button>
-          </SheetClose>
+          <Button
+            variant="outline"
+            onClick={() => {
+              // Decoupled from the Sheet's own `onOpenChange={close}` on purpose: Escape and a
+              // backdrop click go through that path untouched and must never clear a draft,
+              // only Cancel does.
+              if (creating) clearNewTicketDraft(defaultProjectId);
+              close(false);
+            }}
+          >
+            Cancel
+          </Button>
           {creating ? (
             <Button
               disabled={submitting || title.trim() === "" || projectId === ""}
