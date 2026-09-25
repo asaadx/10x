@@ -1,6 +1,7 @@
 import { IconMoonFilled, IconSunFilled } from "@tabler/icons-react";
-import { BookOpen, Columns3, LayoutDashboard, Pencil, Plus } from "lucide-react";
+import { BookOpen, Columns3, LayoutDashboard, List, Pencil, Plus } from "lucide-react";
 import { useState } from "react";
+import { Link, useLocation } from "react-router-dom";
 
 import { DeleteProjectDialog, ProjectDialog } from "@/components/ProjectDialog.tsx";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select.tsx";
@@ -19,12 +20,15 @@ type Props = {
   onThemeToggle: () => void;
 };
 
-// The app's destinations, so they live in the nav bar. Board is the only view that exists
-// yet, so the other two are inert and only Board carries aria-current.
+// The app's destinations, so they live in the nav bar. `to` is matched against the current
+// route by `useLocation` below to drive `aria-current`, rather than each destination carrying
+// its own "am I active" flag — that flag would need updating by hand every time a route
+// changes, and the two would eventually drift.
 const DESTINATIONS = [
-  { label: "Dashboard", icon: LayoutDashboard, active: false },
-  { label: "Board", icon: Columns3, active: true },
-  { label: "Playbooks", icon: BookOpen, active: false },
+  { label: "Dashboard", icon: LayoutDashboard, to: "/dashboard" },
+  { label: "Board", icon: Columns3, to: "/board" },
+  { label: "Playbooks", icon: BookOpen, to: "/playbooks" },
+  { label: "List", icon: List, to: "/list" },
 ];
 
 /**
@@ -72,6 +76,7 @@ export function NavBar({
   // "every project" are the same state here — which is exactly when editing and deleting have
   // no subject.
   const selected = projects.find((project) => project.id === projectId) ?? null;
+  const { pathname } = useLocation();
 
   return (
     <header className="shrink-0 border-b">
@@ -79,20 +84,22 @@ export function NavBar({
         <div />
 
         <nav aria-label="Primary" className="inline-flex items-center gap-1.5 justify-self-center rounded-full border bg-muted/50 p-1.5">
-          {DESTINATIONS.map(({ label, icon: Icon, active }) => (
-            <button
-              key={label}
-              type="button"
-              disabled={!active}
-              aria-current={active ? "page" : undefined}
-              className={`flex items-center gap-2 rounded-full px-3.5 py-1.5 text-sm focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none ${
-                active ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Icon aria-hidden className="size-4" />
-              {label}
-            </button>
-          ))}
+          {DESTINATIONS.map(({ label, icon: Icon, to }) => {
+            const active = pathname === to;
+            return (
+              <Link
+                key={label}
+                to={to}
+                aria-current={active ? "page" : undefined}
+                className={`flex items-center gap-2 rounded-full px-3.5 py-1.5 text-sm focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none ${
+                  active ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Icon aria-hidden className="size-4" />
+                {label}
+              </Link>
+            );
+          })}
         </nav>
 
         <div className="flex items-center gap-3 justify-self-end">

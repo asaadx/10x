@@ -105,6 +105,22 @@ pane with no error at all. Both `teardown` and `retireAgent` resolve THIS ticket
 `workspace_id` matches. A mismatch is logged and left alone; see
 [reconciliation](./reconciliation.md) for the matching plan-sweep guard and the incident that
 motivated both.
+**A backlog ticket's teardown target is its planner, not the never-assigned implementation
+name (verified).** `teardown()` and `retireAgent()` both resolve the agent name with
+`liveAgentNameFor` (`lifecycle.ts`, extracted from `server.ts`'s board resolution) —
+`planAgentNameFor` in `backlog`, the persisted or derived implementation name otherwise. Before
+this, both hardcoded `agentNameFor`, so deleting a backlog ticket with a live plan conversation
+asked Herdr about a name that was never assigned, got `agent_not_found`, logged a misleading
+"agent is gone" warning, and never touched the real planner — orphaning its workspace until the
+next boot's plan sweep.
+
+A planner has no worktree, branch or port block (planner.ts): its only Herdr fingerprint is the
+bare `workspace.create` it made in the main checkout. So `teardown()` branches on `backlog`
+before the worktree path even runs: `agent.get` the plan name, and if it resolves, close that
+`workspace_id` directly (`workspace.close`, the same call `reconcile.ts`'s plan sweep uses) —
+`worktree.remove` would never reach it, since it isn't a ticket worktree. `agent_not_found` here
+is the common case (most backlog tickets never had Plan clicked) and is deliberately silent: no
+warning, since nothing was ever there to lose.
 
 **Delete refuses to orphan an open PR.** `DELETE /tickets/:id` still runs the full destructive
 teardown from any column — force-removed worktree, `git branch -D`, transcript `rm -rf`, row

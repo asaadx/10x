@@ -4,6 +4,7 @@
  * These live apart from runner.ts because they are the parts that have actually broken,
  * and being pure they are directly testable. Each carries the bug it exists to prevent.
  */
+import type { Status } from "./types.ts";
 
 /** Herdr agent names must match this, and are unique across the WHOLE Herdr session. */
 export const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
@@ -114,6 +115,37 @@ export const planAgentNameFor = (projectId: string, number: number) =>
 const PLAN_AGENT_NAME_RE = new RegExp(`^ticket-[a-z0-9][a-z0-9-]*-\\d+${PLAN_SUFFIX}$`);
 
 export const isPlanAgentName = (label: string) => PLAN_AGENT_NAME_RE.test(label);
+
+/**
+ * Which agent a ticket's card, its Focus button, and teardown are about.
+ *
+ * A backlog ticket's only possible agent is its PLANNER: `/spawn` claims from `todo`, and
+ * every route back to `todo` tears the implementation agent down first, so no run can be live
+ * under a backlog card. Resolving the plan name there is what lets a live planning
+ * conversation show up through the existing agent chip and spinner instead of needing a second
+ * status vocabulary — the two names are deliberately different (memory/naming.md), so a join
+ * on the implementation name alone reports `null` for the whole planning run, and a teardown
+ * asks Herdr about a bare name that was never assigned, gets `agent_not_found`, and never
+ * touches the real, live planner.
+ *
+ * Keyed on status rather than "whichever of the two names Herdr knows", on purpose: the boot
+ * sweep is the only thing that collects a planner whose ticket was promoted
+ * (memory/reconciliation.md), so until the next boot a `todo` ticket can still have a live
+ * planner — and reporting that as the ticket's status would show work happening on a card that
+ * nobody has started.
+ *
+ * The persisted `agentName` still wins everywhere else (db.ts rule 1): a ticket dispatched
+ * under an older scheme keeps pointing at the agent that actually exists.
+ */
+export const liveAgentNameFor = (
+  status: Status,
+  projectId: string,
+  number: number,
+  agentName?: string | null,
+) =>
+  status === "backlog"
+    ? planAgentNameFor(projectId, number)
+    : (agentName ?? agentNameFor(projectId, number));
 
 /**
  * Herdr's emitted event names are inconsistently separated: `pane.agent_status_changed`

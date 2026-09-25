@@ -24,7 +24,7 @@ import { readFile, realpath, rm, stat } from "node:fs/promises";
 import { request, HerdrError } from "./herdr.ts";
 import { extname, join, sep } from "node:path";
 import { freshDiagnostics } from "./diagnostics.ts";
-import { agentNameFor, branchFor, isSettled, planAgentNameFor } from "./lifecycle.ts";
+import { agentNameFor, branchFor, isSettled, liveAgentNameFor, planAgentNameFor } from "./lifecycle.ts";
 import { focusAgent } from "./panes.ts";
 import { startPlanning } from "./planner.ts";
 import {
@@ -111,6 +111,18 @@ const CONTENT_TYPES: Record<string, string> = {
   ".ico": "image/x-icon",
   ".png": "image/png",
 };
+
+/**
+ * The client-side routes React Router owns (`frontend/src/App.tsx`'s `<Routes>`). A hard
+ * refresh or a direct load of one of these hits the backend with no matching API route and
+ * no file on disk, so the fallback below serves the app shell exactly as `/` already does —
+ * the router then reads the URL client-side and renders the right page.
+ *
+ * A named allow-list, not "any GET with no file extension": the same reasoning as
+ * `CONTENT_TYPES` above. `/js` (a directory, no extension) must keep 404ing rather than
+ * silently becoming the app shell.
+ */
+const SPA_ROUTES: Record<string, true> = { "/board": true, "/dashboard": true, "/playbooks": true, "/list": true };
 
 /**
  * Per-run state: diagnostics and the live event-subscription handle. Not persisted, so a
@@ -225,31 +237,12 @@ const specFor = (t: Ticket, p: Project): RunSpec => ({
   repoPath: p.repoPath,
   base: p.baseBranch,
   apiUrl: API_URL,
+  // Only teardown()/retireAgent() read these, to resolve the same name `liveAgentNameFor`
+  // does (memory/naming.md): the planner's name in backlog, the persisted or derived
+  // implementation name otherwise.
+  status: t.status,
+  agentName: t.agentName,
 });
-
-/**
- * Which agent this ticket's card and its Focus button are about.
- *
- * A backlog ticket's only possible agent is its PLANNER: `/spawn` claims from `todo`, and
- * every route back to `todo` tears the implementation agent down first, so no run can be live
- * under a backlog card. Resolving the plan name there is what lets a live planning
- * conversation show up through the existing agent chip and spinner instead of needing a second
- * status vocabulary — the two names are deliberately different (memory/naming.md), so a join
- * on the implementation name alone reports `null` for the whole planning run.
- *
- * Keyed on status rather than "whichever of the two names Herdr knows", on purpose: the boot
- * sweep is the only thing that collects a planner whose ticket was promoted
- * (memory/reconciliation.md), so until the next boot a `todo` ticket can still have a live
- * planner — and reporting that as the ticket's status would show work happening on a card that
- * nobody has started.
- *
- * The persisted name still wins everywhere else (db.ts rule 1): a ticket dispatched under an
- * older scheme keeps pointing at the agent that actually exists.
- */
-const liveAgentNameFor = (t: Ticket) =>
-  t.status === "backlog"
-    ? planAgentNameFor(t.projectId, t.number)
-    : (t.agentName ?? agentNameFor(t.projectId, t.number));
 
 type Reply = { status: number; body: string };
 const json = (body: unknown, status = 200): Reply => ({
@@ -360,7 +353,7 @@ async function board(projectFilter: string | undefined): Promise<Reply> {
   // format, and without it a field added or dropped here diverged from the frontend silently.
   const live = tickets.map((t): BoardTicket => {
     const branch = t.branch ?? branchFor(t.projectId, t.number);
-    const agentName = liveAgentNameFor(t);
+    const agentName = liveAgentNameFor(t.status, t.projectId, t.number, t.agentName);
     const agent = byAgentName.get(agentName);
     const worktree = byBranch.get(branch);
     const snapshot = reconciled.get(t.id);
@@ -741,7 +734,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
   if (action === "/focus" && method === "POST") {
     // The same resolution the card was drawn from, or the Focus button on a planning card
     // would target an implementation agent that does not exist.
-    return json(await focusAgent(liveAgentNameFor(ticket)));
+    return json(await focusAgent(liveAgentNameFor(ticket.status, ticket.projectId, ticket.number, ticket.agentName)));
   }
 
   if (action === "/plan" && method === "POST") {
@@ -1371,6 +1364,14 @@ createServer(async (req, res) => {
         res.writeHead(200, { "content-type": asset.type });
         res.end(await readFile(asset.file));
         return;
+      }
+      if (SPA_ROUTES[bare]) {
+        const shell = await resolvePublicAsset("/");
+        if (shell) {
+          res.writeHead(200, { "content-type": shell.type });
+          res.end(await readFile(shell.file));
+          return;
+        }
       }
     }
 

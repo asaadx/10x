@@ -152,9 +152,12 @@ labelled `refactor-plan` is not ours, and the sweep **closes** what it matches.
 `agent.list` is joined by name, so a board that resolved only `agentNameFor` reported
 `agentStatus`, `paneId` and `workspaceId` as `null` for an entire planning run — observed live,
 with the planner's pane sitting in Herdr: no agent chip, no column spinner, a conversation the
-UI could not see. `server.ts` therefore resolves **a `backlog` ticket to its plan name** and
-anything else to its implementation name (`liveAgentNameFor`), and `/focus` uses the same
-resolution so the Focus button on a planning card cannot target a run that does not exist.
+UI could not see. `lifecycle.ts`'s `liveAgentNameFor` resolves **a `backlog` ticket to its plan
+name** and anything else to its implementation name; `server.ts`'s board and `/focus` route and
+`runner.ts`'s `teardown`/`retireAgent` all call the one function, so a backlog ticket's Focus
+button, its board chip, and deleting it while a planner is live all agree on the same name
+(memory/teardown.md — before this was one function, teardown hardcoded `agentNameFor` and asked
+about a name no backlog ticket ever has).
 
 Keyed on **status**, not on "whichever name Herdr happens to know". The sweep is the only thing
 that collects a planner whose ticket was promoted, so until the next boot a `todo` ticket can

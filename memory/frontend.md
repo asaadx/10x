@@ -14,10 +14,19 @@ then serves), and `pnpm typecheck`, whose second half is the frontend's `tsc --b
 root `package.json`)*.
 
 - `frontend/index.html` — 14 lines: `<div id="root">` and `<script type="module" src="/src/main.tsx">`.
-- `frontend/src/main.tsx` — `createRoot` under `<StrictMode>`, imports `index.css`.
-- `frontend/src/App.tsx` — the only stateful shell. Board-wide state lives here (theme, steer mode,
-  selected project, search query, sort order, which ticket the sheet has open) and every component
-  below it takes props.
+- `frontend/src/main.tsx` — `createRoot` under `<StrictMode>`, wraps `<App />` in `react-router-dom`'s
+  `<BrowserRouter>`. Client-side routing, so a hard refresh or a direct load of any route needs the
+  backend's `SPA_ROUTES` fallback (`memory/architecture.md`) to serve `index.html` in production.
+- `frontend/src/App.tsx` — the router shell, not the board. Renders `<NavBar>` (shared by every
+  route) plus a `<Routes>`: `/` redirects to `/board`, `/board` mounts `BoardPage`, `/dashboard` /
+  `/playbooks` / `/list` mount their placeholder pages. Owns `theme`, `steerMode`, `projectId` and
+  the single `useBoard(projectId)` poll — state `NavBar`'s project picker and every route need, so
+  it lives above the routes rather than being re-fetched per page.
+- `frontend/src/pages/BoardPage.tsx` — the kanban board itself (toolbar, provisioning banner,
+  columns, ticket sheet), moved out of `App.tsx` unchanged when routing was added. Owns the
+  board-local state `App.tsx` does not need: search query, sort order, which ticket the sheet has
+  open. `DashboardPage.tsx`, `PlaybooksPage.tsx` and `ListPage.tsx` are inert placeholders — see
+  `docs/playbooks-and-dashboard.md` for the unbuilt design of the first two.
 - `frontend/src/components/` — `NavBar`, `BoardToolbar`, `Column`, `TicketCard`, `TicketSheet`,
   `DeleteTicketDialog`.
 - `frontend/src/components/ui/` — the shadcn primitives. Imported today: `button`, `input`,
