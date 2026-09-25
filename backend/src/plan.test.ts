@@ -36,9 +36,10 @@ process.env.HERDR_SOCKET_PATH = socketPath;
 // `DB_PATH` and `HERDR_SOCKET_PATH` are read at module load, and a static import would hoist
 // above the assignments and open the real database against the real Herdr socket.
 const { db, nowIso } = await import("./db.ts");
+const { getTicket } = await import("./ticket-store.ts");
 const { startPlanning } = await import("./planner.ts");
 const { decidePlanSweep, sweepPlanWorkspaces } = await import("./reconcile.ts");
-const { planAgentNameFor } = await import("./lifecycle.ts");
+const { agentNameFor, planAgentNameFor } = await import("./lifecycle.ts");
 
 const PROJECT_ID = "plantest";
 const REPO_PATH = "/tmp/plan-test-repo";
@@ -796,5 +797,81 @@ describe("a live planner on the board", () => {
     const res = await api("POST", `/tickets/${id}/focus`);
     assert.deepEqual(res.body, { ok: true });
     assert.deepEqual(paramsOf("agent.focus"), { target: "ticket-plantest-36-plan" });
+  });
+});
+
+describe("DELETE /tickets/:id on a backlog ticket", () => {
+  // Regression coverage for the bug this describe block exists to pin: teardown() used to
+  // resolve the agent name with the bare `agentNameFor` unconditionally, so deleting a
+  // backlog ticket asked Herdr about a name that was never assigned (`agent_not_found`),
+  // logged a misleading "agent is gone" warning, and never touched the real, live planner —
+  // orphaning its workspace until the next boot's plan sweep (memory/reconciliation.md).
+
+  test("closes the live planner's workspace, not a nonexistent bare-named one", async () => {
+    const id = seed("delete-with-planner", 40, "backlog");
+    const planName = planAgentNameFor(PROJECT_ID, 40);
+
+    // Actually start a live planner first, exactly as a user clicking Plan would.
+    const plan = liveHerdr();
+    reset(plan.handlers);
+    assert.equal((await api("POST", `/tickets/${id}/plan`)).status, 200);
+
+    const logBefore = serverLog.length;
+    reset({
+      "agent.get": () => ({
+        result: { agent: { pane_id: "wZZ:p1", workspace_id: "wZZ", agent_status: "working" } },
+      }),
+      "workspace.close": () => ({ result: { type: "ok" } }),
+    });
+
+    const res = await api("DELETE", `/tickets/${id}`);
+    assert.equal(res.status, 200);
+
+    // Asked about the PLANNER's name, found it live, and closed its workspace — no worktree
+    // conversation at all, because a backlog ticket never has one.
+    assert.deepEqual(sequence(), ["agent.get", "workspace.close"]);
+    assert.equal(paramsOf("agent.get")?.["target"], planName);
+    assert.equal(paramsOf("workspace.close")?.["workspace_id"], "wZZ");
+    assert.equal(getTicket(id), undefined);
+    assert.ok(!serverLog.slice(logBefore).includes("no session directory known and agent is gone"));
+  });
+
+  test("a ticket whose planner never ran deletes quietly: no warning, no worktree lookup", async () => {
+    const id = seed("delete-no-planner", 41, "backlog");
+    const planName = planAgentNameFor(PROJECT_ID, 41);
+
+    const logBefore = serverLog.length;
+    reset({ "agent.get": () => NOT_FOUND });
+
+    const res = await api("DELETE", `/tickets/${id}`);
+    assert.equal(res.status, 200);
+
+    // Asked about the PLANNER's name (not the bare implementation name, which a backlog
+    // ticket can never have run) and stopped there once told it does not exist.
+    assert.deepEqual(sequence(), ["agent.get"]);
+    assert.equal(paramsOf("agent.get")?.["target"], planName);
+    assert.equal(getTicket(id), undefined);
+    // `agent_not_found` for a ticket whose real agent never ran is the expected, common case
+    // — not a fault worth a warning.
+    assert.ok(!serverLog.slice(logBefore).includes("no session directory known and agent is gone"));
+  });
+
+  test("a ticket that has left backlog still tears down the real implementation agent, unchanged", async () => {
+    const id = seed("delete-todo", 42, "todo");
+    const bareName = agentNameFor(PROJECT_ID, 42);
+
+    reset({
+      "agent.get": () => NOT_FOUND,
+      "worktree.open": () => ({ error: { code: "worktree_not_found", message: "no such worktree" } }),
+    });
+
+    const res = await api("DELETE", `/tickets/${id}`);
+    assert.equal(res.status, 200);
+
+    // Still the bare name once a ticket has left backlog — no regression from the status-aware
+    // resolution added for the planner case above.
+    assert.deepEqual(sequence(), ["agent.get", "worktree.open"]);
+    assert.equal(paramsOf("agent.get")?.["target"], bareName);
+    assert.equal(getTicket(id), undefined);
   });
 });
