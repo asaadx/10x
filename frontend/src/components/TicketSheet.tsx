@@ -369,21 +369,24 @@ export function TicketSheet({
   // Project, because it is a choice rather than something derived — and changing it after a run
   // has started cannot affect the agent already running, only the next dispatch. The sheet
   // already has a row called Agent for the running Herdr agent's name, so this control is named
-  // Playbook rather than colliding with it. It is local state only: `POST /tickets` narrows the
-  // body to `{projectId, title, description}`, so there is nowhere to send this yet.
+  // Playbook rather than colliding with it. `POST /tickets` only takes `{projectId, title,
+  // description}`, so a non-default choice made here reaches the server as a follow-up PATCH
+  // `submit()` sends after the create succeeds.
   // Every ticket has one: the column is NOT NULL, and its default is the first entry of
   // `PLAYBOOKS`, which is also what the picker shows first — so seeding a create with it
   // matches what the API would store anyway, without naming a playbook value here.
   const [playbook, setPlaybook] = useState<Playbook>(ticket?.playbook ?? PLAYBOOKS[0]);
-  // Priority is editable at any point too, the same as Playbook, and it is never settable at
-  // creation: `POST /tickets` narrows the body the same way, and the column's `'low'` default
-  // covers a create with no picker for it. Seeded from `PRIORITIES[0]` ("low") for the same
-  // reason Playbook seeds from its own first entry — it is what the API would store anyway.
+  // Priority is editable at any point too, the same as Playbook, and it is never settable in
+  // the `POST /tickets` body itself: the column's `'low'` default covers a bare create, and a
+  // non-default choice reaches the server the same way Playbook's does, via `submit()`'s
+  // follow-up PATCH. Seeded from `PRIORITIES[0]` ("low") for the same reason Playbook seeds
+  // from its own first entry — it is what the API would store anyway.
   const [priority, setPriority] = useState<Priority>(ticket?.priority ?? PRIORITIES[0]);
   // Task Breakdown and Acceptance Criteria are the plan a Plan agent produces, and they do come
   // off the wire — the planning agent PATCHes them onto the ticket, and both non-empty is the
-  // readiness signal the card's To Do button reads. What is not wired is writing them from
-  // here: Save has no handler, so edits made in this sheet are local and lost on close.
+  // readiness signal the card's To Do button reads. Editing them here writes back too: `save()`
+  // PATCHes an existing ticket, and `submit()` follows a create with the same PATCH when either
+  // checklist has real rows.
   // Seeded from `ticket` via a `useState` initializer rather than an effect: `App.tsx` keys this
   // component by ticket id, so React remounts (and re-runs this initializer) whenever a
   // different ticket opens — no sync needed. Seeding goes through `normalizeChecklistRows`
@@ -426,13 +429,17 @@ export function TicketSheet({
   };
 
   /**
-   * Create, then move only if the click came from the To Do column's footer.
+   * Create, then a follow-up PATCH for whatever the create body can't carry, then move only if
+   * the click came from the To Do column's footer.
    *
-   * `POST /tickets` hardcodes `backlog` because a new ticket is a raw idea, so that button
-   * needs a second call to land the card where it says it will. The pair is NOT atomic and is
-   * not pretended to be: if the move fails the ticket exists in Backlog and the error says so,
-   * which the card's own To Do button then retries. Refusing to create at all would be the
-   * worse trade.
+   * `POST /tickets` narrows its body to `{projectId, title, description}`, so Playbook,
+   * Priority, Task Breakdown and Acceptance Criteria typed into this same sheet need a second
+   * call — the same `updateTicket` shape `save()` already sends for an existing ticket. Skipped
+   * when every one of those still matches what a bare create already stores (`PLAYBOOKS[0]`,
+   * `PRIORITIES[0]`, both checklists empty), so a bare ticket costs one request, not two. This
+   * follow-up is NOT atomic with the create, same trade as the todo-column move below: a
+   * failure leaves the ticket sitting in Backlog with that field unset, surfaced through
+   * `submitError` the same way a failed move already is.
    */
   const submit = async () => {
     if (submitting) return;
@@ -440,6 +447,25 @@ export function TicketSheet({
     setSubmitError(null);
     try {
       const created = await createTicket({ projectId, title: title.trim(), description });
+      const normalizedTaskBreakdown = normalizeChecklistRows(taskBreakdown).filter(
+        (row) => row.text.trim() !== "",
+      );
+      const normalizedAcceptanceCriteria = normalizeChecklistRows(acceptanceCriteria).filter(
+        (row) => row.text.trim() !== "",
+      );
+      const hasNonDefaultFields =
+        playbook !== PLAYBOOKS[0] ||
+        priority !== PRIORITIES[0] ||
+        normalizedTaskBreakdown.length > 0 ||
+        normalizedAcceptanceCriteria.length > 0;
+      if (hasNonDefaultFields) {
+        await updateTicket(created.id, {
+          playbook,
+          priority,
+          taskBreakdown: normalizedTaskBreakdown,
+          acceptanceCriteria: normalizedAcceptanceCriteria,
+        });
+      }
       if (createInto === "todo") await moveTicket(created.id, "todo");
       onCreated();
       close(false);
