@@ -17,6 +17,7 @@
  * planning is provably over, never one a human might still be talking to.
  */
 import { request } from "./herdr.ts";
+import { claimSoleInstance, type InstanceClaim } from "./instance-lock.ts";
 import { agentNameFor, branchFor, isPlanAgentName, planAgentNameFor } from "./lifecycle.ts";
 import type { Orphan, Ticket } from "./types.ts";
 
@@ -248,13 +249,32 @@ export function decidePlanSweep(
 /**
  * Boot-time sweep of plan workspaces. Returns what it decided, having closed the closable.
  *
+ * `claim` defaults to the real advisory single-instance guard (instance-lock.ts) and exists as a
+ * parameter only so a test can inject a fake claim without touching a real PID file. If this
+ * process is not confirmed as the sole sweeper for this Herdr session, the whole sweep is
+ * skipped: a `not sole` reading means this process's own `tickets` cannot be trusted as the
+ * complete answer to "does anyone still own this label", and closing on that guess is exactly
+ * the bug this guard exists to prevent (memory/reconciliation.md).
+ *
  * Never throws: this runs on the way up, and a Herdr that is down or slow must not stop the
  * server from starting — the same degradation rule as `listWorktrees` above. A workspace it
  * fails to close is simply swept at the next boot.
  */
 export async function sweepPlanWorkspaces(
   tickets: readonly PlanTicket[],
+  claim: () => InstanceClaim = claimSoleInstance,
 ): Promise<PlanSweepDecision[]> {
+  const status = claim();
+  if (!status.sole) {
+    console.warn(
+      `plan sweep: another 10x backend instance (pid ${status.ownerPid}, started ${status.since}) ` +
+        "already claims this Herdr session — skipping the plan sweep entirely this boot. " +
+        "A workspace this process cannot positively confirm ownership of is left for whichever " +
+        "instance actually owns it (memory/reconciliation.md).",
+    );
+    return [];
+  }
+
   let workspaces: WorkspaceEntry[];
   try {
     const result = await request<{ workspaces?: WorkspaceEntry[] }>("workspace.list", {});

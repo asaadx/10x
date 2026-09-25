@@ -129,6 +129,42 @@ Two further constraints, both easy to get wrong:
 It logs what it closed *and* what it spared, and never throws: a sweep failure must not stop the
 server coming up. A workspace it fails to close is swept at the next boot.
 
+## A second backend instance breaks the whole "not in my list means deleted" premise (ticket-10x-38, verified)
+
+`decidePlanSweep`'s "no ticket owns this label" branch trusts that this process's own ticket
+list is a complete answer to "does anyone still own this label" — true for one backend, false the
+moment a second `backend/src/server.ts` process shares the same Herdr daemon. Herdr agent and
+workspace names are unique only within the whole session, never per backend instance
+([naming](./naming.md)), so a smoke test, a throwaway dev boot, or an accidental second start
+computes the exact same plan label for a ticket its own `listTickets()` has never heard of, reads
+the absence as "deleted while its planner was open", and closes a real, still-`backlog` ticket's
+live planner out from under the actual board. Confirmed against a real `herdr-server.log`: a
+booting process with a disjoint ticket set closed a still-in-Backlog ticket's plan workspace this
+way, and a separate `pane.close` retired a different ticket's real, `in_progress` agent mid-work
+through the identical name collision.
+
+**Fix, in two parts, neither of which renames anything Herdr-visible** (the 32-character agent-name
+budget is already tight — [naming](./naming.md) — so embedding a per-instance qualifier in the name
+itself was rejected):
+
+- **The plan sweep now requires an advisory single-instance claim** (`instance-lock.ts`,
+  `claimSoleInstance`) before it runs its destructive half at all. The claim is a PID file
+  colocated with the Herdr socket — the one resource every instance sharing a daemon actually
+  shares — holding the PID of whichever process currently claims to be the sole sweeper; a live PID
+  that is not this process's own means `sweepPlanWorkspaces` skips the entire sweep for this boot
+  rather than guess, logging loudly instead. It is deliberately advisory, not a real mutex: PID
+  reuse after a crash is a known, accepted gap, and a lock this process cannot read or write at all
+  degrades to proceeding (`sole: true`) rather than disabling cleanup forever.
+- **`teardown` and `retireAgent` (runner.ts) no longer trust `agent.get` by name alone.** Both now
+  resolve THIS ticket's own Herdr workspace by `(repoPath, branch)` first — the one pair a name
+  collision cannot forge, via the same `listWorktrees` this file already uses — and refuse to close
+  a pane or delete a session directory unless the live agent's `workspace_id` matches. A mismatch is
+  logged and left alone rather than acted on; see [teardown](./teardown.md).
+
+Covered by `instance-lock.test.ts` (the claim itself), `reconcile.test.ts` (the sweep gated on a
+`sole: false` claim skips the whole conversation with Herdr, not even `workspace.list`), and
+`runner-ownership.test.ts` (`retireAgent`/`teardown` refusing a workspace-id mismatch).
+
 ## What actually consumes disk (verified)
 
 The worktree checkout itself is small. Two other things are not.

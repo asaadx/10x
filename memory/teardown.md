@@ -95,6 +95,16 @@ would destroy work the open PR still points at. `retireAgent` resolves the sessi
 the pane and `rm -rf`s the transcript. No `worktree.remove`, no branch delete. An agent that is
 already gone is not an error — there is simply nothing left to close.
 
+**Neither trusts `agent.get` by the ticket's agent name alone (ticket-10x-38, verified).** A Herdr
+agent name is unique only within the whole session, not per 10x backend instance
+([naming](./naming.md)), so a second backend process sharing the same Herdr daemon can compute the
+exact same name for an unrelated ticket of its own and `agent.get` hands back that ticket's live
+pane with no error at all. Both `teardown` and `retireAgent` resolve THIS ticket's own workspace by
+`(repoPath, branch)` first — via `listWorktrees`, the same degrade-to-`[]`-on-trouble helper
+`reconcile.ts` already used for reporting — and only touch a pane or a session directory whose
+`workspace_id` matches. A mismatch is logged and left alone; see
+[reconciliation](./reconciliation.md) for the matching plan-sweep guard and the incident that
+motivated both.
 **A backlog ticket's teardown target is its planner, not the never-assigned implementation
 name (verified).** `teardown()` and `retireAgent()` both resolve the agent name with
 `liveAgentNameFor` (`lifecycle.ts`, extracted from `server.ts`'s board resolution) —

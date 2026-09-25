@@ -629,10 +629,15 @@ describe("sweepPlanWorkspaces", () => {
       "workspace.close": () => ({ result: { type: "ok" } }),
     });
 
-    const decisions = await sweepPlanWorkspaces([
-      planTicket("t-sweep-live", 20, "backlog"),
-      planTicket("t-sweep-done", 21, "done"),
-    ]);
+    // This test's subject is the close-wiring around `decidePlanSweep`, not the single-
+    // instance guard (memory/reconciliation.md, exercised separately in reconcile.test.ts) —
+    // a real default claim here would race any child server this file has already spawned for
+    // an earlier describe block, since they all share this file's one fake Herdr socket path
+    // and therefore one real instance-lock file.
+    const decisions = await sweepPlanWorkspaces(
+      [planTicket("t-sweep-live", 20, "backlog"), planTicket("t-sweep-done", 21, "done")],
+      () => ({ sole: true }),
+    );
 
     assert.deepEqual(
       decisions.map((d) => [d.workspaceId, d.close]),
@@ -650,7 +655,7 @@ describe("sweepPlanWorkspaces", () => {
 
   test("a Herdr that is down does not stop the boot", async () => {
     reset({});
-    assert.deepEqual(await sweepPlanWorkspaces([]), []);
+    assert.deepEqual(await sweepPlanWorkspaces([], () => ({ sole: true })), []);
   });
 });
 
