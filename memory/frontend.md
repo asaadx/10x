@@ -19,7 +19,7 @@ root `package.json`)*.
   backend's `SPA_ROUTES` fallback (`memory/architecture.md`) to serve `index.html` in production.
 - `frontend/src/App.tsx` — the router shell, not the board. Renders `<NavBar>` (shared by every
   route) plus a `<Routes>`: `/` redirects to `/board`, `/board` mounts `BoardPage`, `/list` mounts
-  `ListPage`, `/dashboard` / `/playbooks` mount their placeholder pages. Owns `theme`, `steerMode`, `projectId` and
+  `ListPage`, `/dashboard` / `/playbooks` mount their placeholder pages. Owns `theme`, `projectId` and
   the single `useBoard(projectId)` poll — state `NavBar`'s project picker and every route need, so
   it lives above the routes rather than being re-fetched per page.
 - `frontend/src/pages/BoardPage.tsx` — the kanban board itself (toolbar, provisioning banner,
@@ -39,14 +39,16 @@ root `package.json`)*.
   because `NavBar` does not wrap (~890px); the list table itself scrolls inside its own box
   *(verified — `document.documentElement.scrollWidth` 888 on `/board` too)*.
 - `frontend/src/components/` — `NavBar`, `BoardToolbar`, `Column`, `TicketCard`, `TicketSheet`,
-  `DeleteTicketDialog`.
+  `DeleteTicketDialog`, `ProjectDialog`, and `AgentSession` (the cloud-session pieces shared by
+  card, sheet and list — see §7).
 - `frontend/src/components/ui/` — the shadcn primitives. Imported today: `button`, `input`,
   `checkbox`, `separator`, `spinner`, `sheet`, `alert-dialog`, `dropdown-menu`, `native-select`.
   `badge.tsx` and `card.tsx` are present but imported by nothing *(verified — no
   `@/components/ui/badge` or `/card` import exists in `frontend/src`)*. Radix (`radix-ui`) is the
   behaviour under the overlay ones.
 - `frontend/src/lib/` — `api.ts` (the HTTP seam), `use-board.ts` (the poll), `board.ts` (pure
-  derivations), `theme.ts` and `steer-mode.ts` (`localStorage`-backed prefs), `utils.ts`
+  derivations), `list.ts` (the List view's sort/filter/prefs), `theme.ts` (`localStorage`-backed
+  pref), `utils.ts`
   (`cn` = `clsx` + `tailwind-merge`).
 - `frontend/src/index.css` — `@import "tailwindcss"` plus the shadcn token block. Dark mode is a
   **class on `<html>`**, declared with Tailwind v4's `@custom-variant dark`, because the board has
@@ -58,7 +60,9 @@ root `package.json`)*.
 so a change to one needs the other *(verified)*.
 
 `frontend/src/lib/board.ts` holds the derivations: `matchesProject`, `matchesSearch`, `sortTickets`,
-`ticketsForColumn`, `columnIsWorking`, `runFailed` — **pure, no DOM, no `fetch`**, and the only
+`ticketsForColumn`, `columnIsWorking` (any `agentState` of `starting`/`working`), `runFailed`
+(`agentState === "failed"`), `previewOffered` (has a `branch` and is In Progress/In Review) —
+**pure, no DOM, no `fetch`**, and the only
 place that decides what a column contains, which is why it is the part worth unit-testing.
 `ALL_PROJECTS = "all:projects"` is the picker's sentinel, safe because a project id is a slug and
 cannot contain a colon *(verified)*.
@@ -86,10 +90,11 @@ would drag it into the frontend build** *(inferred — not attempted)*.
 ### `Ticket` here means `BoardTicket`
 
 `export type { BoardTicket as Ticket }`. The board renders **the `GET /tickets` response shape, never
-the stored row** *(verified)*. The backend's `Ticket` deliberately lacks `branch`, `agentName`,
-`agentStatus`, `hasWorktree`, `worktreePath`, `paneId`, `workspaceId`, `busy` and `diagnostics` — all
-of those live only on `BoardTicket`. A component typed against the backend's `Ticket` **compiles and
-then renders nothing** for them, which is the whole failure mode this alias removes. Type against
+the stored row** *(verified)*. Since the cloud-session contract (`docs/prototype-cloud.md`) the
+backend's `Ticket` carries the session and agent fields itself (`sessionUrl`, `sessionKind`,
+`agentState`, `agentNote`, `agentUpdatedAt`, `branch`), and `BoardTicket` adds only `busy` and
+`preview` *(verified — `backend/src/types.ts`)*. A component typed against the backend's `Ticket`
+**compiles and then renders nothing** for those two, which is the failure mode this alias removes. Type against
 `Ticket` from `@/types.ts`; never reach past it into `@10x/backend/types` for a ticket.
 
 ## 3. The data layer
@@ -111,14 +116,13 @@ fixtures *(verified)*.
   `/projects`. Writes are being added here one button at a time, so **read the file rather than
   trusting a list of them** — a button with no wiring is a missing function here, never a
   half-working handler in a component *(verified: the file's own header states this)*.
-  One write still bypasses the seam: a bare `fetch("/tickets/:id/focus", {method: "POST"})` in
-  `TicketCard.tsx`'s `SteerButton` *(verified)*. `docs/wiring-checklist.md` tracks what is left.
+  No write bypasses the seam: Steer is an `<a href={sessionUrl}>`, not a request.
   **`VITE_MOCK_MODE` covers reads and project CRUD only — every ticket-mutating write is real,
   always** *(verified)*. `getBoard`/`getProjects` and `createProject`/`updateProject`/
   `deleteProject`/`provisionProject`/`lookupRepo` all branch on `MOCK_MODE` before touching the
-  network. `createTicket`, `moveTicket`, `updateTicket`, `spawnAgent`, `acceptTicket`,
-  `cancelTicket`, `deleteTicket`, `archiveTicket`, `deleteWorktree` and `rejectTicket` do not —
-  they call `request()` unconditionally. The dev proxy also always points at
+  network. `createTicket`, `moveTicket`, `updateTicket`, `startPlanning`, `spawnAgent`,
+  `acceptTicket`, `cancelTicket`, `deleteTicket`, `archiveTicket`, `rejectTicket`, `startPreview`
+  and `stopPreview` do not — they call `request()` unconditionally. The dev proxy also always points at
   `http://127.0.0.1:4010` regardless of mock mode, and that port is 10x's own live board, not a
   disposable target — a project ticket's own worktree gets its dev server from `.env`'s
   `PORT_RANGE_START..END`, never 4010. Clicking Add/Save/Delete/Accept/Reject/Cancel-run while
@@ -128,18 +132,17 @@ fixtures *(verified)*.
   throwaway backend on that port or verification some other way (unit test, code review, or a
   single real click immediately reverted).
 - `lib/use-board.ts` owns the only timer: `POLL_MS = 1000`, `setInterval`, both GETs in one
-  `Promise.all`. An in-flight tick is **skipped, not queued** — `GET /tickets` does real Herdr work
-  per call (an `agent.list` plus a `worktree.list` per repo), so overlapping polls multiply load for
-  no extra freshness. A failed poll **keeps the last good board** and hangs the message off it as
+  `Promise.all`. An in-flight tick is **skipped, not queued** — `GET /tickets` is a round trip to
+  the hosted database, so overlapping polls stack requests for no extra freshness. A failed poll **keeps the last good board** and hangs the message off it as
   `error`; `App.tsx` renders that as a one-line `role="status"` stale-data banner above the columns,
   never as an overlay. `current` and the in-flight guard are effect-scoped, keyed on `projectId`,
   so a stale response cannot overwrite a newer selection. `useBoard` also returns a **`refresh()`**
   so a write can force an immediate re-read instead of waiting up to a second for the next tick
   *(verified)*.
-- **Polling is a placeholder, not the design.** The backend already holds a long-lived Herdr
-  subscription and knows the instant anything changes; only the browser is behind. SSE is the
-  intended replacement and is parked with a sketch under *Push board updates with SSE instead of
-  polling* in [parking-lot](./parking-lot.md). Do not re-argue it here.
+- **Polling is the only change signal.** Cloud agents write their state straight into the shared
+  database, so neither the backend nor the browser is told when it changes; the board sees it on
+  the next read. SSE is parked under *Push board updates with SSE instead of polling* in
+  [parking-lot](./parking-lot.md). Do not re-argue it here.
 - `frontend/src/mock.ts` is retained for design work: fixtures covering every visual state the board
   can reach, typed against the real response shape so they cannot drift from it *(verified)*.
   `MOCK_MODE` starts no timer, and tickets stay static from `mock.ts`. **Projects do not:**
@@ -149,7 +152,8 @@ fixtures *(verified)*.
   timeline — usable with no backend running *(verified)*.
 
 **The Vite dev proxy is what makes any of this same-origin.** `vite.config.ts` proxies `/tickets`,
-`/projects` and `/webhooks` to `http://127.0.0.1:4010`; in production the backend serves the built
+`/projects` and `/webhooks` to `http://127.0.0.1:4010` (the `/screenshots` proxy went with the
+screenshot routes); in production the backend serves the built
 bundle itself. Paths in `api.ts` are therefore relative on purpose, no origin is ever configured, and
 **the zero-dependency backend needs no CORS handling — because it never sees a cross-origin request**
 *(verified)*. `build.outDir` is `dist` with the default asset layout, which matters because the
@@ -198,8 +202,7 @@ string to drift. Two things inside it are contracts, not styling:
   in the column footer for exactly this reason, or it would append its label to the region name.
 
 **Cards are `<article aria-label={ticket.id}>`** in `TicketCard.tsx` *(verified)*. This is now **the
-only place a ticket id is exposed to assistive tech**, because the id, branch and worktree are
-icon-only copy buttons with no visible text. `resilience.spec.ts` and `spawn.spec.ts` locate a
+only place a ticket id is exposed to assistive tech** as a name. `resilience.spec.ts` and `spawn.spec.ts` locate a
 specific ticket as `getByRole("region", {name: /^In Review/}).getByRole("article", {name: id})` and
 then `getByTitle` inside it — the badges' `title` is their accessible handle, so which column a card
 is in is part of the contract.
@@ -215,9 +218,51 @@ replacement). All three are spec-side work; see [testing](./testing.md).
 
 ## 6. `capitalize` lies to `textContent`
 
-The steer-mode button renders `<span className="capitalize">{steerMode}</span>` over the persisted
-lowercase union member `"local"` / `"remote"` *(verified — `NavBar.tsx`)*. CSS `text-transform`
-changes rendering, not the DOM, so **`textContent` reports `local` while the screen correctly shows
-`Local`**. Asserting on text content here produces a false defect report; this cost real time. Assert
-the accessible name (`aria-label`, which spells the capitalised form explicitly) or take the
-screenshot — never `textContent` on a `capitalize`d node.
+CSS `text-transform` changes rendering, not the DOM, so a `capitalize`d node's `textContent` is the
+lowercase source string while the screen shows it capitalised. Asserting on text content there
+produces a false defect report; this cost real time once (on the since-deleted steer-mode toggle).
+Assert the accessible name or take the screenshot — never `textContent` on a `capitalize`d node.
+
+## 7. Cloud sessions on the board
+
+Herdr-era UI is gone *(verified — this branch)*: no steer-mode toggle or `lib/steer-mode.ts`, no
+`/focus` call, no worktree/pane/agent-name copy buttons, no Delete worktree, no diagnostics panel,
+no `unowned` list, no Before/After screenshot panes. `components/AgentSession.tsx` holds what
+replaced them, shared by card, sheet and List:
+
+- **`AgentStateBadge`** — the agent's self-reported `agentState` (starting = spinner, working =
+  pinging sky dot, done, blocked = amber, failed = destructive); renders nothing for `null`. A
+  blocked agent's `agentNote` (its question) is the badge's tooltip. `aria-label="Agent <state>"`.
+  On a card it takes the chip slot the run timer used to hold (the timer shows only while
+  `agentState` is null) and is suppressed on Done cards. A blocked card gets an amber border
+  (`data-blocked`), a failed one a destructive border (`data-failed`).
+- **`SessionLink`** — Steer is an `<a target="_blank" rel="noopener noreferrer">` to `sessionUrl`
+  via `Button asChild`; with no session it is a disabled button whose reason sits on a wrapper
+  `title` (a disabled button gets no pointer events). In Progress cards show it as **Steer**; a
+  Backlog card with an open *plan* session shows it in place of Plan (a second Plan = a second paid
+  session). Every card with a `sessionUrl` also gets a small "Open session" icon link in its top
+  row, which is how In Review (three buttons already) reaches its session.
+- **Preview** — state is `ticket.preview` from the poll, never local: `previewPhase()` maps it to
+  none / running / checkout (`command === ""`, no dev command) / exited. The card slot is a
+  **Preview** button (`POST /tickets/:id/preview`), a **Live** link to `preview.url`, or a
+  Checkout/Exited button that opens the sheet; Stop preview is in the card's overflow menu.
+  `PreviewPanel` in the sheet has start/stop, the url, the copyable checkout path, and for the
+  no-dev-command case a hint to set one on the project. Offered only when `previewOffered()`.
+- **The sheet's Agent panel** (`<section aria-label="Agent">`, first in the body) shows session kind,
+  badge, relative `agentUpdatedAt`, Open session, and `agentNote` — amber "The agent is asking"
+  when blocked. Screenshots live as a PR comment, so the sheet links **Screenshots on PR** to
+  `prUrl` beside the PR link.
+- **Both pages pass the LIVE ticket to `TicketSheet`** (`tickets.find(id) ?? snapshot`), not the
+  snapshot from when it opened, so agent state and Preview update while the sheet is up. Safe
+  because the form fields are seeded by `useState` initializers under `key={id}` and never
+  re-synced from props *(inferred — mock mode does not poll, so typing across a live poll was not
+  exercised)*.
+- **List** has an **Agent** column (sort key `agent`, first click descending = blocked, failed,
+  working, starting, done, none).
+- **Project dialog** has an optional **Dev command** field. `POST /projects` does not accept
+  `devCommand` *(verified — `backend/src/projects.ts` createProject reads no such key)*, so a new
+  project gets it through a follow-up `PATCH` — not atomic with the create.
+- **Mock fixtures** (`mock.ts`) cover plan and impl sessions, every agent state (10x-9 blocked with
+  a question, 10x-4 failed, 10x-11 starting with no link = disabled Steer), and all preview
+  phases (10x-3 running, 10x-test-2 checkout-only, 10x-14 exited); project `10x` has a dev command
+  and `10x-test` none *(verified — screenshots in mock mode)*.
