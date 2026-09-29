@@ -18,15 +18,26 @@ root `package.json`)*.
   `<BrowserRouter>`. Client-side routing, so a hard refresh or a direct load of any route needs the
   backend's `SPA_ROUTES` fallback (`memory/architecture.md`) to serve `index.html` in production.
 - `frontend/src/App.tsx` — the router shell, not the board. Renders `<NavBar>` (shared by every
-  route) plus a `<Routes>`: `/` redirects to `/board`, `/board` mounts `BoardPage`, `/dashboard` /
-  `/playbooks` / `/list` mount their placeholder pages. Owns `theme`, `steerMode`, `projectId` and
+  route) plus a `<Routes>`: `/` redirects to `/board`, `/board` mounts `BoardPage`, `/list` mounts
+  `ListPage`, `/dashboard` / `/playbooks` mount their placeholder pages. Owns `theme`, `steerMode`, `projectId` and
   the single `useBoard(projectId)` poll — state `NavBar`'s project picker and every route need, so
   it lives above the routes rather than being re-fetched per page.
 - `frontend/src/pages/BoardPage.tsx` — the kanban board itself (toolbar, provisioning banner,
   columns, ticket sheet), moved out of `App.tsx` unchanged when routing was added. Owns the
   board-local state `App.tsx` does not need: search query, sort order, which ticket the sheet has
-  open. `DashboardPage.tsx`, `PlaybooksPage.tsx` and `ListPage.tsx` are inert placeholders — see
-  `docs/playbooks-and-dashboard.md` for the unbuilt design of the first two.
+  open. `DashboardPage.tsx` and `PlaybooksPage.tsx` are inert placeholders — see
+  `docs/playbooks-and-dashboard.md` for their unbuilt design.
+- `frontend/src/pages/ListPage.tsx` — the same tickets as one sortable, filterable table, fed by
+  the shell's `useBoard` read (no second fetch) and opening the same `TicketSheet` a card does,
+  with `actionError={null}` because card-action errors live in the card's own state. Pure sort,
+  filter and `localStorage` prefs (key `10x.list`, every field validated on load) are in
+  `lib/list.ts`. j/k/arrows/Enter are a `window` keydown listener that ignores inputs, selects,
+  open menus and the open sheet — so after picking a filter from a native select, focus must
+  leave the select before j/k move the cursor *(verified — Playwright in mock mode)*.
+  Mock mode has 24 generated bulk tickets (`10x-15`…`10x-38`) appended to `MOCK_TICKETS` so every
+  sort key has spread. At a 420px viewport the **page** still scrolls sideways on every route,
+  because `NavBar` does not wrap (~890px); the list table itself scrolls inside its own box
+  *(verified — `document.documentElement.scrollWidth` 888 on `/board` too)*.
 - `frontend/src/components/` — `NavBar`, `BoardToolbar`, `Column`, `TicketCard`, `TicketSheet`,
   `DeleteTicketDialog`.
 - `frontend/src/components/ui/` — the shadcn primitives. Imported today: `button`, `input`,
