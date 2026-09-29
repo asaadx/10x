@@ -5,7 +5,7 @@
  * that is easy to get wrong: whether the move is a *pure status write* or whether it belongs to
  * a route because it has side effects outside the row. `POST /tickets/:id/status` validates
  * against this table, so a caller cannot write `in_progress` straight onto a ticket and leave
- * the board showing a running card with no worktree, no branch, no port block and no agent.
+ * the board showing a running card with no cloud session behind it.
  * The table answers "is this move legal?"; `claimTicket` in db.ts still answers "did I win it?"
  * — this module decides nothing about concurrency.
  *
@@ -60,35 +60,33 @@ export const TRANSITIONS: readonly Transition[] = [
     from: "todo",
     to: "in_progress",
     owner: "POST /tickets/:id/spawn",
-    effect: "creates the worktree and branch, reserves the port block and starts the agent",
+    effect: "starts the ticket's cloud session with its opening message",
   },
   {
     from: "in_progress",
     to: "todo",
     owner: "POST /tickets/:id/cancel",
-    effect:
-      "force-removes the worktree, deletes the branch and releases the port block; " +
-      "DELETE /tickets/:id/worktree takes the same edge but keeps the branch",
+    effect: "tells the session to stop, clears the session fields and stops any Preview",
   },
   {
     from: "in_progress",
     to: "in_review",
-    owner: "the agent-status callback",
+    owner: "the agent poller",
     effect:
-      "fires by itself the moment the agent's turn settles; no click means 'the turn ended', " +
-      "so there is nothing for a caller to ask for here",
+      "fires by itself once the agent reports agent_state = done; no click means 'the agent " +
+      "finished', so there is nothing for a caller to ask for here",
   },
   {
     from: "in_review",
     to: "done",
     owner: "POST /tickets/:id/accept",
-    effect: "pushes the branch, opens the PR, retires the agent and releases the port block",
+    effect: "marks the agent's draft PR ready for review, or opens one from its branch",
   },
   {
     from: "in_review",
     to: "in_progress",
     owner: "POST /tickets/:id/reject",
-    effect: "re-prompts the still-live agent with the reason and clears the completion mark",
+    effect: "sends the reason into the same cloud session and clears the completion mark",
   },
 ];
 

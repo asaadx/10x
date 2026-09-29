@@ -23,9 +23,9 @@
  * each one. Read it there rather than here: a second copy of the machine is how this comment
  * went stale in the first place.
  *
- * `in_review` is reached automatically when the agent's turn completes, and the ticket keeps
- * both its live agent and its port block while it sits there — a Reject has to be able to
- * re-prompt the same agent with its full context, and a Preview binds the same range.
+ * `in_review` is reached automatically when the agent reports `done` (server.ts's poller), and
+ * the ticket keeps its cloud session while it sits there — a Reject is a follow-up message
+ * into the same session, which still holds the full context.
  */
 export type Status = "backlog" | "todo" | "in_progress" | "in_review" | "done";
 
@@ -42,9 +42,8 @@ export type SessionKind = "plan" | "impl";
 export type AgentState = "starting" | "working" | "done" | "blocked" | "failed";
 
 /**
- * Which configured profile a ticket is dispatched with. Unlike `agentStatus`, which is left
- * as a bare `string` because Herdr owns that vocabulary, 10x owns this one, so a closed union
- * is safe and gives the board an exhaustive option list.
+ * Which configured profile a ticket is dispatched with. 10x owns this vocabulary, so a closed
+ * union is safe and gives the board an exhaustive option list.
  *
  * The array is the whole vocabulary and the type is derived from it, never the other way
  * around: the list is needed at runtime as well as at compile time, because the PATCH
@@ -97,8 +96,9 @@ export type ChecklistItem = { text: string; done: boolean };
 export type Attachment = { name: string; size: number; mime: string; path: string };
 
 /**
- * Which side of the before/after pair a screenshot upload writes. The route is
- * `POST /tickets/:id/screenshots/:side`, and `side` is the one path segment narrowed to this.
+ * Which side of a ticket's legacy before/after screenshot pair. Nothing writes these any more —
+ * cloud agents post their shots on the pull request — but the columns and the board's panes
+ * still exist until the frontend drops them.
  */
 export type ScreenshotSide = "before" | "after";
 
@@ -161,18 +161,19 @@ export type Ticket = {
   title: string;
   description: string;
   status: Status;
-  /** A turn ended after `working` was observed (memory/agent-status.md). */
+  /** The agent reported `done` and the ticket moved to review; cleared by Reject and respawn. */
   finished: boolean;
-  /** The pane exited. NOT the same as finished (memory/teardown.md rule 3). */
+  /** Legacy (Herdr: the pane exited). Nothing sets it any more; kept until the frontend drops it. */
   died: boolean;
   /** Hidden from every board read once true. No un-archive — see memory/parking-lot.md. */
   archived: boolean;
-  /** Persisted, not derived — see db.ts rule 1. Null until first spawn. */
+  /** The branch the agent reports it pushed. Null until it does. */
   branch: string | null;
+  /** Legacy (Herdr agent name). Nothing sets it any more; kept until the frontend drops it. */
   agentName: string | null;
-  /** OMP transcript directory, needed by teardown and outliving the worktree (memory/reconciliation.md). */
+  /** Legacy (OMP transcript directory). Nothing sets it any more. */
   sessionDir: string | null;
-  /** Set together by `setPullRequest` once Accept opens the PR. Null until then. */
+  /** The agent's draft PR, written by the agent; or the PR Accept opened from `branch`. */
   prNumber: number | null;
   prUrl: string | null;
   // Written by the webhook receiver from the `pull_request` payload (server.ts
@@ -209,8 +210,8 @@ export type Ticket = {
   screenshots: { before: string | null; after: string | null };
   /**
    * When the AGENT began work, distinct from `createdAt`: null on a ticket that has never been
-   * spawned, and what the card's run timer counts from. Written by the spawn lifecycle through
-   * `setRunFields`, never by an edit.
+   * spawned, and what the card's run timer counts from. Stamped by the spawn claim, never by an
+   * edit.
    */
   startedAt: string | null;
   /**
@@ -234,37 +235,6 @@ export type Ticket = {
   updatedAt: string;
 };
 
-/**
- * Per-run spawn diagnostics.
- *
- * Deliberately NOT persisted: these describe one attempt at starting an agent and are
- * debugging output, not ticket state. Losing them on restart is correct.
- *
- * Their reason for existing is memory/spawn.md — `agent.start` returns before the agent is usable, so
- * the guard retries and polls. These fields let the UI show whether that fired, which is
- * normal rather than a fault.
- */
-export type Diagnostics = {
-  startAttempts: number;
-  paneBusyRetries: number;
-  startReturnedStatus: string | null;
-  startReturnedReady: boolean | null;
-  startReturnedAfterMs: number | null;
-  neededReadinessPoll: boolean;
-  readinessPolls: number;
-  readyAfterMs: number | null;
-  promptAttempts: number;
-  promptNotReadyRetries: number;
-  /** True when spawn re-attached to an already-running agent rather than starting one. */
-  reusedExistingAgent: boolean;
-};
-
-/**
- * A ticket-namespaced worktree no live ticket claims. Reported, never reclaimed.
- *
- * Lives here rather than in reconcile.ts, which produces it, because it is part of the
- * `GET /tickets` response and this file is the only one the frontend may reach.
- */
 /**
  * A local Preview of a ticket's pushed branch (docs/prototype-cloud.md "Preview"): the branch
  * fetched into a detached worktree under `$STATE_DIR/previews/<ticketId>`, a port block

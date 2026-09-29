@@ -1,30 +1,22 @@
 /**
- * Pure functions for ticket identity and Herdr lifecycle interpretation.
+ * Pure functions for project identity: the slug rule and its derivation from a repo name.
  *
- * These live apart from runner.ts because they are the parts that have actually broken,
- * and being pure they are directly testable. Each carries the bug it exists to prevent.
+ * Everything that interpreted Herdr's lifecycle (agent names, event normalisation, readiness)
+ * went with Herdr; what is left is the part that shapes ids stored in the database, which is
+ * why it stays pure and directly testable.
  */
-import type { Status } from "./types.ts";
-
-/** Herdr agent names must match this, and are unique across the WHOLE Herdr session. */
-export const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
-
 /**
- * Project slugs feed both the branch and the agent name, so they are the tightest
- * constraint in the system. `ticket-` costs 7 characters and the separator 1, leaving 24
- * for slug + number — about 20 characters of slug beside a 4-digit ticket number.
+ * Project slugs are the first half of every ticket id (`<slug>-<number>`), and a ticket id
+ * ends up in a branch name (`claude/10x-<id>`), a directory name (the Preview checkout) and a
+ * SQL literal an agent types by hand. So the rule is deliberately tight: lowercase letters,
+ * digits and `-`, at most 20 characters.
  *
- * A LEADING DIGIT IS ALLOWED. Herdr agent names must start with a letter, but
- * `agentNameFor` always prefixes `ticket-`, so the letter is already guaranteed and the
- * slug itself is unconstrained in that respect. Requiring a leading letter here would
- * reject `10x` — this project's own name — for no reason. Verified: branch `ticket/10x/1`
- * passes `git check-ref-format`, `ticket-10x-7` matches Herdr's agent-name regex, and a
- * real worktree was created on that branch.
+ * The limit and the character set predate cloud sessions — they were set by Herdr's agent-name
+ * rules — and are kept rather than relaxed because every existing project id already satisfies
+ * them, and loosening a rule is free later while tightening one strands existing rows.
  *
- * Dots and underscores are excluded deliberately. Dots are legal in git branches but NOT
- * in agent names, so a slug like `my.app` would yield a valid branch and an invalid agent
- * name — failing only at spawn time, after the worktree already exists. Underscores are
- * legal in both but excluded to keep one canonical separator.
+ * A LEADING DIGIT IS ALLOWED: `10x`, this project's own name, must be a valid slug.
+ * Dots and underscores are excluded to keep `-` the one separator, so an id never needs quoting.
  */
 export const PROJECT_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,19}$/;
 
@@ -34,7 +26,7 @@ export function validateProjectSlug(slug: string): { ok: true } | { ok: false; m
       ok: false,
       message:
         "must be 1-20 chars, start with a lowercase letter or digit, and contain only " +
-        "a-z, 0-9 or '-' (dots are legal in branches but not in Herdr agent names)",
+        "a-z, 0-9 or '-'",
     };
   }
   return { ok: true };
@@ -74,96 +66,3 @@ export function deriveProjectSlug(repoName: string): string {
   const boundary = full.lastIndexOf("-", PROJECT_SLUG_MAX);
   return boundary > 0 ? full.slice(0, boundary) : full.slice(0, PROJECT_SLUG_MAX);
 }
-
-/**
- * Branch name. Slashes mirror `agentNameFor` on purpose: Herdr derives the worktree
- * directory from the branch by lowercasing and replacing `/` with `-`, so
- * `ticket/10x/7` lands in `ticket-10x-7`, identical to the agent name.
- */
-export const branchFor = (projectId: string, number: number) => `ticket/${projectId}/${number}`;
-
-/** Agent name. The `ticket-` prefix guarantees a leading letter for any project or number. */
-export const agentNameFor = (projectId: string, number: number) => `ticket-${projectId}-${number}`;
-
-/**
- * A planning agent's name: the ticket's agent name plus a suffix, derived from
- * `agentNameFor` rather than rebuilt so the two can never drift apart.
- *
- * THE SUFFIX IS LOAD-BEARING — do not "simplify" it away. `runner.ts` catches
- * `agent_name_taken` from `agent.start` and silently re-attaches, treating whatever it finds
- * as the implementation agent and deliberately sending it no ticket text. If a planner held
- * the plain ticket name, Start would adopt the planner and leave a ticket reading In Progress
- * with no worktree, no branch and no instruction — and no error anywhere.
- *
- * It costs 5 of the 32-character budget, so a plan name fits only while
- * `len(slug) + len(number) <= 19` — `agentNameFor` alone allows 24. `startPlanning` checks
- * the result against `AGENT_NAME_RE` rather than assuming, because the slug regex is laxer.
- */
-const PLAN_SUFFIX = "-plan";
-
-export const planAgentNameFor = (projectId: string, number: number) =>
-  `${agentNameFor(projectId, number)}${PLAN_SUFFIX}`;
-
-/**
- * Does this Herdr label name a planning agent? The sweep in `reconcile.ts` has nothing else
- * to go on: a planner has no worktree and no branch, so the branch-based identity every other
- * lookup uses cannot see it (memory/naming.md).
- *
- * Anchored on the whole shape `planAgentNameFor` produces, not just the suffix: a workspace a
- * human labelled `refactor-plan` is not ours, and the sweep closes what it matches.
- */
-const PLAN_AGENT_NAME_RE = new RegExp(`^ticket-[a-z0-9][a-z0-9-]*-\\d+${PLAN_SUFFIX}$`);
-
-export const isPlanAgentName = (label: string) => PLAN_AGENT_NAME_RE.test(label);
-
-/**
- * Which agent a ticket's card, its Focus button, and teardown are about.
- *
- * A backlog ticket's only possible agent is its PLANNER: `/spawn` claims from `todo`, and
- * every route back to `todo` tears the implementation agent down first, so no run can be live
- * under a backlog card. Resolving the plan name there is what lets a live planning
- * conversation show up through the existing agent chip and spinner instead of needing a second
- * status vocabulary — the two names are deliberately different (memory/naming.md), so a join
- * on the implementation name alone reports `null` for the whole planning run, and a teardown
- * asks Herdr about a bare name that was never assigned, gets `agent_not_found`, and never
- * touches the real, live planner.
- *
- * Keyed on status rather than "whichever of the two names Herdr knows", on purpose: the boot
- * sweep is the only thing that collects a planner whose ticket was promoted
- * (memory/reconciliation.md), so until the next boot a `todo` ticket can still have a live
- * planner — and reporting that as the ticket's status would show work happening on a card that
- * nobody has started.
- *
- * The persisted `agentName` still wins everywhere else (db.ts rule 1): a ticket dispatched
- * under an older scheme keeps pointing at the agent that actually exists.
- */
-export const liveAgentNameFor = (
-  status: Status,
-  projectId: string,
-  number: number,
-  agentName?: string | null,
-) =>
-  status === "backlog"
-    ? planAgentNameFor(projectId, number)
-    : (agentName ?? agentNameFor(projectId, number));
-
-/**
- * Herdr's emitted event names are inconsistently separated: `pane.agent_status_changed`
- * arrives dotted while `pane_closed` arrives underscored, and the schema declares both
- * with underscores. Matching either form literally silently drops half the events — a
- * failure with no error attached, which cost this project a working status pipeline once.
- */
-export const normalizeEvent = (event: string) => event.replaceAll(".", "_");
-
-export type AgentLike = { agent_status?: string; interactive_ready?: boolean };
-
-/**
- * `idle` and `done` are the SAME underlying ready state: `done` merely means the agent
- * settled while its tab was unseen. Accepting only `idle` hangs for the full timeout on
- * any agent that finished a turn unobserved — which is every re-attached agent.
- */
-export const isAgentReady = (a: AgentLike | undefined) =>
-  (a?.agent_status === "idle" || a?.agent_status === "done") && a?.interactive_ready === true;
-
-/** A turn ended. Only meaningful once `working` has been observed (memory/agent-status.md). */
-export const isSettled = (status: string) => status === "idle" || status === "done";

@@ -3,13 +3,12 @@
  * Every query goes through the async `Sql` client in sql.ts — Turso when configured, a local
  * `node:sqlite` file otherwise — so nothing here knows which one it is talking to.
  *
- * Two design rules, both from memory/herdr-omp-lifecycle.md:
+ * Two design rules:
  *
- *  1. Store what WE own, never what Herdr owns (memory/naming.md). `branch` and `agent_name` are
- *     values we choose and hand to Herdr, so they are persisted: if their format ever
- *     changes, existing tickets keep pointing at the branch that actually exists.
- *     Worktree paths, pane ids and workspace ids are Herdr's and are never stored —
- *     they are read live on every request.
+ *  1. The row is the whole truth about a ticket's agent. A cloud session's status cannot be
+ *     read from anywhere (docs/prototype-cloud.md), so the board writes what it started
+ *     (`session_*`, `agent_state = 'starting'`) and the agent writes the rest into this same
+ *     row. Nothing about an agent is derived at read time any more.
  *
  *  2. Status is the lock (memory/operations.md). `claimTicket` is a conditional UPDATE and reports whether
  *     it won, so a double-click cannot start two spawns.
@@ -19,7 +18,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseRemote } from "./github.ts";
 import { MAX_PORT_SLOTS, type SlotAllocation } from "./ports.ts";
-import { openSql, type Sql, type Stmt } from "./sql.ts";
+import { openSql, type Sql, type Stmt, type Value } from "./sql.ts";
 import {
   PLAYBOOKS,
   type AgentState,
@@ -30,7 +29,6 @@ import {
   type Project,
   type ProvisionState,
   type PullRequestState,
-  type ScreenshotSide,
   type SessionKind,
   type Status,
   type Ticket,
@@ -92,17 +90,17 @@ CREATE TABLE IF NOT EXISTS tickets (
   branch      TEXT,
   agent_name  TEXT,
   session_dir TEXT,
-  -- Which block of TCP ports this ticket's agent owns, as a slot index into the pool in
-  -- ports.ts. Nullable: a ticket holds one from spawn until it leaves review. Persisted because
-  -- a restart that forgot the held slots would hand one slot to two tickets.
+  -- Which block of TCP ports this ticket's local Preview owns, as a slot index into the pool
+  -- in ports.ts. Nullable: held only while a Preview runs, and released at boot because
+  -- Previews do not survive a restart (releaseAllPortSlots).
   --
   -- The uniqueness (a UNIQUE INDEX, created below) IS the safety: SQLite makes
   -- double-assignment impossible, the same way the conditional UPDATE in claimTicket
   -- makes a double spawn impossible. NULLs are distinct in SQLite, so any number of
   -- tickets may hold no slot at all.
   port_slot   INTEGER,
-  -- Set together once Accept opens the pull request. Nullable: most tickets never reach
-  -- "done", and the pair is written by exactly one function, setPullRequest.
+  -- The ticket's pull request. Written by the cloud agent when it opens its draft PR, or by
+  -- Accept (setPullRequest) when it has to open one itself from the agent's branch.
   pr_number   INTEGER,
   pr_url      TEXT,
   -- Written by the webhook receiver from the pull_request payload. additions/deletions
@@ -445,7 +443,7 @@ export const toTicket = (r: TicketRow): Ticket => ({
   // A cast, not a check, for the same reason `jsonList` in ticket-store.ts does not validate
   // the items it parses: only this API writes the column, and `updateTicket` tests every
   // incoming value against `PLAYBOOKS` before it goes in, so what comes back out is what we
-  // put there. Unlike `toStatus`, which must decode a value Herdr-era rows could disagree
+  // put there. Unlike `toStatus`, which must decode a value older rows could disagree
   // about, there is nothing here to decide. This is the seam to tighten if anything other
   // than this API ever gains write access to `tickets.playbook`.
   playbook: r.playbook as Playbook,
@@ -482,6 +480,48 @@ export async function claimTicket(id: string, from: Status, to: Status): Promise
     [to, nowIso(), id, from],
   );
   return res.rowsAffected === 1;
+}
+
+/**
+ * The claim, plus the columns that must change IN THE SAME STATEMENT as the status.
+ *
+ * Separate writes would open a window the poller can see. Reject is the case that forced it:
+ * a ticket in review has `agent_state = 'done'`, and a Reject that moved it to `in_progress`
+ * first and reset `agent_state` second would let one poll land in between, see "in progress
+ * and done", and bounce the ticket straight back to review — the rejection silently undone.
+ *
+ * Column names are literals from the callers in this codebase, never request data.
+ */
+export async function claimTicketWith(
+  id: string,
+  from: Status,
+  to: Status,
+  set: Record<string, Value>,
+): Promise<boolean> {
+  const columns = Object.keys(set);
+  const assignments = columns.map((c) => `${c} = ?, `).join("");
+  const res = await db.execute(
+    `UPDATE tickets SET ${assignments}status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+    [...columns.map((c) => set[c] ?? null), to, nowIso(), id, from],
+  );
+  return res.rowsAffected === 1;
+}
+
+/**
+ * The poller's whole job (server.ts): every ticket whose agent reported `done` while the
+ * ticket was in progress moves to review. One conditional UPDATE over all of them — the
+ * `status = 'in_progress'` in the WHERE is the same CAS `claimTicket` makes, so a Cancel that
+ * got there first simply matches nothing, and a ticket settling twice moves once.
+ *
+ * `finished` is still set because the board's completion checkmark reads it.
+ */
+export async function settleFinishedAgents(): Promise<string[]> {
+  const res = await db.execute(
+    "UPDATE tickets SET status = 'in_review', finished = 1, updated_at = ? " +
+      "WHERE status = 'in_progress' AND agent_state = 'done' RETURNING id",
+    [nowIso()],
+  );
+  return res.rows.map((r) => String(r["id"]));
 }
 
 // ---------------------------------------------------------------------------
@@ -523,7 +563,7 @@ export async function reservePortSlot(id: string, cap = MAX_PORT_SLOTS): Promise
 
 /**
  * Free a ticket's block. Unconditional and a no-op for a ticket holding none, so every
- * teardown path can call it from a `finally`: a slot leaked by a Herdr call that failed
+ * teardown path can call it from a `finally`: a slot leaked by a Preview start that failed
  * halfway is gone until the next boot, and the pool is only ten wide.
  */
 export async function releasePortSlot(id: string): Promise<void> {
@@ -565,43 +605,18 @@ export async function setPullRequestState(
   return res.rowsAffected > 0;
 }
 
-const SCREENSHOT_COLUMN: Record<ScreenshotSide, string> = {
-  before: "screenshot_before",
-  after: "screenshot_after",
-};
-
 /**
- * Point one side of the before/after pair at the route that serves it (screenshots.ts). Two
- * columns, not one JSON blob (see the schema comment above), so this writes exactly one and
- * leaves the other untouched — a ticket sits with a before and no after for its whole run.
- */
-export async function setScreenshot(id: string, side: ScreenshotSide, path: string): Promise<void> {
-  await db.execute(`UPDATE tickets SET ${SCREENSHOT_COLUMN[side]} = ?, updated_at = ? WHERE id = ?`, [
-    path,
-    nowIso(),
-    id,
-  ]);
-}
-
-/**
- * Boot-time reclaim of blocks held by tickets that are not in a port-holding state — the
- * residue of a process killed between reserving a slot and releasing it.
+ * Boot-time release of EVERY held block. A block is held only by a running Preview
+ * (server.ts), and Previews live in this process's memory — so at boot none is running, and
+ * any slot still marked held is the residue of a process that died without releasing it.
  *
- * This clears rows, which looks like a breach of the rule that reconciliation reports and
- * never destroys (memory/reconciliation.md). It is not. That rule protects the user's WORK:
- * a worktree, a branch, a transcript, none of which can be recreated. A port slot is our
- * own bookkeeping — a note saying "this number is spoken for" — so reclaiming one cannot
- * lose anything, while leaving them held silently shrinks the pool on every crash.
- *
- * `in_progress` and `in_review` are the port-holding statuses: the block is reserved at spawn
- * and released by every teardown path, a backlog ticket has no agent to be running a server,
- * and a ticket in review still owns its range for a Preview to bind — the block is reserved
- * for the ticket's whole active life, not leased to whatever process happens to be running.
+ * This clears rows, which is fine: a port slot is our own bookkeeping, a note saying "this
+ * number is spoken for", and reclaiming one cannot lose anybody's work — while leaving them
+ * held would silently shrink the pool on every crash.
  */
-export async function reclaimStalePortSlots(): Promise<number> {
+export async function releaseAllPortSlots(): Promise<number> {
   const res = await db.execute(
-    "UPDATE tickets SET port_slot = NULL, updated_at = ? " +
-      "WHERE port_slot IS NOT NULL AND status NOT IN ('in_progress', 'in_review')",
+    "UPDATE tickets SET port_slot = NULL, updated_at = ? WHERE port_slot IS NOT NULL",
     [nowIso()],
   );
   return res.rowsAffected;

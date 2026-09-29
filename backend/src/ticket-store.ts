@@ -31,6 +31,8 @@ import {
   type Playbook,
   type Priority,
   type Ticket,
+  type AgentState,
+  type SessionKind,
 } from "./types.ts";
 
 /** `{ error: "<code>", ...context }` — the uniform error envelope the whole API uses. */
@@ -40,8 +42,15 @@ export type TicketResult =
   | { ok: true; ticket: Ticket }
   | { ok: false; status: number; body: ErrorBody };
 
-/** Written only by spawn and teardown. `null` clears; absent leaves the column alone. */
+/** Written only by the lifecycle routes. `null` clears; absent leaves the column alone. */
 export type RunFields = {
+  /** The cloud session the board started (server.ts spawn / plan). */
+  sessionId?: string | null;
+  sessionUrl?: string | null;
+  sessionKind?: SessionKind | null;
+  /** The board writes `starting` and clears; every other value is the agent's own write. */
+  agentState?: AgentState | null;
+  agentNote?: string | null;
   branch?: string | null;
   agentName?: string | null;
   sessionDir?: string | null;
@@ -280,6 +289,15 @@ const IMMUTABLE = [
   "died",
   "archived",
   "sessionDir",
+  // The cloud session and the agent's own report: the board and the agent write these into
+  // the row directly (docs/prototype-cloud.md), and an edit that forged `agentState: "done"`
+  // would move the ticket to review through the poller with no agent behind it.
+  "sessionId",
+  "sessionUrl",
+  "sessionKind",
+  "agentState",
+  "agentNote",
+  "agentUpdatedAt",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -435,6 +453,11 @@ export async function setRunFields(id: string, fields: RunFields): Promise<void>
   if (fields.startedAt !== undefined) columns.push(["started_at", fields.startedAt]);
   if (fields.finished !== undefined) columns.push(["finished", fields.finished ? 1 : 0]);
   if (fields.died !== undefined) columns.push(["died", fields.died ? 1 : 0]);
+  if (fields.sessionId !== undefined) columns.push(["session_id", fields.sessionId]);
+  if (fields.sessionUrl !== undefined) columns.push(["session_url", fields.sessionUrl]);
+  if (fields.sessionKind !== undefined) columns.push(["session_kind", fields.sessionKind]);
+  if (fields.agentState !== undefined) columns.push(["agent_state", fields.agentState]);
+  if (fields.agentNote !== undefined) columns.push(["agent_note", fields.agentNote]);
   await writeColumns(id, columns);
 }
 

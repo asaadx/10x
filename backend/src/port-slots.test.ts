@@ -1,5 +1,5 @@
 /**
- * Tests for port-slot persistence: reserve, release, reuse, and the boot-time reclaim.
+ * Tests for port-slot persistence: reserve, release, reuse, and the boot-time release.
  *
  * The allocator itself is pure and tested in ports.test.ts. What is tested here is the part
  * that survives a restart — a slot the store forgot is a slot handed to two tickets at once.
@@ -19,7 +19,7 @@ process.env.MAX_PORT_SLOTS = "2";
 // db.ts opens the database at module load, so DB_PATH must already be set: the one place a
 // dynamic import is required rather than preferred. A static import would hoist above the
 // assignments above and open the real ~/.10x/10x.db.
-const { db, initDb, nowIso, reclaimStalePortSlots, releasePortSlot, reservePortSlot } =
+const { db, initDb, nowIso, releaseAllPortSlots, releasePortSlot, reservePortSlot } =
   await import("./db.ts");
 await initDb();
 
@@ -98,34 +98,23 @@ describe("reservePortSlot", () => {
   });
 });
 
-describe("reclaimStalePortSlots", () => {
-  test("frees a slot dropped back to backlog, and leaves a running ticket's alone", async () => {
-    // res-b still holds slot 1 from the reservation tests. Dropping it back to backlog
-    // without releasing is exactly the residue a killed process leaves; res-c is genuinely
-    // in progress on slot 0 and must survive.
-    await db.execute("UPDATE tickets SET status = 'backlog' WHERE id = 'res-b'");
-
-    assert.equal(await reclaimStalePortSlots(), 1);
-    assert.equal(await storedSlot("res-b"), null);
-    assert.equal(await storedSlot("res-c"), 0);
-  });
-
-  test("a ticket in review keeps its block; a backlog ticket loses its", async () => {
-    // A ticket in review still owns its range — a Preview started there binds it — so the
-    // reclaim has to spare it exactly as it spares a running agent. Both slots are freed
-    // first so this test owns both sides of the predicate rather than inheriting them.
+describe("releaseAllPortSlots", () => {
+  test("frees every held slot, whatever the ticket's status", async () => {
+    // Slots are held only by Previews, which live in the server's memory, so at boot every
+    // held slot is residue — including one on a ticket that is in review or in progress.
+    await releasePortSlot("res-b");
     await releasePortSlot("res-c");
     const review = await seed("res-review", "in_review");
     const backlog = await seed("res-backlog", "backlog");
     assert.deepEqual(await reservePortSlot(review), { ok: true, slot: 0 });
     assert.deepEqual(await reservePortSlot(backlog), { ok: true, slot: 1 });
 
-    assert.equal(await reclaimStalePortSlots(), 1);
-    assert.equal(await storedSlot(review), 0);
+    assert.equal(await releaseAllPortSlots(), 2);
+    assert.equal(await storedSlot(review), null);
     assert.equal(await storedSlot(backlog), null);
   });
 
-  test("a boot with nothing stale reclaims nothing", async () => {
-    assert.equal(await reclaimStalePortSlots(), 0);
+  test("a boot with nothing held releases nothing", async () => {
+    assert.equal(await releaseAllPortSlots(), 0);
   });
 });

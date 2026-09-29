@@ -4,14 +4,13 @@
  * and the guard that stops a ticket being started against a project whose repo is not on disk
  * yet.
  *
- * Same shape as `server-pr.test.ts`: the server runs as its own child process with a fake Herdr
- * on a unix socket and `github-fetch-shim.ts` redirecting `https://api.github.com/...` to a
- * local listener, so nothing here touches the network or a real repository.
+ * Same shape as `server-pr.test.ts`: the server runs as its own child process with
+ * `github-fetch-shim.ts` redirecting `https://api.github.com/...` to a local listener, so
+ * nothing here touches the network or a real repository.
  */
 import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { createServer, type Server, type Socket } from "node:net";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,53 +18,17 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const dir = mkdtempSync(join(tmpdir(), "10x-project-routes-test-"));
-const socketPath = join(dir, "herdr.sock");
 // Unique across the suite: node:test runs these files concurrently, and two servers sharing a
 // port means one answers the other's requests against the wrong database. 4310 is e2e's.
 const PORT = 4324;
 process.env.STATE_DIR = dir;
 process.env.DB_PATH = join(dir, "10x.db");
-process.env.HERDR_SOCKET_PATH = socketPath;
 
-// db.ts reads STATE_DIR/DB_PATH at module load, so this must be dynamic — see plan.test.ts.
+// db.ts reads STATE_DIR/DB_PATH at module load, so this must be dynamic.
 const { db, initDb, nowIso } = await import("./db.ts");
 await initDb();
 
 const API_URL = `http://localhost:${PORT}`;
-
-// ---------------------------------------------------------------------------
-// Fake Herdr. Nothing here spawns an agent; these handlers exist so boot
-// reconciliation finds an empty world and the child comes up.
-// ---------------------------------------------------------------------------
-
-const handlers: Record<string, () => { result: unknown }> = {
-  "workspace.list": () => ({ result: { type: "workspace_list", workspaces: [] } }),
-  "agent.list": () => ({ result: { type: "agent_list", agents: [] } }),
-  "worktree.list": () => ({ result: { type: "worktree_list", worktrees: [] } }),
-};
-
-const sockets: Socket[] = [];
-const herdr: Server = createServer((socket) => {
-  sockets.push(socket);
-  let buf = "";
-  socket.on("data", (chunk) => {
-    buf += chunk.toString();
-    const nl = buf.indexOf("\n");
-    if (nl === -1) return;
-    const line = buf.slice(0, nl);
-    buf = "";
-    const parsed = JSON.parse(line) as { method?: string };
-    const handler = parsed.method === undefined ? undefined : handlers[parsed.method];
-    socket.end(
-      JSON.stringify(handler ? handler() : { error: { code: "unhandled", message: line } }) + "\n",
-    );
-  });
-});
-{
-  const { promise, resolve } = Promise.withResolvers<void>();
-  herdr.listen(socketPath, resolve);
-  await promise;
-}
 
 // ---------------------------------------------------------------------------
 // Fake GitHub. `GET /repos/:owner/:repo` is the admission test; the answer is
@@ -205,7 +168,9 @@ const child = spawn(
       STATE_DIR: dir,
       DB_PATH: join(dir, "10x.db"),
       PROJECTS_ROOT: join(dir, "repos"),
-      HERDR_SOCKET_PATH: socketPath,
+      CLOUD_DRIVER: "fake",
+      // Parked: nothing here needs a finished agent, and a reconcile would hit the fake GitHub.
+      AGENT_POLL_MS: "3600000",
       GITHUB_TOKEN: "test-token",
       GITHUB_FETCH_SHIM_TARGET: GITHUB_URL,
       PATH: `${shimDir}:${process.env.PATH}`,
@@ -245,10 +210,6 @@ async function api(method: string, path: string, body?: unknown) {
 
 after(async () => {
   child.kill("SIGTERM");
-  for (const socket of sockets) socket.destroy();
-  const { promise, resolve } = Promise.withResolvers<void>();
-  herdr.close(() => resolve());
-  await promise;
   await new Promise<void>((r) => {
     github.close(() => r());
   });
@@ -358,6 +319,29 @@ describe("POST /projects takes a remote, and derives the rest", () => {
     assert.equal(res.body["repo"], "hearth-home-automation");
     assert.equal(res.body["repoPath"], join(dir, "repos", "hearth-home"));
     assert.equal(res.body["description"], "Home automation brain");
+    assert.equal(res.body["devCommand"], "");
+  });
+
+  test("devCommand can be set at creation, with the same shape rule PATCH applies", async () => {
+    repoReply = {
+      status: 200,
+      body: { name: "gadgets", description: "", default_branch: "main", private: false, owner: { login: "acme" } },
+    };
+    const res = await api("POST", "/projects", {
+      remote: "https://github.com/acme/gadgets",
+      name: "Gadgets",
+      devCommand: "  pnpm dev --port $PORT  ",
+    });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    assert.equal(res.body["devCommand"], "pnpm dev --port $PORT");
+
+    const bad = await api("POST", "/projects", {
+      remote: "https://github.com/acme/gadgets2",
+      name: "Gadgets 2",
+      devCommand: "one\ntwo",
+    });
+    assert.equal(bad.status, 400);
+    assert.equal(bad.body["error"], "invalid_dev_command");
   });
 
   test("a caller-supplied repoPath is refused rather than quietly obeyed", async () => {

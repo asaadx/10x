@@ -1,13 +1,13 @@
 /**
- * Keep 10x's own writes inside a ticket worktree invisible to `git status`, without touching
+ * Keep 10x's own writes inside a Preview checkout invisible to `git status`, without touching
  * the project's tracked `.gitignore` — that file belongs to the project, not to us.
  *
  * `rev-parse --git-path`, never `join(worktreePath, ".git", …)`. In a linked worktree `.git`
  * is a FILE, and git resolves `info/exclude` against the COMMON git directory — the source
- * repo's `.git/info/exclude`, shared by every ticket worktree of that repo. Verified (see
- * runner.ts's original comment, before this was extracted): after appending an entry there,
- * `git status` inside the worktree is clean and `git check-ignore` names that file. Being
- * shared is exactly why the append below is conditional on the entry not already being there.
+ * repo's `.git/info/exclude`, shared by every linked worktree of that repo. Verified: after
+ * appending an entry there, `git status` inside the worktree is clean and `git check-ignore`
+ * names that file. Being shared is exactly why the append below is conditional on the entry
+ * not already being there.
  */
 import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -36,15 +36,4 @@ export async function excludeFromGit(worktreePath: string, entry: string): Promi
   if (current.split("\n").includes(entry)) return;
   const separator = current === "" || current.endsWith("\n") ? "" : "\n";
   await writeFile(excludeFile, `${current}${separator}${entry}\n`, "utf8");
-}
-
-/**
- * Does the project's own history already track something at `relPath` (relative to the
- * worktree root)? `git ls-files` reads the index, which for a freshly created worktree
- * matches HEAD exactly — so this answers "does the base branch already commit this path",
- * not "does a file exist there right now" (an untracked file on disk would not count).
- */
-export async function isTracked(worktreePath: string, relPath: string): Promise<boolean> {
-  const { stdout } = await run("git", ["-C", worktreePath, "ls-files", "--", relPath]);
-  return stdout.trim() !== "";
 }
