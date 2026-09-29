@@ -28,7 +28,8 @@ process.env.DB_PATH = join(dir, "10x.db");
 process.env.HERDR_SOCKET_PATH = socketPath;
 
 // db.ts reads STATE_DIR/DB_PATH at module load, so this must be dynamic — see plan.test.ts.
-const { db, nowIso } = await import("./db.ts");
+const { db, initDb, nowIso } = await import("./db.ts");
+await initDb();
 
 const API_URL = `http://localhost:${PORT}`;
 
@@ -138,26 +139,29 @@ execFileSync("git", ["remote", "add", "origin", "https://github.com/acme/ready.g
   cwd: readyRepo,
 });
 
-db.prepare(
+await db.execute(
   `INSERT INTO projects (id, name, description, owner, repo, repo_path, base_branch,
                          provision_state, provision_error, created_at, updated_at)
    VALUES (?, ?, '', 'acme', 'ready', ?, 'main', 'ready', '', ?, ?)`,
-).run("readyproj", "Ready", readyRepo, nowIso(), nowIso());
+  ["readyproj", "Ready", readyRepo, nowIso(), nowIso()],
+);
 
-db.prepare(
+await db.execute(
   `INSERT INTO projects (id, name, description, owner, repo, repo_path, base_branch,
                          provision_state, provision_error, created_at, updated_at)
    VALUES (?, ?, '', 'acme', 'cloning', ?, 'main', 'cloning', '', ?, ?)`,
-).run("cloningproj", "Cloning", join(dir, "not-there-yet"), nowIso(), nowIso());
+  ["cloningproj", "Cloning", join(dir, "not-there-yet"), nowIso(), nowIso()],
+);
 
-const seedTicket = (id: string, projectId: string, number: number, status: string): void => {
-  db.prepare(
+const seedTicket = async (id: string, projectId: string, number: number, status: string): Promise<void> => {
+  await db.execute(
     `INSERT INTO tickets (id, project_id, number, title, description, status, created_at, updated_at)
      VALUES (?, ?, ?, ?, '', ?, ?, ?)`,
-  ).run(id, projectId, number, `ticket ${id}`, status, nowIso(), nowIso());
+    [id, projectId, number, `ticket ${id}`, status, nowIso(), nowIso()],
+  );
 };
-seedTicket("cloningproj-1", "cloningproj", 1, "todo");
-seedTicket("cloningproj-2", "cloningproj", 2, "backlog");
+await seedTicket("cloningproj-1", "cloningproj", 1, "todo");
+await seedTicket("cloningproj-2", "cloningproj", 2, "backlog");
 
 // A project whose clone already lives where 10x would put one — the case the delete route
 // must actually remove.
@@ -166,11 +170,12 @@ const ownedRepo = join(projectsRoot, "ownedclone");
 mkdirSync(ownedRepo, { recursive: true });
 writeFileSync(join(ownedRepo, "sentinel"), "10x's own clone\n");
 
-db.prepare(
+await db.execute(
   `INSERT INTO projects (id, name, description, owner, repo, repo_path, base_branch,
                          provision_state, provision_error, created_at, updated_at)
    VALUES (?, ?, '', 'acme', 'ownedclone', ?, 'main', 'ready', '', ?, ?)`,
-).run("ownedclone", "Owned clone", ownedRepo, nowIso(), nowIso());
+  ["ownedclone", "Owned clone", ownedRepo, nowIso(), nowIso()],
+);
 
 // A project that predates this feature: its `repo_path` is a folder the user pointed 10x at
 // directly, sitting outside `PROJECTS_ROOT` entirely — the migration backfills identity without
@@ -179,11 +184,12 @@ const alienRepo = join(dir, "alien-repo");
 mkdirSync(alienRepo, { recursive: true });
 writeFileSync(join(alienRepo, "sentinel"), "the user's own checkout\n");
 
-db.prepare(
+await db.execute(
   `INSERT INTO projects (id, name, description, owner, repo, repo_path, base_branch,
                          provision_state, provision_error, created_at, updated_at)
    VALUES (?, ?, '', 'acme', 'alien', ?, 'main', 'ready', '', ?, ?)`,
-).run("alienclone", "Alien clone", alienRepo, nowIso(), nowIso());
+  ["alienclone", "Alien clone", alienRepo, nowIso(), nowIso()],
+);
 
 // ---------------------------------------------------------------------------
 // The server child.
@@ -246,7 +252,6 @@ after(async () => {
   await new Promise<void>((r) => {
     github.close(() => r());
   });
-  db.close();
   rmSync(dir, { recursive: true, force: true });
 });
 

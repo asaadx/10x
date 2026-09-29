@@ -2,7 +2,7 @@
  * Route-level tests for `POST /tickets/:id/archive`: the Done-only guard, the same fail-closed
  * PR-state check `DELETE /tickets/:id` already runs, the `teardown()` reuse (worktree removed,
  * branch deleted for real), and the point of the whole feature — an archived ticket disappears
- * from `listTickets()`/`GET /tickets` while `getTicket(id)` can still resolve it directly,
+ * from `await listTickets()`/`GET /tickets` while `await getTicket(id)` can still resolve it directly,
  * because `SELECT_ONE` is deliberately left unfiltered.
  *
  * Set up the same way `server-pr.test.ts` does: the server under test runs as its own child
@@ -29,7 +29,8 @@ process.env.DB_PATH = join(dir, "10x.db");
 process.env.HERDR_SOCKET_PATH = socketPath;
 
 // db.ts reads STATE_DIR/DB_PATH at module load, so this must be dynamic — see plan.test.ts.
-const { db, nowIso } = await import("./db.ts");
+const { db, initDb, nowIso } = await import("./db.ts");
+await initDb();
 const { getTicket } = await import("./ticket-store.ts");
 
 const API_URL = `http://localhost:${PORT}`;
@@ -140,34 +141,23 @@ function branchExists(branch: string): boolean {
 // The store, seeded directly.
 // ---------------------------------------------------------------------------
 
-db.prepare(
+await db.execute(
   "INSERT INTO projects (id, name, repo_path, base_branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-).run(PROJECT_ID, PROJECT_ID, repoPath, "main", nowIso(), nowIso());
+  [PROJECT_ID, PROJECT_ID, repoPath, "main", nowIso(), nowIso()],
+);
 
 let nextNumber = 1;
-function seedTicket(
+async function seedTicket(
   id: string,
   over: { status?: string; prNumber?: number | null; prUrl?: string | null; prState?: string | null } = {},
-): { id: string; branch: string } {
+): Promise<{ id: string; branch: string }> {
   const number = nextNumber++;
   const branch = `ticket/${PROJECT_ID}/${number}`;
   execFileSync(realGit, ["-C", repoPath, "branch", branch]);
-  db.prepare(
+  await db.execute(
     "INSERT INTO tickets (id, project_id, number, title, description, status, branch, pr_number, pr_url, pr_state, created_at, updated_at) " +
       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-  ).run(
-    id,
-    PROJECT_ID,
-    number,
-    `ticket ${id}`,
-    "",
-    over.status ?? "done",
-    branch,
-    over.prNumber ?? null,
-    over.prUrl ?? null,
-    over.prState ?? null,
-    nowIso(),
-    nowIso(),
+    [id, PROJECT_ID, number, `ticket ${id}`, "", over.status ?? "done", branch, over.prNumber ?? null, over.prUrl ?? null, over.prState ?? null, nowIso(), nowIso()],
   );
   return { id, branch };
 }
@@ -236,7 +226,6 @@ after(async () => {
   await new Promise<void>((r) => {
     github.close(() => r());
   });
-  db.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -244,7 +233,7 @@ after(async () => {
 
 describe("POST /tickets/:id/archive", () => {
   test("archives a Done ticket once the live PR read comes back merged: gone from the board, worktree torn down, branch deleted for real", async () => {
-    const { id, branch } = seedTicket("t-merged", {
+    const { id, branch } = await seedTicket("t-merged", {
       status: "done",
       prNumber: 1,
       prUrl: "https://github.com/acme/proj/pull/1",
@@ -272,7 +261,7 @@ describe("POST /tickets/:id/archive", () => {
   });
 
   test("refuses a non-Done ticket with 409 not_done, naming the status it found", async () => {
-    const { id } = seedTicket("t-in-progress", { status: "in_progress" });
+    const { id } = await seedTicket("t-in-progress", { status: "in_progress" });
 
     const res = await api("POST", `/tickets/${id}/archive`);
 
@@ -283,7 +272,7 @@ describe("POST /tickets/:id/archive", () => {
   });
 
   test("refuses with 409 pr_open when the live GitHub read says the PR is still open", async () => {
-    const { id } = seedTicket("t-open", {
+    const { id } = await seedTicket("t-open", {
       status: "done",
       prNumber: 2,
       prUrl: "https://github.com/acme/proj/pull/2",
@@ -300,7 +289,7 @@ describe("POST /tickets/:id/archive", () => {
   });
 
   test("refuses with 409 pr_state_unknown when the ticket has no recorded pull request", async () => {
-    const { id } = seedTicket("t-no-pr", { status: "done" });
+    const { id } = await seedTicket("t-no-pr", { status: "done" });
 
     const res = await api("POST", `/tickets/${id}/archive`);
 
@@ -309,8 +298,8 @@ describe("POST /tickets/:id/archive", () => {
     assert.ok((await boardIds()).includes(id));
   });
 
-  test("getTicket(id) still resolves an archived ticket by id even though the board no longer lists it", async () => {
-    const { id } = seedTicket("t-lookup", {
+  test("await getTicket(id) still resolves an archived ticket by id even though the board no longer lists it", async () => {
+    const { id } = await seedTicket("t-lookup", {
       status: "done",
       prNumber: 3,
       prUrl: "https://github.com/acme/proj/pull/3",
@@ -321,7 +310,7 @@ describe("POST /tickets/:id/archive", () => {
     assert.equal(res.status, 200);
 
     assert.ok(!(await boardIds()).includes(id));
-    const direct = getTicket(id);
+    const direct = await getTicket(id);
     assert.equal(direct?.id, id);
     assert.equal(direct?.archived, true);
   });

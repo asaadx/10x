@@ -1,5 +1,7 @@
 /**
- * SQLite store. Zero dependencies — `node:sqlite` is built into Node 24.
+ * The store: schema, migrations, row types, and the small writers that each own a column.
+ * Every query goes through the async `Sql` client in sql.ts — Turso when configured, a local
+ * `node:sqlite` file otherwise — so nothing here knows which one it is talking to.
  *
  * Two design rules, both from memory/herdr-omp-lifecycle.md:
  *
@@ -12,15 +14,15 @@
  *  2. Status is the lock (memory/operations.md). `claimTicket` is a conditional UPDATE and reports whether
  *     it won, so a double-click cannot start two spawns.
  */
-import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseRemote } from "./github.ts";
-import { allocateSlot, type SlotAllocation } from "./ports.ts";
+import { MAX_PORT_SLOTS, type SlotAllocation } from "./ports.ts";
+import { openSql, type Sql, type Stmt } from "./sql.ts";
 import {
   PLAYBOOKS,
+  type AgentState,
   type Attachment,
   type ChecklistItem,
   type Playbook,
@@ -29,6 +31,7 @@ import {
   type ProvisionState,
   type PullRequestState,
   type ScreenshotSide,
+  type SessionKind,
   type Status,
   type Ticket,
 } from "./types.ts";
@@ -43,7 +46,12 @@ const DB_PATH = process.env.DB_PATH ?? join(STATE_DIR, "10x.db");
  */
 export const PROJECTS_ROOT = process.env.PROJECTS_ROOT ?? join(STATE_DIR, "repos");
 
-const SCHEMA = `
+/**
+ * One string per statement, not one multi-statement script: the `Sql` client runs exactly one
+ * statement per call (Hrana has no "exec a script" request), so the schema is a batch.
+ */
+const SCHEMA = [
+  `
 CREATE TABLE IF NOT EXISTS projects (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
@@ -65,10 +73,13 @@ CREATE TABLE IF NOT EXISTS projects (
   -- not remove its worktree (memory/teardown.md), the new ticket's branch would collide with the orphan
   -- left behind — silently adopting another ticket's work.
   next_number INTEGER NOT NULL DEFAULT 1,
+  -- The shell command Preview runs in a ticket's checkout, with PORT set. '' means none:
+  -- Preview still checks the branch out, it just starts nothing.
+  dev_command TEXT NOT NULL DEFAULT '',
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
-);
-
+)`,
+  `
 CREATE TABLE IF NOT EXISTS tickets (
   id          TEXT PRIMARY KEY,
   project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -127,110 +138,133 @@ CREATE TABLE IF NOT EXISTS tickets (
   -- before anything spawns. Null on a ticket that has never been spawned, and it is what the
   -- card's run timer counts from — counting from created_at would show that backlog wait.
   started_at  TEXT,
+  -- The cloud session working this ticket (docs/prototype-cloud.md). The board writes the id,
+  -- url and kind ('plan' | 'impl') when it starts one, and agent_state = 'starting'; from then
+  -- on the AGENT writes agent_state, agent_note and agent_updated_at into this row itself, over
+  -- Turso's HTTP API. Free text on disk, so each is narrowed at the decode boundary below.
+  session_id       TEXT,
+  session_url      TEXT,
+  session_kind     TEXT,
+  agent_state      TEXT,
+  agent_note       TEXT,
+  agent_updated_at TEXT,
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL,
   UNIQUE (project_id, number)
-);
+)`,
+  "CREATE INDEX IF NOT EXISTS tickets_by_project ON tickets (project_id, status)",
+];
 
-CREATE INDEX IF NOT EXISTS tickets_by_project ON tickets (project_id, status);
-`;
-
-mkdirSync(dirname(DB_PATH), { recursive: true });
-export const db = new DatabaseSync(DB_PATH);
-db.exec("PRAGMA journal_mode = WAL");
-db.exec("PRAGMA foreign_keys = ON");
-db.exec(SCHEMA);
+/**
+ * The client. Constructing it touches nothing — the local driver opens its file on first use
+ * and the Turso driver is only a URL — so importing this module is free, and a test can set
+ * DB_PATH before its (dynamic) import. Nothing may query before `initDb()` has resolved.
+ */
+export const db: Sql = openSql(DB_PATH);
 
 /**
  * `CREATE TABLE IF NOT EXISTS` leaves an existing database untouched, so a column added
  * after the first release has to be migrated in. Table and column names are literals from
- * this file, never input. Idempotent, and `PRAGMA table_info` is a memory read.
+ * this file, never input. Idempotent: `PRAGMA table_info` decides.
  */
-function addColumnIfMissing(table: string, column: string, definition: string): void {
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
-  if (columns.some((row) => row["name"] === column)) return;
-  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+async function addColumnIfMissing(table: string, column: string, definition: string): Promise<void> {
+  const { rows } = await db.execute(`PRAGMA table_info(${table})`);
+  if (rows.some((row) => row["name"] === column)) return;
+  await db.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
-// A UNIQUE column constraint is impossible here: SQLite's ADD COLUMN rejects one. A unique
-// INDEX is the same thing by another name, and it is what a column constraint compiles to.
-addColumnIfMissing("tickets", "port_slot", "INTEGER");
-db.exec("CREATE UNIQUE INDEX IF NOT EXISTS tickets_port_slot ON tickets (port_slot)");
+async function migrate(): Promise<void> {
+  await db.batch(SCHEMA.map((sql) => ({ sql })));
 
-addColumnIfMissing("tickets", "pr_number", "INTEGER");
-addColumnIfMissing("tickets", "pr_url", "TEXT");
-addColumnIfMissing("tickets", "pr_state", "TEXT");
-addColumnIfMissing("tickets", "pr_additions", "INTEGER");
-addColumnIfMissing("tickets", "pr_deletions", "INTEGER");
+  // A UNIQUE column constraint is impossible here: SQLite's ADD COLUMN rejects one. A unique
+  // INDEX is the same thing by another name, and it is what a column constraint compiles to.
+  await addColumnIfMissing("tickets", "port_slot", "INTEGER");
+  await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS tickets_port_slot ON tickets (port_slot)");
 
-// ADD COLUMN accepts NOT NULL only alongside a non-null constant default, which '[]' and
-// 'Fullstack' both are — and SQLite hands that default back for every row that predates the
-// column, so a migrated row reads as an empty list, or as the default playbook, never as NULL.
-addColumnIfMissing("tickets", "playbook", "TEXT NOT NULL DEFAULT 'Fullstack'");
-addColumnIfMissing("tickets", "task_breakdown", "TEXT NOT NULL DEFAULT '[]'");
-addColumnIfMissing("tickets", "acceptance_criteria", "TEXT NOT NULL DEFAULT '[]'");
-addColumnIfMissing("tickets", "attachments", "TEXT NOT NULL DEFAULT '[]'");
-addColumnIfMissing("tickets", "screenshot_before", "TEXT");
-addColumnIfMissing("tickets", "screenshot_after", "TEXT");
-addColumnIfMissing("tickets", "started_at", "TEXT");
-addColumnIfMissing("tickets", "archived", "INTEGER NOT NULL DEFAULT 0");
+  await addColumnIfMissing("tickets", "pr_number", "INTEGER");
+  await addColumnIfMissing("tickets", "pr_url", "TEXT");
+  await addColumnIfMissing("tickets", "pr_state", "TEXT");
+  await addColumnIfMissing("tickets", "pr_additions", "INTEGER");
+  await addColumnIfMissing("tickets", "pr_deletions", "INTEGER");
 
-// Every pre-existing row backfills to 'low' on the same migration, no manual step: ADD
-// COLUMN with a NOT NULL constant default hands that default back for every row that
-// predates the column, exactly as the playbook and checklist columns above do.
-addColumnIfMissing("tickets", "priority", "TEXT NOT NULL DEFAULT 'low'");
+  // ADD COLUMN accepts NOT NULL only alongside a non-null constant default, which '[]' and
+  // 'Fullstack' both are — and SQLite hands that default back for every row that predates the
+  // column, so a migrated row reads as an empty list, or as the default playbook, never as NULL.
+  await addColumnIfMissing("tickets", "playbook", "TEXT NOT NULL DEFAULT 'Fullstack'");
+  await addColumnIfMissing("tickets", "task_breakdown", "TEXT NOT NULL DEFAULT '[]'");
+  await addColumnIfMissing("tickets", "acceptance_criteria", "TEXT NOT NULL DEFAULT '[]'");
+  await addColumnIfMissing("tickets", "attachments", "TEXT NOT NULL DEFAULT '[]'");
+  await addColumnIfMissing("tickets", "screenshot_before", "TEXT");
+  await addColumnIfMissing("tickets", "screenshot_after", "TEXT");
+  await addColumnIfMissing("tickets", "started_at", "TEXT");
+  await addColumnIfMissing("tickets", "archived", "INTEGER NOT NULL DEFAULT 0");
 
-// A database migrated while `playbook` was briefly nullable already has the column, so
-// `addColumnIfMissing` above will not revisit it and its NOT NULL default never applies to
-// those rows. One idempotent backfill covers them: without it, every such row's decode hits
-// a NULL in a column typed `Playbook` and throws.
-db.exec("UPDATE tickets SET playbook = 'Fullstack' WHERE playbook IS NULL");
+  // Every pre-existing row backfills to 'low' on the same migration, no manual step: ADD
+  // COLUMN with a NOT NULL constant default hands that default back for every row that
+  // predates the column, exactly as the playbook and checklist columns above do.
+  await addColumnIfMissing("tickets", "priority", "TEXT NOT NULL DEFAULT 'low'");
 
-// And a database written while this branch stored lowercase slugs ('fullstack', 'devops')
-// holds values the union no longer contains. Lowercasing a name yields exactly the slug it
-// replaced, so the remap is derived from `PLAYBOOKS` itself rather than hand-listed — there
-// is no second list to fall behind the first. Idempotent: a row already holding the exact
-// name matches itself and is rewritten to the same value.
-const remapPlaybook = db.prepare(
-  "UPDATE tickets SET playbook = ? WHERE lower(playbook) = lower(?)",
-);
-for (const playbook of PLAYBOOKS) remapPlaybook.run(playbook, playbook);
+  // The cloud-session columns. All nullable: a ticket that never ran has no session.
+  for (const column of [
+    "session_id",
+    "session_url",
+    "session_kind",
+    "agent_state",
+    "agent_note",
+    "agent_updated_at",
+  ]) {
+    await addColumnIfMissing("tickets", column, "TEXT");
+  }
 
-// Projects gain the same treatment. 'ready' is the deliberate default for `provision_state`:
-// every project that predates this column was cloned by hand and is already usable, so the
-// migration must not park working projects in a provisioning state.
-addColumnIfMissing("projects", "description", "TEXT NOT NULL DEFAULT ''");
-addColumnIfMissing("projects", "owner", "TEXT NOT NULL DEFAULT ''");
-addColumnIfMissing("projects", "repo", "TEXT NOT NULL DEFAULT ''");
-addColumnIfMissing("projects", "provision_state", "TEXT NOT NULL DEFAULT 'ready'");
-addColumnIfMissing("projects", "provision_error", "TEXT NOT NULL DEFAULT ''");
+  // A database migrated while `playbook` was briefly nullable already has the column, so
+  // `addColumnIfMissing` above will not revisit it and its NOT NULL default never applies to
+  // those rows. One idempotent backfill covers them: without it, every such row's decode hits
+  // a NULL in a column typed `Playbook` and throws.
+  //
+  // And a database written while this branch stored lowercase slugs ('fullstack', 'devops')
+  // holds values the union no longer contains. Lowercasing a name yields exactly the slug it
+  // replaced, so the remap is derived from `PLAYBOOKS` itself rather than hand-listed — there
+  // is no second list to fall behind the first. Idempotent: a row already holding the exact
+  // name matches itself and is rewritten to the same value.
+  await db.batch([
+    { sql: "UPDATE tickets SET playbook = 'Fullstack' WHERE playbook IS NULL" },
+    ...PLAYBOOKS.map(
+      (playbook): Stmt => ({
+        sql: "UPDATE tickets SET playbook = ? WHERE lower(playbook) = lower(?)",
+        args: [playbook, playbook],
+      }),
+    ),
+  ]);
+
+  // Projects gain the same treatment. 'ready' is the deliberate default for `provision_state`:
+  // every project that predates this column was cloned by hand and is already usable, so the
+  // migration must not park working projects in a provisioning state.
+  await addColumnIfMissing("projects", "description", "TEXT NOT NULL DEFAULT ''");
+  await addColumnIfMissing("projects", "owner", "TEXT NOT NULL DEFAULT ''");
+  await addColumnIfMissing("projects", "repo", "TEXT NOT NULL DEFAULT ''");
+  await addColumnIfMissing("projects", "provision_state", "TEXT NOT NULL DEFAULT 'ready'");
+  await addColumnIfMissing("projects", "provision_error", "TEXT NOT NULL DEFAULT ''");
+  await addColumnIfMissing("projects", "dev_command", "TEXT NOT NULL DEFAULT ''");
+
+  await backfillProjectIdentity();
+}
 
 // A project's GitHub identity used to be re-derived from disk on every push and pull request.
 // Backfilling it needs the one thing a migration cannot do inline — read a git remote — so
-// this runs once, here, and is idempotent: only rows still holding the empty default are
+// this runs once, at init, and is idempotent: only rows still holding the empty default are
 // touched, and a row that cannot be resolved is marked `failed` rather than left silently
 // blank, because a project with no GitHub remote can never reach Done (docs/plug-and-play-projects.md).
-function backfillProjectIdentity(): void {
-  const rows = db.prepare("SELECT id, repo_path FROM projects WHERE owner = '' OR repo = ''").all() as {
-    id: string;
-    repo_path: string;
-  }[];
-  if (rows.length === 0) return;
-
-  const resolved = db.prepare("UPDATE projects SET owner = ?, repo = ? WHERE id = ?");
-  const unresolved = db.prepare(
-    "UPDATE projects SET provision_state = 'failed', provision_error = ? WHERE id = ?",
-  );
-
+async function backfillProjectIdentity(): Promise<void> {
+  const { rows } = await db.execute("SELECT id, repo_path FROM projects WHERE owner = '' OR repo = ''");
   for (const row of rows) {
-    // Synchronous on purpose: this is module-init code, and every consumer of `db` expects a
-    // fully migrated database the moment the import resolves. A missing folder, a directory
-    // that is not a repo, a repo with no `origin`, and a non-GitHub `origin` all land in the
-    // same bucket — unresolvable — so one catch covers the lot.
+    const id = String(row["id"]);
+    // A missing folder, a directory that is not a repo, a repo with no `origin`, and a
+    // non-GitHub `origin` all land in the same bucket — unresolvable — so one catch covers the
+    // lot. Synchronous git is fine here: it is boot-time, and only legacy rows ever get here.
     let parsed: { owner: string; repo: string } | null = null;
     try {
       const url = execFileSync("git", ["remote", "get-url", "origin"], {
-        cwd: row.repo_path,
+        cwd: String(row["repo_path"]),
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
       }).trim();
@@ -240,17 +274,33 @@ function backfillProjectIdentity(): void {
     }
 
     if (parsed === null) {
-      unresolved.run(
-        "No GitHub repository could be read from this project's folder. Re-link it to a repo to use it.",
-        row.id,
+      await db.execute(
+        "UPDATE projects SET provision_state = 'failed', provision_error = ? WHERE id = ?",
+        ["No GitHub repository could be read from this project's folder. Re-link it to a repo to use it.", id],
       );
       continue;
     }
-    resolved.run(parsed.owner, parsed.repo, row.id);
+    await db.execute("UPDATE projects SET owner = ?, repo = ? WHERE id = ?", [parsed.owner, parsed.repo, id]);
   }
 }
 
-backfillProjectIdentity();
+let ready: Promise<void> | undefined;
+
+/**
+ * Schema plus every migration. Idempotent, and memoised so any number of callers share one
+ * run; a failed run is forgotten so the next call retries instead of replaying the rejection.
+ *
+ * Deliberately NOT an import side effect: `server.ts` awaits it before it listens, and every
+ * test that touches the store awaits it first. Against Turso this is a dozen network round
+ * trips, which a module import must never hide.
+ */
+export function initDb(): Promise<void> {
+  ready ??= migrate().catch((err: unknown) => {
+    ready = undefined;
+    throw err;
+  });
+  return ready;
+}
 
 export const nowIso = () => new Date().toISOString();
 
@@ -264,6 +314,7 @@ type ProjectRow = {
   base_branch: string;
   provision_state: string;
   provision_error: string;
+  dev_command: string;
   created_at: string;
   updated_at: string;
 };
@@ -295,6 +346,12 @@ export type TicketRow = {
   screenshot_before: string | null;
   screenshot_after: string | null;
   started_at: string | null;
+  session_id: string | null;
+  session_url: string | null;
+  session_kind: string | null;
+  agent_state: string | null;
+  agent_note: string | null;
+  agent_updated_at: string | null;
   created_at: string;
   updated_at: string;
   archived: number;
@@ -330,6 +387,7 @@ export const toProject = (r: ProjectRow): Project => ({
   provisionState: toProvisionState(r.provision_state),
   provisionError: r.provision_error,
   ownsClone: ownsClone(r.repo_path),
+  devCommand: r.dev_command,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });
@@ -350,6 +408,21 @@ export const toStatus = (raw: string): Status =>
  */
 export const toPullRequestState = (raw: string | null): PullRequestState | null =>
   raw === "open" || raw === "merged" || raw === "closed" ? raw : null;
+
+/**
+ * A REAL parse, not a cast: unlike every other column here, `agent_state` is written by the
+ * agent over HTTP (docs/prototype-cloud.md), not by this API, so it can hold anything. An
+ * unrecognised value reads as null — "no usable report" — never as some specific state that
+ * could, say, trigger the done → in_review move.
+ */
+export const toAgentState = (raw: string | null): AgentState | null =>
+  raw === "starting" || raw === "working" || raw === "done" || raw === "blocked" || raw === "failed"
+    ? raw
+    : null;
+
+/** Board-written, but narrowed the same way so the two session columns share one posture. */
+export const toSessionKind = (raw: string | null): SessionKind | null =>
+  raw === "plan" || raw === "impl" ? raw : null;
 
 export const toTicket = (r: TicketRow): Ticket => ({
   id: r.id,
@@ -386,22 +459,29 @@ export const toTicket = (r: TicketRow): Ticket => ({
   // consumes, while a fixed pair of independently nullable paths is the shape SQLite wants.
   screenshots: { before: r.screenshot_before, after: r.screenshot_after },
   startedAt: r.started_at,
+  sessionId: r.session_id,
+  sessionUrl: r.session_url,
+  sessionKind: toSessionKind(r.session_kind),
+  agentState: toAgentState(r.agent_state),
+  agentNote: r.agent_note,
+  agentUpdatedAt: r.agent_updated_at,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });
 
 /**
- * Atomic claim. Returns true only if this caller won the transition.
+ * Atomic claim. Resolves true only if this caller won the transition.
  *
- * The conditional WHERE is the lock: SQLite reports how many rows changed, so a second
- * request arriving concurrently matches nothing and loses. This replaces the in-process
- * check-then-assign and, unlike it, holds across processes.
+ * The conditional WHERE is the lock: the database reports how many rows changed, so a second
+ * request arriving concurrently matches nothing and loses. It holds across processes — and,
+ * against Turso, across machines — because the check and the write are one statement.
  */
-export function claimTicket(id: string, from: Status, to: Status): boolean {
-  const res = db
-    .prepare("UPDATE tickets SET status = ?, updated_at = ? WHERE id = ? AND status = ?")
-    .run(to, nowIso(), id, from);
-  return res.changes === 1;
+export async function claimTicket(id: string, from: Status, to: Status): Promise<boolean> {
+  const res = await db.execute(
+    "UPDATE tickets SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
+    [to, nowIso(), id, from],
+  );
+  return res.rowsAffected === 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -409,56 +489,36 @@ export function claimTicket(id: string, from: Status, to: Status): boolean {
 // UNIQUE index on `port_slot` is what makes a double assignment impossible.
 // ---------------------------------------------------------------------------
 
-const SLOT_OF = db.prepare("SELECT port_slot FROM tickets WHERE id = ?");
-const HELD_SLOTS = db.prepare("SELECT port_slot FROM tickets WHERE port_slot IS NOT NULL");
-const RESERVE_SLOT = db.prepare("UPDATE tickets SET port_slot = ?, updated_at = ? WHERE id = ?");
-const RELEASE_SLOT = db.prepare(
-  "UPDATE tickets SET port_slot = NULL, updated_at = ? WHERE id = ? AND port_slot IS NOT NULL",
-);
 /**
- * `in_review` is spared alongside `in_progress`: a ticket in review still OWNS its range,
- * because a Preview started there binds the same ports. The block is reserved for the
- * ticket's whole active life, not leased to whatever process happens to be running — so the
- * predicate names the statuses that hold a block rather than the one that has an agent.
+ * The lowest slot in [0, cap) no ticket holds, or NULL when the pool is exhausted — the same
+ * answer `allocateSlot` gives, computed inside the database so the read of the held set and
+ * the write that joins it are ONE statement. That is what a `BEGIN IMMEDIATE` around a JS
+ * read-then-write used to buy, and over HTTP there is no connection to hold it on.
  */
-const RECLAIM_SLOTS = db.prepare(
-  "UPDATE tickets SET port_slot = NULL, updated_at = ? " +
-    "WHERE port_slot IS NOT NULL AND status NOT IN ('in_progress', 'in_review')",
-);
-
-// node:sqlite hands back dynamic column values, so every read of `port_slot` below narrows
-// at its own use — this is the parse boundary.
+const FREE_SLOT = `(
+  WITH RECURSIVE pool(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM pool WHERE n + 1 < ?)
+  SELECT MIN(n) FROM pool WHERE n NOT IN (SELECT port_slot FROM tickets WHERE port_slot IS NOT NULL)
+)`;
 
 /**
  * Reserve the lowest free block for a ticket, or report exhaustion.
  *
- * BEGIN IMMEDIATE for the same reason the ticket-number counter uses one: reading the held
- * set and writing the row that joins it must not be split by another writer, in this
- * process or in a second backend on the same file.
- *
- * Idempotent. A ticket that already holds a slot gets that one back, because handing it a
- * second would strand the first until the next boot.
+ * Idempotent. A ticket that already holds a slot gets that one back (`port_slot IS NULL`
+ * gates the write), because handing it a second would strand the first until the next boot.
+ * An exhausted pool writes nothing — not even `updated_at` — and reads back NULL.
  */
-export function reservePortSlot(id: string): SlotAllocation {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const mine = SLOT_OF.get(id)?.["port_slot"];
-    if (typeof mine === "number") {
-      db.exec("COMMIT");
-      return { ok: true, slot: mine };
-    }
-    const held = HELD_SLOTS.all().flatMap((row) => {
-      const slot = row["port_slot"];
-      return typeof slot === "number" ? [slot] : [];
-    });
-    const chosen = allocateSlot(held);
-    if (chosen.ok) RESERVE_SLOT.run(chosen.slot, nowIso(), id);
-    db.exec("COMMIT");
-    return chosen;
-  } catch (err) {
-    db.exec("ROLLBACK");
-    throw err;
-  }
+export async function reservePortSlot(id: string, cap = MAX_PORT_SLOTS): Promise<SlotAllocation> {
+  const [, read] = await db.batch([
+    {
+      sql:
+        `UPDATE tickets SET port_slot = ${FREE_SLOT}, updated_at = ? ` +
+        `WHERE id = ? AND port_slot IS NULL AND ${FREE_SLOT} IS NOT NULL`,
+      args: [cap, nowIso(), id, cap],
+    },
+    { sql: "SELECT port_slot FROM tickets WHERE id = ?", args: [id] },
+  ]);
+  const slot = read?.rows[0]?.["port_slot"];
+  return typeof slot === "number" ? { ok: true, slot } : { ok: false, reason: "pool_exhausted", cap };
 }
 
 /**
@@ -466,45 +526,48 @@ export function reservePortSlot(id: string): SlotAllocation {
  * teardown path can call it from a `finally`: a slot leaked by a Herdr call that failed
  * halfway is gone until the next boot, and the pool is only ten wide.
  */
-export function releasePortSlot(id: string): void {
-  RELEASE_SLOT.run(nowIso(), id);
+export async function releasePortSlot(id: string): Promise<void> {
+  await db.execute(
+    "UPDATE tickets SET port_slot = NULL, updated_at = ? WHERE id = ? AND port_slot IS NOT NULL",
+    [nowIso(), id],
+  );
 }
-
-const SET_PULL_REQUEST = db.prepare(
-  "UPDATE tickets SET pr_number = ?, pr_url = ?, updated_at = ? WHERE id = ?",
-);
 
 /**
  * Record the pull request opened for a ticket. Both columns are written together — a
  * ticket never has one without the other — so there is exactly one writer for this pair,
  * the same shape as `releasePortSlot` owning `port_slot`.
  */
-export function setPullRequest(id: string, number: number, url: string): void {
-  SET_PULL_REQUEST.run(number, url, nowIso(), id);
+export async function setPullRequest(id: string, number: number, url: string): Promise<void> {
+  await db.execute("UPDATE tickets SET pr_number = ?, pr_url = ?, updated_at = ? WHERE id = ?", [
+    number,
+    url,
+    nowIso(),
+    id,
+  ]);
 }
-
-const SET_PULL_REQUEST_STATE = db.prepare(
-  "UPDATE tickets SET pr_state = ?, pr_additions = ?, pr_deletions = ?, updated_at = ? WHERE pr_url = ?",
-);
 
 /**
  * Matched by PR URL, not number: PR numbers are per-repo and would collide across projects,
- * while the URL is globally unique and already stored. Returns false when no ticket owns that
+ * while the URL is globally unique and already stored. Resolves false when no ticket owns that
  * PR — a webhook for somebody else's repo is normal, not an error.
  */
-export function setPullRequestState(
+export async function setPullRequestState(
   prUrl: string,
   state: PullRequestState,
   additions: number | null,
   deletions: number | null,
-): boolean {
-  const res = SET_PULL_REQUEST_STATE.run(state, additions, deletions, nowIso(), prUrl);
-  return Number(res.changes) > 0;
+): Promise<boolean> {
+  const res = await db.execute(
+    "UPDATE tickets SET pr_state = ?, pr_additions = ?, pr_deletions = ?, updated_at = ? WHERE pr_url = ?",
+    [state, additions, deletions, nowIso(), prUrl],
+  );
+  return res.rowsAffected > 0;
 }
 
-const SET_SCREENSHOT: Record<ScreenshotSide, StatementSync> = {
-  before: db.prepare("UPDATE tickets SET screenshot_before = ?, updated_at = ? WHERE id = ?"),
-  after: db.prepare("UPDATE tickets SET screenshot_after = ?, updated_at = ? WHERE id = ?"),
+const SCREENSHOT_COLUMN: Record<ScreenshotSide, string> = {
+  before: "screenshot_before",
+  after: "screenshot_after",
 };
 
 /**
@@ -512,8 +575,12 @@ const SET_SCREENSHOT: Record<ScreenshotSide, StatementSync> = {
  * columns, not one JSON blob (see the schema comment above), so this writes exactly one and
  * leaves the other untouched — a ticket sits with a before and no after for its whole run.
  */
-export function setScreenshot(id: string, side: ScreenshotSide, path: string): void {
-  SET_SCREENSHOT[side].run(path, nowIso(), id);
+export async function setScreenshot(id: string, side: ScreenshotSide, path: string): Promise<void> {
+  await db.execute(`UPDATE tickets SET ${SCREENSHOT_COLUMN[side]} = ?, updated_at = ? WHERE id = ?`, [
+    path,
+    nowIso(),
+    id,
+  ]);
 }
 
 /**
@@ -528,8 +595,14 @@ export function setScreenshot(id: string, side: ScreenshotSide, path: string): v
  *
  * `in_progress` and `in_review` are the port-holding statuses: the block is reserved at spawn
  * and released by every teardown path, a backlog ticket has no agent to be running a server,
- * and a ticket in review still owns its range for a Preview to bind.
+ * and a ticket in review still owns its range for a Preview to bind — the block is reserved
+ * for the ticket's whole active life, not leased to whatever process happens to be running.
  */
-export function reclaimStalePortSlots(): number {
-  return Number(RECLAIM_SLOTS.run(nowIso()).changes);
+export async function reclaimStalePortSlots(): Promise<number> {
+  const res = await db.execute(
+    "UPDATE tickets SET port_slot = NULL, updated_at = ? " +
+      "WHERE port_slot IS NOT NULL AND status NOT IN ('in_progress', 'in_review')",
+    [nowIso()],
+  );
+  return res.rowsAffected;
 }

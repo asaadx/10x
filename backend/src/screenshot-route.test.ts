@@ -24,7 +24,8 @@ process.env.DB_PATH = join(dir, "10x.db");
 process.env.HERDR_SOCKET_PATH = socketPath;
 
 // db.ts reads STATE_DIR/DB_PATH at module load, so this must be dynamic — see plan.test.ts.
-const { db, nowIso } = await import("./db.ts");
+const { db, initDb, nowIso } = await import("./db.ts");
+await initDb();
 
 const API_URL = `http://localhost:${PORT}`;
 const PROJECT_ID = "shot-test";
@@ -83,19 +84,21 @@ const herdr: Server = createServer((socket) => {
 // The store, seeded directly.
 // ---------------------------------------------------------------------------
 
-db.prepare(
+await db.execute(
   "INSERT INTO projects (id, name, repo_path, base_branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-).run(PROJECT_ID, PROJECT_ID, "/tmp/does-not-matter", "main", nowIso(), nowIso());
+  [PROJECT_ID, PROJECT_ID, "/tmp/does-not-matter", "main", nowIso(), nowIso()],
+);
 
 let nextNumber = 1;
-function seedTicket(status = "in_progress"): string {
+async function seedTicket(status = "in_progress"): Promise<string> {
   const number = nextNumber++;
   const id = `${PROJECT_ID}-${number}`;
-  db.prepare(
+  await db.execute(
     `INSERT INTO tickets (id, project_id, number, title, description, status,
                           finished, died, branch, agent_name, session_dir, created_at, updated_at)
      VALUES (?, ?, ?, 'Ticket', '', ?, 0, 0, NULL, NULL, NULL, ?, ?)`,
-  ).run(id, PROJECT_ID, number, status, nowIso(), nowIso());
+    [id, PROJECT_ID, number, status, nowIso(), nowIso()],
+  );
   return id;
 }
 
@@ -148,7 +151,6 @@ after(async () => {
   const { promise, resolve } = Promise.withResolvers<void>();
   herdr.close(() => resolve());
   await promise;
-  db.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -156,7 +158,7 @@ after(async () => {
 
 describe("POST /tickets/:id/screenshots/:side", () => {
   test("stores the raw bytes untouched and the served path renders them back byte for byte", async () => {
-    const id = seedTicket();
+    const id = await seedTicket();
     // Bytes chosen to include a NUL and high bytes: a route that treated this as UTF-8 text
     // anywhere along the way would corrupt it, which is the whole reason the upload bypasses
     // `readBody`'s JSON parse.
@@ -186,14 +188,14 @@ describe("POST /tickets/:id/screenshots/:side", () => {
   });
 
   test("400s on an empty body", async () => {
-    const id = seedTicket();
+    const id = await seedTicket();
     const res = await upload(id, "after", new Uint8Array());
     assert.equal(res.status, 400);
     assert.equal(res.body["error"], "empty_body");
   });
 
   test("400s on a declared Content-Type other than image/png", async () => {
-    const id = seedTicket();
+    const id = await seedTicket();
     const res = await fetch(`${API_URL}/tickets/${id}/screenshots/before`, {
       method: "POST",
       headers: { "content-type": "text/plain" },
@@ -204,14 +206,14 @@ describe("POST /tickets/:id/screenshots/:side", () => {
   });
 
   test("400s when the declared type is image/png but the bytes are not really a PNG", async () => {
-    const id = seedTicket();
+    const id = await seedTicket();
     const res = await upload(id, "before", new TextEncoder().encode("not a png"));
     assert.equal(res.status, 400);
     assert.equal(res.body["error"], "invalid_image");
   });
 
   test("413s once the body crosses the size cap, without writing a file", async () => {
-    const id = seedTicket();
+    const id = await seedTicket();
     // server.ts's MAX_SCREENSHOT_BYTES is 10 MiB and not exported; this pins that exact
     // threshold, so a deliberate change to the cap must update this test alongside it.
     const oversized = Buffer.alloc(10 * 1024 * 1024 + 1);
@@ -246,7 +248,7 @@ describe("GET /screenshots/:file", () => {
 
 describe("DELETE /tickets/:id", () => {
   test("deleting a ticket reclaims its screenshot files: the served path 404s afterward", async () => {
-    const id = seedTicket();
+    const id = await seedTicket();
     const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
     const up = await upload(id, "before", png);
     const path = up.body["path"] as string;

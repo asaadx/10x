@@ -35,7 +35,8 @@ process.env.HERDR_SOCKET_PATH = socketPath;
 // Dynamic imports, for the same reason port-slots.test.ts and herdr.test.ts use them: both
 // `DB_PATH` and `HERDR_SOCKET_PATH` are read at module load, and a static import would hoist
 // above the assignments and open the real database against the real Herdr socket.
-const { db, nowIso } = await import("./db.ts");
+const { db, initDb, nowIso } = await import("./db.ts");
+await initDb();
 const { getTicket } = await import("./ticket-store.ts");
 const { startPlanning } = await import("./planner.ts");
 const { decidePlanSweep, sweepPlanWorkspaces } = await import("./reconcile.ts");
@@ -202,23 +203,25 @@ const ANCIENT = "2020-01-01T00:00:00.000Z";
 // startup backfill reads a project's GitHub identity from its repo's `origin`, and this
 // fixture repo has no remote, so an unstated row would migrate to `failed` and every route
 // below would answer `project_not_provisioned` instead of what it is meant to test.
-db.prepare(
+await db.execute(
   `INSERT INTO projects (id, name, owner, repo, repo_path, base_branch, provision_state, created_at, updated_at)
    VALUES (?, ?, 'acme', 'plan-test', ?, ?, 'ready', ?, ?)`,
-).run(PROJECT_ID, "Plan Test", REPO_PATH, "main", nowIso(), nowIso());
+  [PROJECT_ID, "Plan Test", REPO_PATH, "main", nowIso(), nowIso()],
+);
 
-function seed(id: string, number: number, status = "backlog"): string {
-  db.prepare(
+async function seed(id: string, number: number, status = "backlog"): Promise<string> {
+  await db.execute(
     "INSERT INTO tickets (id, project_id, number, title, description, status, created_at, updated_at) " +
       "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-  ).run(id, PROJECT_ID, number, `ticket ${id}`, "", status, ANCIENT, ANCIENT);
+    [id, PROJECT_ID, number, `ticket ${id}`, "", status, ANCIENT, ANCIENT],
+  );
   return id;
 }
 
-const storedSlot = (id: string) =>
-  db.prepare("SELECT port_slot FROM tickets WHERE id = ?").get(id)?.["port_slot"] ?? null;
-const storedStatus = (id: string) =>
-  db.prepare("SELECT status FROM tickets WHERE id = ?").get(id)?.["status"] ?? null;
+const storedSlot = async (id: string) =>
+  (await db.execute("SELECT port_slot FROM tickets WHERE id = ?", [id])).rows[0]?.["port_slot"] ?? null;
+const storedStatus = async (id: string) =>
+  (await db.execute("SELECT status FROM tickets WHERE id = ?", [id])).rows[0]?.["status"] ?? null;
 
 const planTicket = (id: string, number: number, status: PlanTicket["status"]): PlanTicket => ({
   id,
@@ -302,7 +305,6 @@ after(async () => {
   const { promise, resolve } = Promise.withResolvers<void>();
   herdr.close(() => resolve());
   await promise;
-  db.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -562,7 +564,7 @@ describe("decidePlanSweep", () => {
   const workspace = (id: string, label: string | null) => ({ workspace_id: id, label });
   const label = planAgentNameFor(PROJECT_ID, 9);
 
-  test("spares a backlog ticket's planner — the user may be mid-conversation", () => {
+  test("spares a backlog ticket's planner — the user may be mid-conversation", async () => {
     // Herdr keeps panes and agents alive across a restart of this process, so a plan
     // workspace surviving a boot is the NORMAL state of an ongoing conversation.
     const decisions = decidePlanSweep(
@@ -574,7 +576,7 @@ describe("decidePlanSweep", () => {
     assert.match(decisions[0]?.reason ?? "", /still in backlog/);
   });
 
-  test("closes a planner whose ticket has left backlog", () => {
+  test("closes a planner whose ticket has left backlog", async () => {
     for (const status of ["todo", "in_progress", "in_review", "done"] as const) {
       const decisions = decidePlanSweep(
         [workspace("w1", label)],
@@ -588,13 +590,13 @@ describe("decidePlanSweep", () => {
     }
   });
 
-  test("closes a planner whose ticket is gone", () => {
+  test("closes a planner whose ticket is gone", async () => {
     const decisions = decidePlanSweep([workspace("w1", label)], []);
     assert.equal(decisions[0]?.close, true);
     assert.match(decisions[0]?.reason ?? "", /no ticket owns/);
   });
 
-  test("a workspace we did not label is never a candidate", () => {
+  test("a workspace we did not label is never a candidate", async () => {
     // Not "spared": outside the set the sweep will even consider, the same structural
     // ownership test findOrphans applies to a branch namespace.
     const decisions = decidePlanSweep(
@@ -612,8 +614,8 @@ describe("decidePlanSweep", () => {
 
 describe("sweepPlanWorkspaces", () => {
   test("closes only the workspaces it decided to close", async () => {
-    seed("t-sweep-live", 20, "backlog");
-    seed("t-sweep-done", 21, "done");
+    await seed("t-sweep-live", 20, "backlog");
+    await seed("t-sweep-done", 21, "done");
     reset({
       "workspace.list": () => ({
         result: {
@@ -661,7 +663,7 @@ describe("sweepPlanWorkspaces", () => {
 
 describe("POST /tickets/:id/plan", () => {
   test("a non-backlog ticket is refused, and nothing is started", async () => {
-    const id = seed("route-todo", 30, "todo");
+    const id = await seed("route-todo", 30, "todo");
     const fake = liveHerdr();
     reset(fake.handlers);
 
@@ -673,7 +675,7 @@ describe("POST /tickets/:id/plan", () => {
   });
 
   test("a backlog ticket gets a planner, and keeps its status and no port slot", async () => {
-    const id = seed("route-plan", 31, "backlog");
+    const id = await seed("route-plan", 31, "backlog");
     const fake = liveHerdr();
     reset(fake.handlers);
 
@@ -689,8 +691,8 @@ describe("POST /tickets/:id/plan", () => {
 
     // Plan never promotes: a human clicks the button that does. And a planner starts no dev
     // server, so spending a tenth of the port pool on a conversation would be pure loss.
-    assert.equal(storedStatus(id), "backlog");
-    assert.equal(storedSlot(id), null);
+    assert.equal(await storedStatus(id), "backlog");
+    assert.equal(await storedSlot(id), null);
     // No worktree anywhere in the sequence — the planner runs in the main checkout.
     assert.deepEqual(sequence().filter((m) => m.startsWith("worktree.")), []);
 
@@ -703,7 +705,7 @@ describe("POST /tickets/:id/plan", () => {
   });
 
   test("clicking Plan twice re-focuses instead of creating a second workspace", async () => {
-    const id = seed("route-twice", 32, "backlog");
+    const id = await seed("route-twice", 32, "backlog");
     const fake = liveHerdr();
     reset(fake.handlers);
 
@@ -720,15 +722,15 @@ describe("POST /tickets/:id/plan", () => {
   });
 
   test("a Herdr failure is a 500 that says what broke, and leaves the ticket alone", async () => {
-    const id = seed("route-broken", 33, "backlog");
+    const id = await seed("route-broken", 33, "backlog");
     const fake = liveHerdr({ startFails: { code: "agent_kind_not_installed", message: "no omp" } });
     reset(fake.handlers);
 
     const res = await api("POST", `/tickets/${id}/plan`);
     assert.equal(res.status, 500);
     assert.match(String(res.body["error"]), /agent_kind_not_installed/);
-    assert.equal(storedStatus(id), "backlog");
-    assert.equal(storedSlot(id), null);
+    assert.equal(await storedStatus(id), "backlog");
+    assert.equal(await storedSlot(id), null);
     // The pane it half-created is closed rather than left for the next boot to find.
     assert.deepEqual(paramsOf("workspace.close"), { workspace_id: "wZZ" });
   });
@@ -767,7 +769,7 @@ describe("a live planner on the board", () => {
     // The planner's name differs from the implementation agent's by design, so a board that
     // joined only on `agentNameFor` reported null for the whole planning run: no agent chip
     // and no column spinner, with a live conversation sitting in Herdr.
-    const id = seed("board-planning", 34, "backlog");
+    const id = await seed("board-planning", 34, "backlog");
     reset(boardHerdr(planAgentNameFor(PROJECT_ID, 34)));
 
     const res = await api("GET", "/tickets?project=" + PROJECT_ID);
@@ -785,7 +787,7 @@ describe("a live planner on the board", () => {
   test("a promoted ticket does not inherit its stale planner's status", async () => {
     // The sweep only runs at boot, so a planner can outlive the promotion. Reporting it would
     // show work happening on a card nobody has started.
-    const id = seed("board-promoted", 35, "todo");
+    const id = await seed("board-promoted", 35, "todo");
     reset(boardHerdr(planAgentNameFor(PROJECT_ID, 35)));
 
     const res = await api("GET", "/tickets?project=" + PROJECT_ID);
@@ -796,7 +798,7 @@ describe("a live planner on the board", () => {
   });
 
   test("Focus on a backlog card targets the planner, not a nonexistent run", async () => {
-    const id = seed("board-focus", 36, "backlog");
+    const id = await seed("board-focus", 36, "backlog");
     reset(boardHerdr(planAgentNameFor(PROJECT_ID, 36)));
 
     const res = await api("POST", `/tickets/${id}/focus`);
@@ -813,7 +815,7 @@ describe("DELETE /tickets/:id on a backlog ticket", () => {
   // orphaning its workspace until the next boot's plan sweep (memory/reconciliation.md).
 
   test("closes the live planner's workspace, not a nonexistent bare-named one", async () => {
-    const id = seed("delete-with-planner", 40, "backlog");
+    const id = await seed("delete-with-planner", 40, "backlog");
     const planName = planAgentNameFor(PROJECT_ID, 40);
 
     // Actually start a live planner first, exactly as a user clicking Plan would.
@@ -837,12 +839,12 @@ describe("DELETE /tickets/:id on a backlog ticket", () => {
     assert.deepEqual(sequence(), ["agent.get", "workspace.close"]);
     assert.equal(paramsOf("agent.get")?.["target"], planName);
     assert.equal(paramsOf("workspace.close")?.["workspace_id"], "wZZ");
-    assert.equal(getTicket(id), undefined);
+    assert.equal(await getTicket(id), undefined);
     assert.ok(!serverLog.slice(logBefore).includes("no session directory known and agent is gone"));
   });
 
   test("a ticket whose planner never ran deletes quietly: no warning, no worktree lookup", async () => {
-    const id = seed("delete-no-planner", 41, "backlog");
+    const id = await seed("delete-no-planner", 41, "backlog");
     const planName = planAgentNameFor(PROJECT_ID, 41);
 
     const logBefore = serverLog.length;
@@ -855,14 +857,14 @@ describe("DELETE /tickets/:id on a backlog ticket", () => {
     // ticket can never have run) and stopped there once told it does not exist.
     assert.deepEqual(sequence(), ["agent.get"]);
     assert.equal(paramsOf("agent.get")?.["target"], planName);
-    assert.equal(getTicket(id), undefined);
+    assert.equal(await getTicket(id), undefined);
     // `agent_not_found` for a ticket whose real agent never ran is the expected, common case
     // — not a fault worth a warning.
     assert.ok(!serverLog.slice(logBefore).includes("no session directory known and agent is gone"));
   });
 
   test("a ticket that has left backlog still tears down the real implementation agent, unchanged", async () => {
-    const id = seed("delete-todo", 42, "todo");
+    const id = await seed("delete-todo", 42, "todo");
     const bareName = agentNameFor(PROJECT_ID, 42);
 
     reset({
@@ -877,6 +879,6 @@ describe("DELETE /tickets/:id on a backlog ticket", () => {
     // resolution added for the planner case above.
     assert.deepEqual(sequence(), ["agent.get", "worktree.open"]);
     assert.equal(paramsOf("agent.get")?.["target"], bareName);
-    assert.equal(getTicket(id), undefined);
+    assert.equal(await getTicket(id), undefined);
   });
 });

@@ -31,7 +31,8 @@ process.env.DB_PATH = join(dir, "10x.db");
 process.env.HERDR_SOCKET_PATH = socketPath;
 
 // db.ts reads STATE_DIR/DB_PATH at module load, so this must be dynamic — see plan.test.ts.
-const { db, nowIso } = await import("./db.ts");
+const { db, initDb, nowIso } = await import("./db.ts");
+await initDb();
 
 const API_URL = `http://localhost:${PORT}`;
 
@@ -134,33 +135,22 @@ execFileSync(realGit, ["remote", "add", "origin", "https://github.com/acme/proj.
 const ACCEPT_PROJECT = "pr-accept-test";
 const RECONCILE_PROJECT = "pr-reconcile-test";
 for (const id of [ACCEPT_PROJECT, RECONCILE_PROJECT]) {
-  db.prepare(
+  await db.execute(
     "INSERT INTO projects (id, name, repo_path, base_branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-  ).run(id, id, repoPath, "main", nowIso(), nowIso());
+    [id, id, repoPath, "main", nowIso(), nowIso()],
+  );
 }
 
-function seedTicket(
+async function seedTicket(
   id: string,
   projectId: string,
   number: number,
   over: { status?: string; branch?: string | null; prNumber?: number | null; prUrl?: string | null; prState?: string | null } = {},
-): void {
-  db.prepare(
+): Promise<void> {
+  await db.execute(
     "INSERT INTO tickets (id, project_id, number, title, description, status, branch, pr_number, pr_url, pr_state, created_at, updated_at) " +
       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-  ).run(
-    id,
-    projectId,
-    number,
-    `ticket ${id}`,
-    "",
-    over.status ?? "in_review",
-    over.branch ?? `ticket-${projectId}-${number}`,
-    over.prNumber ?? null,
-    over.prUrl ?? null,
-    over.prState ?? null,
-    nowIso(),
-    nowIso(),
+    [id, projectId, number, `ticket ${id}`, "", over.status ?? "in_review", over.branch ?? `ticket-${projectId}-${number}`, over.prNumber ?? null, over.prUrl ?? null, over.prState ?? null, nowIso(), nowIso()],
   );
 }
 
@@ -224,7 +214,6 @@ after(async () => {
   await new Promise<void>((r) => {
     github.close(() => r());
   });
-  db.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -232,7 +221,7 @@ after(async () => {
 
 describe("POST /tickets/:id/accept captures PR metadata from the create response", () => {
   test("prState/prAdditions/prDeletions are populated in the accept response itself — one call, no follow-up read", async () => {
-    seedTicket("t-accept", ACCEPT_PROJECT, 1, { status: "in_review" });
+    await seedTicket("t-accept", ACCEPT_PROJECT, 1, { status: "in_review" });
     ghQueue = [
       {
         status: 201,
@@ -262,7 +251,7 @@ describe("POST /tickets/:id/accept captures PR metadata from the create response
 
 describe("board() reconciles PR state on read", () => {
   test("backfills a ticket whose prState is null — the pre-existing case — with one live read", async () => {
-    seedTicket("t-backfill", RECONCILE_PROJECT, 2, {
+    await seedTicket("t-backfill", RECONCILE_PROJECT, 2, {
       status: "done",
       prNumber: 900,
       prUrl: "https://github.com/acme/proj/pull/900",

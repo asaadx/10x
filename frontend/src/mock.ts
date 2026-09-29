@@ -77,6 +77,13 @@ const base: Ticket = {
   busy: false,
   // Null until the first spawn; written by the spawn lifecycle, never by an edit.
   startedAt: null,
+  // No cloud session until one is started; the agent fills agentState/agentNote itself.
+  sessionId: null,
+  sessionUrl: null,
+  sessionKind: null,
+  agentState: null,
+  agentNote: null,
+  agentUpdatedAt: null,
   // The object is always present now; only its sides are nullable until a shot is captured.
   screenshots: { before: null, after: null },
   // Never null: the column is NOT NULL with this exact default (see the backend's db.ts), and
@@ -113,6 +120,7 @@ export const MOCK_PROJECTS: Project[] = [
     baseBranch: "dev",
     provisionState: "ready",
     provisionError: "",
+    devCommand: "",
     createdAt: iso(30),
     updatedAt: iso(30),
   },
@@ -127,6 +135,7 @@ export const MOCK_PROJECTS: Project[] = [
     baseBranch: "master",
     provisionState: "ready",
     provisionError: "",
+    devCommand: "",
     createdAt: iso(20),
     updatedAt: iso(20),
   },
@@ -143,6 +152,7 @@ export const MOCK_PROJECTS: Project[] = [
     baseBranch: "main",
     provisionState: "cloning",
     provisionError: "",
+    devCommand: "",
     createdAt: iso(0, 8),
     updatedAt: iso(0, 8),
   },
@@ -158,6 +168,7 @@ export const MOCK_PROJECTS: Project[] = [
     provisionState: "failed",
     provisionError:
       "Clone failed: repository asaadx/jarvis not found. It may have been renamed, made private or deleted — re-link the project to its current URL.",
+    devCommand: "",
     createdAt: iso(14),
     updatedAt: iso(0, 7),
   },

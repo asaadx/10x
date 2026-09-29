@@ -13,10 +13,10 @@
  *    at worst it is a second stale.
  */
 // FIRST IMPORT, AND THE POSITION IS LOAD-BEARING. This one loads the repo-root `.env`, and
-// ESM evaluates imports in order: `db.ts` below reads `STATE_DIR` and `DB_PATH` at module
-// load and opens the database right there, so an `./env.ts` moved beneath it would read the
-// defaults and silently open `~/.10x/10x.db` instead of the configured one — no error, just
-// the wrong database. `env.test.ts` fails if this line stops being the first import.
+// ESM evaluates imports in order: `db.ts` below reads `STATE_DIR`, `DB_PATH` and
+// `TURSO_DATABASE_URL` at module load to pick its driver, so an `./env.ts` moved beneath it
+// would read the defaults and silently use `~/.10x/10x.db` instead of the configured store —
+// no error, just the wrong database. `env.test.ts` fails if this line stops being the first import.
 import "./env.ts";
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";
@@ -51,6 +51,7 @@ import {
 } from "./ticket-store.ts";
 import {
   claimTicket,
+  initDb,
   reclaimStalePortSlots,
   releasePortSlot,
   reservePortSlot,
@@ -156,23 +157,23 @@ async function runProvisioning(projectId: string, seedInitialCommit: boolean): P
   try {
     const token = process.env.GITHUB_TOKEN;
     if (!token) {
-      setProvisionState(projectId, "failed", "GITHUB_TOKEN is not set, so the repo cannot be cloned");
+      await setProvisionState(projectId, "failed", "GITHUB_TOKEN is not set, so the repo cannot be cloned");
       return;
     }
-    const project = getProject(projectId);
+    const project = await getProject(projectId);
     if (project === undefined) return;
 
-    setProvisionState(projectId, "cloning");
+    await setProvisionState(projectId, "cloning");
     const outcome = await provisionProject(project, {
       token,
       seedInitialCommit,
       ...(await seedIdentity(token)),
     });
-    setProvisionState(projectId, outcome.ok ? "ready" : "failed", outcome.ok ? "" : outcome.message);
+    await setProvisionState(projectId, outcome.ok ? "ready" : "failed", outcome.ok ? "" : outcome.message);
   } catch (err) {
     // A throw here is a bug rather than an expected failure, but leaving the row on `cloning`
     // forever would be worse than reporting it: that state disables Start with no way out.
-    setProvisionState(projectId, "failed", err instanceof Error ? err.message : String(err));
+    await setProvisionState(projectId, "failed", err instanceof Error ? err.message : String(err));
   } finally {
     provisioning.delete(projectId);
   }
@@ -251,10 +252,10 @@ const json = (body: unknown, status = 200): Reply => ({
 });
 
 /** Resolve a ticket and its project together — every run needs both. */
-function resolve(id: string): { ticket: Ticket; project: Project } | Reply {
-  const ticket = getTicket(id);
+async function resolve(id: string): Promise<{ ticket: Ticket; project: Project } | Reply> {
+  const ticket = await getTicket(id);
   if (!ticket) return json({ error: "no_such_ticket", id }, 404);
-  const project = getProject(ticket.projectId);
+  const project = await getProject(ticket.projectId);
   if (!project) return json({ error: "no_such_project", id: ticket.projectId }, 404);
   return { ticket, project };
 }
@@ -290,7 +291,7 @@ async function reconcilePullRequests(
       if (!project || t.prNumber === null || !t.prUrl) return;
       try {
         const snapshot = await fetchPullRequestSnapshot(project, t.prNumber, token);
-        setPullRequestState(t.prUrl, snapshot.state, snapshot.additions, snapshot.deletions);
+        await setPullRequestState(t.prUrl, snapshot.state, snapshot.additions, snapshot.deletions);
         reconciled.set(t.id, snapshot);
       } catch (err) {
         console.warn(`[${t.id}] PR state reconcile failed; board serves the stale stored value:`, err);
@@ -306,8 +307,8 @@ async function reconcilePullRequests(
  * on branch and agent name — never on a path (memory/naming.md).
  */
 async function board(projectFilter: string | undefined): Promise<Reply> {
-  const tickets = listTickets(projectFilter);
-  const byId = new Map(listProjects().map((p) => [p.id, p]));
+  const tickets = await listTickets(projectFilter);
+  const byId = new Map((await listProjects()).map((p) => [p.id, p]));
 
   const repos = [
     ...new Set(
@@ -460,14 +461,14 @@ async function lookupRemote(remote: string | null): Promise<Reply> {
  * deleting only the clone would strand them with a `.git` link pointing at nothing.
  */
 async function deleteProjectCompletely(id: string): Promise<Reply> {
-  const project = getProject(id);
+  const project = await getProject(id);
   if (project === undefined) {
     return json({ error: "project_not_found", field: "id", message: `no project with id "${id}"` }, 404);
   }
   // Archived tickets are deliberately excluded from the teardown loop: archiving already ran
   // the same destructive teardown, so they have no agent, worktree or branch left. Their rows
   // still go, via ON DELETE CASCADE, and their screenshots are swept below.
-  const tickets = listTickets(id);
+  const tickets = await listTickets(id);
   if (tickets.some((t) => inFlight.has(t.id))) {
     return json({ error: "operation_in_flight", id }, 409);
   }
@@ -495,7 +496,7 @@ async function deleteProjectCompletely(id: string): Promise<Reply> {
         if (live.state === "open") {
           open.push({ ticketId: ticket.id, prNumber: ticket.prNumber, prUrl: ticket.prUrl });
         } else if (ticket.prUrl) {
-          setPullRequestState(ticket.prUrl, live.state, live.additions, live.deletions);
+          await setPullRequestState(ticket.prUrl, live.state, live.additions, live.deletions);
         }
       } catch (err) {
         return json(
@@ -531,7 +532,7 @@ async function deleteProjectCompletely(id: string): Promise<Reply> {
       failures.push(`${ticket.id}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       runs.delete(ticket.id);
-      releasePortSlot(ticket.id);
+      await releasePortSlot(ticket.id);
       inFlight.delete(ticket.id);
     }
   }
@@ -539,9 +540,9 @@ async function deleteProjectCompletely(id: string): Promise<Reply> {
   // Screenshots are 10x's own bookkeeping rather than the user's work, so they follow the row
   // automatically — including for archived tickets, whose worktrees are long gone but whose
   // files are still on disk.
-  for (const ticketId of listProjectTicketIds(id)) await deleteScreenshots(ticketId);
+  for (const ticketId of await listProjectTicketIds(id)) await deleteScreenshots(ticketId);
 
-  deleteProject(id);
+  await deleteProject(id);
 
   // Last, and only now: the row is gone, so nothing can hand this path to a spawn mid-removal.
   //
@@ -568,7 +569,7 @@ async function deleteProjectCompletely(id: string): Promise<Reply> {
 }
 
 async function handle(method: string, path: string, body: unknown): Promise<Reply> {
-  if (method === "GET" && path === "/projects") return json(listProjects());
+  if (method === "GET" && path === "/projects") return json(await listProjects());
 
   // Before the /projects/:id match below, which would otherwise read "lookup" as a project id.
   if (method === "GET" && path.startsWith("/projects/lookup")) {
@@ -577,7 +578,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
   }
 
   if (method === "POST" && path === "/projects") {
-    const r = createProject(body);
+    const r = await createProject(body);
     if (!r.ok) return json(r.body, r.status);
     // Not awaited: the clone is the slow half and the row already carries `pending`, so the
     // dialog closes now and the board's poll reports the rest.
@@ -589,21 +590,21 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
   const provisionMatch = /^\/projects\/([^/?]+)\/provision$/.exec(path);
   if (provisionMatch?.[1] && method === "POST") {
     const id = provisionMatch[1];
-    const project = getProject(id);
+    const project = await getProject(id);
     if (project === undefined) {
       return json({ error: "project_not_found", field: "id", message: `no project with id "${id}"` }, 404);
     }
     if (provisioning.has(id)) return json({ error: "operation_in_flight", id }, 409);
     const seed = (body as { seedInitialCommit?: unknown } | undefined)?.seedInitialCommit !== false;
     await runProvisioning(id, seed);
-    return json(getProject(id) ?? project);
+    return json(await getProject(id) ?? project);
   }
 
   const projectMatch = /^\/projects\/([^/?]+)$/.exec(path);
   if (projectMatch?.[1]) {
     const id = projectMatch[1];
     if (method === "PATCH") {
-      const r = updateProject(id, body);
+      const r = await updateProject(id, body);
       if (!r.ok) return json(r.body, r.status);
       // Re-linking a failed project resets it to `pending`; start the retry rather than
       // leaving it queued with nothing driving it.
@@ -618,7 +619,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     return board(q?.get("project") ?? undefined);
   }
   if (method === "POST" && path === "/tickets") {
-    const r = createTicket(body);
+    const r = await createTicket(body);
     return r.ok ? json(r.ticket, 201) : json(r.body, r.status);
   }
 
@@ -628,7 +629,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
   if (method === "POST" && path === "/webhooks/github") {
     const update = pullRequestUpdate(body);
     if (!update) return json({ ok: true, ignored: true });
-    const matched = setPullRequestState(update.url, update.state, update.additions, update.deletions);
+    const matched = await setPullRequestState(update.url, update.state, update.additions, update.deletions);
     return json({ ok: true, matched });
   }
 
@@ -638,11 +639,11 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
   const action = m[2];
 
   if (!action && method === "PATCH") {
-    const r = updateTicket(id, body);
+    const r = await updateTicket(id, body);
     return r.ok ? json(r.ticket) : json(r.body, r.status);
   }
 
-  const found = resolve(id);
+  const found = await resolve(id);
   if (isReply(found)) return found;
   const { ticket, project } = found;
 
@@ -708,7 +709,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       // merge/close event missed while webhook forwarding was down (memory/teardown.md): the
       // next delete attempt catches up the row instead of needing a manual fix.
       if (ticket.prUrl) {
-        setPullRequestState(ticket.prUrl, live.state, live.additions, live.deletions);
+        await setPullRequestState(ticket.prUrl, live.state, live.additions, live.deletions);
       }
     }
 
@@ -717,7 +718,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       const state = runStateFor(ticket);
       await teardown(specFor(ticket, project), state, true);
       runs.delete(id);
-      const result = deleteTicket(id);
+      const result = await deleteTicket(id);
       // 10x's own bookkeeping, not the user's work (memory/architecture.md, port pool) — the
       // same automatic-reclaim treatment a port slot gets, unlike the worktree and branch
       // teardown just decided above, which memory/teardown.md never removes automatically.
@@ -726,7 +727,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     } finally {
       // Deleting the row frees the slot with it, but only if teardown got that far. A
       // failed Herdr call must not strand a tenth of the pool until the next boot.
-      releasePortSlot(id);
+      await releasePortSlot(id);
       inFlight.delete(id);
     }
   }
@@ -813,24 +814,24 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     // There is no work to do after the claim — that is what makes the move pure — but the CAS
     // is still what resolves two concurrent moves to one winner (memory/operations.md), and
     // nothing may `await` between reading `ticket.status` and writing it.
-    if (!claimTicket(id, ticket.status, to)) {
-      return json({ error: "not_in_status", expected: ticket.status, status: getTicket(id)?.status ?? null }, 409);
+    if (!await claimTicket(id, ticket.status, to)) {
+      return json({ error: "not_in_status", expected: ticket.status, status: (await getTicket(id))?.status ?? null }, 409);
     }
-    return json(getTicket(id));
+    return json(await getTicket(id));
   }
 
   if (action === "/spawn" && method === "POST") {
     // Claim first, work second. No `await` between the check and the write (memory/operations.md).
-    if (!claimTicket(id, "todo", "in_progress")) {
+    if (!await claimTicket(id, "todo", "in_progress")) {
       return json({ error: "not_in_todo", status: ticket.status }, 409);
     }
 
     // Reserved BEFORE the agent starts, because the block is written into the worktree the
     // agent boots in — there is no later point at which it could be injected. The accepted
     // consequence is that the cap is also a cap on concurrent in-progress tickets.
-    const reserved = reservePortSlot(id);
+    const reserved = await reservePortSlot(id);
     if (!reserved.ok) {
-      claimTicket(id, "in_progress", "todo");
+      await claimTicket(id, "in_progress", "todo");
       return json(
         {
           error: "port_pool_exhausted",
@@ -843,6 +844,8 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       );
     }
     inFlight.add(id);
+    // Copied out of the narrowed union: `settle` below is a hoisted function, where TS drops it.
+    const slot = reserved.slot;
     const state: RunState = { diagnostics: freshDiagnostics(), sessionDir: ticket.sessionDir };
     runs.set(id, state);
 
@@ -856,7 +859,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
      * clearing `finished` there would erase the completion that put it there.
      */
     let sawWorking = false;
-    setRunFields(id, { finished: false, died: false });
+    await setRunFields(id, { finished: false, died: false });
 
     try {
       const res = await spawn(
@@ -880,9 +883,16 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
              * nothing is reset. A failed claim means the ticket is no longer `in_progress`
              * (a cancel got there first), and then doing nothing is the correct action:
              * forcing it would drag a ticket back out of the column its owner just chose.
+             *
+             * The callback itself is synchronous (Herdr's event stream does not await it), so
+             * the store writes run in a detached task with its own catch: a failed write must
+             * be reported, never become an unhandled rejection that takes the server down.
              */
-            setRunFields(id, { finished: true });
-            const claimed = claimTicket(id, "in_progress", "in_review");
+            void settle().catch((err: unknown) => console.warn(`[${id}] settle write failed:`, err));
+          }
+          async function settle(): Promise<void> {
+            await setRunFields(id, { finished: true });
+            const claimed = await claimTicket(id, "in_progress", "in_review");
 
             // Kill the agent's dev server now that the ticket is off the agent's hands —
             // the reserved block is the only handle 10x has on that process
@@ -893,7 +903,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
             // fail the column transition that already happened above.
             if (claimed) {
               if (state.worktreePath) {
-                void killDevServers(blockFor(reserved.slot), state.worktreePath)
+                void killDevServers(blockFor(slot), state.worktreePath)
                   .then((result) => {
                     if (result.killed.length > 0 || result.skipped.length > 0) {
                       console.warn(`[${id}] dev-server reap: killed ${JSON.stringify(result.killed)}, skipped ${JSON.stringify(result.skipped)}`);
@@ -920,11 +930,13 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
            * could only erase a completion that really happened. The worktree and transcript are
            * kept for inspection either way.
            */
-          setRunFields(id, { died: true });
+          void setRunFields(id, { died: true }).catch((err: unknown) =>
+            console.warn(`[${id}] recording the dead pane failed:`, err),
+          );
           console.warn(`[${id}] pane exited — run is dead, worktree kept for inspection`);
         },
       );
-      setRunFields(id, {
+      await setRunFields(id, {
         branch: res.branch,
         agentName: agentNameFor(ticket.projectId, ticket.number),
         sessionDir: state.sessionDir,
@@ -933,8 +945,8 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     } catch (err) {
       // Release the claim AND the block. Any worktree left behind surfaces via `unowned`
       // (memory/reconciliation.md); a slot left behind would just silently shrink the pool.
-      claimTicket(id, "in_progress", "todo");
-      releasePortSlot(id);
+      await claimTicket(id, "in_progress", "todo");
+      await releasePortSlot(id);
       const message = err instanceof Error ? err.message : String(err);
       return json({ error: message, diagnostics: state.diagnostics }, 500);
     } finally {
@@ -943,7 +955,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
   }
 
   if (action === "/cancel" && method === "POST") {
-    if (!claimTicket(id, "in_progress", "todo")) {
+    if (!await claimTicket(id, "in_progress", "todo")) {
       return json({ error: "not_in_progress", status: ticket.status }, 409);
     }
     inFlight.add(id);
@@ -953,12 +965,12 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       const state = runStateFor(ticket);
       await teardown(specFor(ticket, project), state, true);
       runs.delete(id);
-      setRunFields(id, { branch: null, agentName: null, sessionDir: null, finished: false, died: false });
+      await setRunFields(id, { branch: null, agentName: null, sessionDir: null, finished: false, died: false });
       return json({ ok: true });
     } catch (err) {
       return json({ error: err instanceof Error ? err.message : String(err) }, 500);
     } finally {
-      releasePortSlot(id);
+      await releasePortSlot(id);
       inFlight.delete(id);
     }
   }
@@ -970,13 +982,13 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       const state = runStateFor(ticket);
       await teardown(specFor(ticket, project), state, false);
       runs.delete(id);
-      claimTicket(id, "in_progress", "todo");
-      setRunFields(id, { sessionDir: null, finished: false, died: false });
+      await claimTicket(id, "in_progress", "todo");
+      await setRunFields(id, { sessionDir: null, finished: false, died: false });
       return json({ ok: true, branchKept: ticket.branch });
     } catch (err) {
       return json({ error: err instanceof Error ? err.message : String(err) }, 500);
     } finally {
-      releasePortSlot(id);
+      await releasePortSlot(id);
       inFlight.delete(id);
     }
   }
@@ -995,7 +1007,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
 
     // Claim first, work second (memory/operations.md): the status IS the lock, and this
     // claim is what makes the publish-then-retire sequence below safe to run unguarded.
-    if (!claimTicket(id, "in_review", "done")) {
+    if (!await claimTicket(id, "in_review", "done")) {
       return json({ error: "not_in_review", status: ticket.status }, 409);
     }
 
@@ -1015,13 +1027,13 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
           },
           token,
         );
-        setPullRequest(id, pr.number, pr.url);
-        setPullRequestState(pr.url, pr.state, pr.additions, pr.deletions);
+        await setPullRequest(id, pr.number, pr.url);
+        await setPullRequestState(pr.url, pr.state, pr.additions, pr.deletions);
       } catch (err) {
         // Hand the claim back: a ticket sitting in Done with no PR is worse than a visible
         // failure. The message is already redacted by github.ts — do not log the raw error
         // separately or that redaction is undone.
-        claimTicket(id, "done", "in_review");
+        await claimTicket(id, "done", "in_review");
         return json({ error: err instanceof Error ? err.message : String(err) }, 502);
       }
 
@@ -1032,12 +1044,12 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
         const state = runStateFor(ticket);
         await retireAgent(specFor(ticket, project), state);
         runs.delete(id);
-        releasePortSlot(id);
+        await releasePortSlot(id);
       } catch (err) {
         console.warn(`[${id}] accepted with PR #${pr.number} but retiring the agent failed:`, err);
       }
 
-      return json(getTicket(id));
+      return json(await getTicket(id));
     } finally {
       inFlight.delete(id);
     }
@@ -1058,7 +1070,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
     }
 
     // Claim first, work second (memory/operations.md): the status IS the lock.
-    if (!claimTicket(id, "in_review", "in_progress")) {
+    if (!await claimTicket(id, "in_review", "in_progress")) {
       return json({ error: "not_in_review", status: ticket.status }, 409);
     }
 
@@ -1075,7 +1087,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       } catch (err) {
         // Hand the claim back: a ticket left in In Progress whose agent never heard the
         // rejection is a silent dead end (memory/operations.md).
-        claimTicket(id, "in_progress", "in_review");
+        await claimTicket(id, "in_progress", "in_review");
         // `agent_not_found` is the one Herdr code that unambiguously means the agent is
         // gone (verified against a live socket, not guessed) rather than some other
         // prompt failure such as `agent_blocked`.
@@ -1091,8 +1103,8 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
 
       // The ticket is working again; a stale `finished` would show a completion
       // checkmark on a card whose agent is mid-turn. `died` is left alone.
-      setRunFields(id, { finished: false });
-      return json(getTicket(id));
+      await setRunFields(id, { finished: false });
+      return json(await getTicket(id));
     } finally {
       inFlight.delete(id);
     }
@@ -1139,7 +1151,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
         );
       }
       if (ticket.prUrl) {
-        setPullRequestState(ticket.prUrl, live.state, live.additions, live.deletions);
+        await setPullRequestState(ticket.prUrl, live.state, live.additions, live.deletions);
       }
     }
 
@@ -1148,12 +1160,12 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       const state = runStateFor(ticket);
       await teardown(specFor(ticket, project), state, true);
       runs.delete(id);
-      archiveTicket(id);
-      return json(getTicket(id));
+      await archiveTicket(id);
+      return json(await getTicket(id));
     } catch (err) {
       return json({ error: err instanceof Error ? err.message : String(err) }, 500);
     } finally {
-      releasePortSlot(id);
+      await releasePortSlot(id);
       inFlight.delete(id);
     }
   }
@@ -1301,7 +1313,7 @@ async function handleScreenshotUpload(
   contentType: string | undefined,
   data: Buffer,
 ): Promise<Reply> {
-  if (getTicket(id) === undefined) return json({ error: "no_such_ticket", id }, 404);
+  if (await getTicket(id) === undefined) return json({ error: "no_such_ticket", id }, 404);
   if (data.length === 0) return json({ error: "empty_body", message: "screenshot body was empty" }, 400);
   const mime = contentType?.split(";")[0]?.trim().toLowerCase();
   if (mime !== "image/png") {
@@ -1316,6 +1328,10 @@ async function handleScreenshotUpload(
   const path = await saveScreenshot(id, side, data);
   return json({ ok: true, path });
 }
+
+// Schema and migrations before the first request can arrive: every handler assumes a migrated
+// store, and against Turso this is network I/O that must not hide inside a module import.
+await initDb();
 
 createServer(async (req, res) => {
   const url = req.url ?? "/";
@@ -1408,7 +1424,7 @@ createServer(async (req, res) => {
    * work — worktrees, branches, transcripts, none of them recreatable. A port slot is our
    * own bookkeeping, so reclaiming one cannot lose anything.
    */
-  const reclaimed = reclaimStalePortSlots();
+  const reclaimed = await reclaimStalePortSlots();
   if (reclaimed > 0) console.log(`  reclaimed ${reclaimed} stale port slot(s)`);
 
   /*
@@ -1422,10 +1438,10 @@ createServer(async (req, res) => {
    * across this restart and "still in backlog" is indistinguishable from "the user is typing
    * in it right now".
    */
-  for (const d of await sweepPlanWorkspaces(listTickets())) {
+  for (const d of await sweepPlanWorkspaces(await listTickets())) {
     console.log(`  plan sweep ${d.close ? "closed" : "spared"} ${d.label}: ${d.reason}`);
   }
-  const projects = listProjects();
+  const projects = await listProjects();
   if (projects.length === 0) {
     console.log("no projects yet — POST /projects { id, name, repoPath } to add one");
     return;
@@ -1438,7 +1454,7 @@ createServer(async (req, res) => {
   // repair would be resetting a status with no resources behind it, and even that is better
   // surfaced than silently applied.
   for (const p of projects) {
-    const mine = listTickets(p.id).filter((t) => t.status === "in_progress");
+    const mine = (await listTickets(p.id)).filter((t) => t.status === "in_progress");
     if (mine.length === 0) continue;
     const divergences = await reconcileTickets(mine, p.repoPath);
     for (const d of divergences) {

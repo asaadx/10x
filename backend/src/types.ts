@@ -32,6 +32,15 @@ export type Status = "backlog" | "todo" | "in_progress" | "in_review" | "done";
 /** The three states a PR can be in from the board's point of view, mirroring `Status`. */
 export type PullRequestState = "open" | "merged" | "closed";
 
+/** Which kind of cloud session a ticket's `sessionId` names: the planner or the implementer. */
+export type SessionKind = "plan" | "impl";
+
+/**
+ * The cloud agent's self-reported state. The board writes `starting`; the agent writes the
+ * rest into the shared database, because a session's status cannot be read any other way.
+ */
+export type AgentState = "starting" | "working" | "done" | "blocked" | "failed";
+
 /**
  * Which configured profile a ticket is dispatched with. Unlike `agentStatus`, which is left
  * as a bare `string` because Herdr owns that vocabulary, 10x owns this one, so a closed union
@@ -139,6 +148,8 @@ export type Project = {
    * irreversible act.
    */
   ownsClone: boolean;
+  /** The command Preview runs in a ticket's checkout, with `PORT` set. '' = start nothing. */
+  devCommand: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -202,6 +213,23 @@ export type Ticket = {
    * `setRunFields`, never by an edit.
    */
   startedAt: string | null;
+  /**
+   * The Claude Code cloud session working this ticket (docs/prototype-cloud.md). The board
+   * writes the id, url and kind when it starts one; null on a ticket that has never had one.
+   */
+  sessionId: string | null;
+  sessionUrl: string | null;
+  sessionKind: SessionKind | null;
+  /**
+   * The agent's own report, written by the agent straight into the shared database — there is
+   * no API to read a session's status, so this is the only signal the board has. Null means
+   * "no usable report", including a value outside the union (db.ts `toAgentState`).
+   */
+  agentState: AgentState | null;
+  /** The agent's last one-paragraph summary, or its question when `blocked`. */
+  agentNote: string | null;
+  /** ISO instant of the agent's last write. */
+  agentUpdatedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };

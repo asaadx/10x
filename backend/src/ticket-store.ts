@@ -6,8 +6,9 @@
  *  1. `number` is per-project and starts at 1, and it is half of the `UNIQUE(project_id,
  *     number)` key that every branch and agent name is derived from (`branchFor` /
  *     `agentNameFor`). A plain read-then-insert lets two concurrent creates read the same
- *     MAX and one of them dies on the constraint, so the read and the insert share a
- *     `BEGIN IMMEDIATE`.
+ *     MAX and one of them dies on the constraint, so the counter advance and the insert are
+ *     one atomic `batch`, and the insert reads the number back through a subquery rather than
+ *     from a JS variable — over HTTP there is no connection to hold a transaction open on.
  *
  *  2. Editing a ticket touches exactly five fields — `title`, `description`, `playbook`,
  *     `taskBreakdown` and `acceptanceCriteria` — and nothing else. `status`, `branch`,
@@ -20,8 +21,8 @@
  *     `attachments` and the screenshot pair are absent from that list on purpose: they are
  *     written by an upload path, not by an edit, so a PATCH cannot forge a stored file.
  */
-import type { SQLInputValue, SQLOutputValue } from "node:sqlite";
 import { db, nowIso, toTicket } from "./db.ts";
+import type { Row, Value } from "./sql.ts";
 import {
   PLAYBOOKS,
   PRIORITIES,
@@ -54,13 +55,11 @@ export type RunFields = {
 };
 
 // ---------------------------------------------------------------------------
-// Row decoding. node:sqlite hands back Record<string, SQLOutputValue>, so this is the
-// parse boundary where dynamic column values become the typed row `toTicket` wants.
+// Row decoding. The `Sql` client hands back Record<string, Value>, so this is the parse
+// boundary where dynamic column values become the typed row `toTicket` wants.
 // ---------------------------------------------------------------------------
 
-type Row = Record<string, SQLOutputValue>;
-
-const bad = (column: string, value: SQLOutputValue | undefined): never => {
+const bad = (column: string, value: Value | undefined): never => {
   throw new Error(`tickets.${column}: unexpected ${value === undefined ? "missing" : typeof value}`);
 };
 
@@ -150,37 +149,47 @@ const decode = (row: Row): Ticket =>
     screenshot_before: maybeText(row, "screenshot_before"),
     screenshot_after: maybeText(row, "screenshot_after"),
     started_at: maybeText(row, "started_at"),
+    session_id: maybeText(row, "session_id"),
+    session_url: maybeText(row, "session_url"),
+    session_kind: maybeText(row, "session_kind"),
+    agent_state: maybeText(row, "agent_state"),
+    agent_note: maybeText(row, "agent_note"),
+    agent_updated_at: maybeText(row, "agent_updated_at"),
     created_at: text(row, "created_at"),
     updated_at: text(row, "updated_at"),
   });
 
 // ---------------------------------------------------------------------------
-// Statements. Prepared once: db.ts has already run the schema at import time.
+// Statements. Plain strings: the `Sql` client has no prepared-statement handle to cache,
+// and the schema is applied by `initDb()`, never at import.
 // ---------------------------------------------------------------------------
 
-const SELECT_ALL = db.prepare("SELECT * FROM tickets WHERE archived = 0 ORDER BY project_id, number");
-const SELECT_BY_PROJECT = db.prepare(
-  "SELECT * FROM tickets WHERE archived = 0 AND project_id = ? ORDER BY project_id, number",
-);
-const SELECT_ONE = db.prepare("SELECT * FROM tickets WHERE id = ?");
-const SELECT_PROJECT_ID = db.prepare("SELECT id FROM projects WHERE id = ?");
+const SELECT_ALL = "SELECT * FROM tickets WHERE archived = 0 ORDER BY project_id, number";
+const SELECT_BY_PROJECT =
+  "SELECT * FROM tickets WHERE archived = 0 AND project_id = ? ORDER BY project_id, number";
+const SELECT_ONE = "SELECT * FROM tickets WHERE id = ?";
 /**
  * Claim the next ticket number by ADVANCING the project's counter, never by reading
  * MAX(number). Deleting the highest ticket would otherwise recycle its number, and since
  * deleting a ticket deliberately leaves its worktree in place (memory/teardown.md), the new ticket's
  * branch would collide with the orphan still on disk — inheriting another ticket's work.
- * RETURNING gives us the claimed value and the increment in one atomic statement.
  */
-const CLAIM_NEXT_NUMBER = db.prepare(
-  "UPDATE projects SET next_number = next_number + 1 WHERE id = ? RETURNING next_number - 1 AS next",
-);
-const INSERT_TICKET = db.prepare(`
+const ADVANCE_NUMBER = "UPDATE projects SET next_number = next_number + 1 WHERE id = ?";
+/**
+ * The insert that pairs with ADVANCE_NUMBER inside one batch. It reads the number it just
+ * claimed back out of the counter (`next_number - 1`) instead of taking it as an argument,
+ * so the two statements need nothing from each other's results and can travel in a single
+ * Hrana request. `INSERT … SELECT … FROM projects` also makes "no such project" a zero-row
+ * insert rather than a foreign-key error, which is how `createTicket` tells a 404 apart.
+ */
+const INSERT_TICKET = `
   INSERT INTO tickets (id, project_id, number, title, description, status,
                        finished, died, branch, agent_name, session_dir,
                        created_at, updated_at)
-  VALUES (?, ?, ?, ?, ?, 'backlog', 0, 0, NULL, NULL, NULL, ?, ?)
-`);
-const DELETE_TICKET = db.prepare("DELETE FROM tickets WHERE id = ?");
+  SELECT id || '-' || (next_number - 1), id, next_number - 1, ?, ?, 'backlog',
+         0, 0, NULL, NULL, NULL, ?, ?
+  FROM projects WHERE id = ?
+  RETURNING id`;
 
 /**
  * Shared writer for both mutation paths. Column names are literals from this file, never
@@ -189,12 +198,12 @@ const DELETE_TICKET = db.prepare("DELETE FROM tickets WHERE id = ?");
  * `updated_at` is appended unconditionally, which is also why an empty-fields
  * `setRunFields` still touches the row.
  */
-function writeColumns(id: string, columns: [string, SQLInputValue][]): void {
+async function writeColumns(id: string, columns: [string, Value][]): Promise<void> {
   const assignments = columns.map(([column]) => `${column} = ?`).join(", ");
   const values = columns.map(([, value]) => value);
   values.push(nowIso(), id);
   const sql = `UPDATE tickets SET ${assignments}${assignments ? ", " : ""}updated_at = ? WHERE id = ?`;
-  db.prepare(sql).run(...values);
+  await db.execute(sql, values);
 }
 
 // ---------------------------------------------------------------------------
@@ -277,8 +286,9 @@ const IMMUTABLE = [
 // Reads
 // ---------------------------------------------------------------------------
 
-export function listTickets(projectId?: string): Ticket[] {
-  const rows = projectId === undefined ? SELECT_ALL.all() : SELECT_BY_PROJECT.all(projectId);
+export async function listTickets(projectId?: string): Promise<Ticket[]> {
+  const { rows } =
+    projectId === undefined ? await db.execute(SELECT_ALL) : await db.execute(SELECT_BY_PROJECT, [projectId]);
   return rows.map(decode);
 }
 
@@ -288,14 +298,14 @@ export function listTickets(projectId?: string): Ticket[] {
  * keyed by ticket id (screenshots), and an archived ticket's files are still on disk even
  * though its card is gone for good.
  */
-const SELECT_IDS_BY_PROJECT = db.prepare("SELECT id FROM tickets WHERE project_id = ?");
-
-export function listProjectTicketIds(projectId: string): string[] {
-  return SELECT_IDS_BY_PROJECT.all(projectId).map((row) => String(row["id"]));
+export async function listProjectTicketIds(projectId: string): Promise<string[]> {
+  const { rows } = await db.execute("SELECT id FROM tickets WHERE project_id = ?", [projectId]);
+  return rows.map((row) => String(row["id"]));
 }
 
-export function getTicket(id: string): Ticket | undefined {
-  const row = SELECT_ONE.get(id);
+export async function getTicket(id: string): Promise<Ticket | undefined> {
+  const { rows } = await db.execute(SELECT_ONE, [id]);
+  const row = rows[0];
   return row === undefined ? undefined : decode(row);
 }
 
@@ -303,7 +313,7 @@ export function getTicket(id: string): Ticket | undefined {
 // Writes
 // ---------------------------------------------------------------------------
 
-export function createTicket(input: unknown): TicketResult {
+export async function createTicket(input: unknown): Promise<TicketResult> {
   if (typeof input !== "object" || input === null || Array.isArray(input)) return notAnObject;
   const { projectId, title, description }: TicketInput = input;
 
@@ -317,37 +327,29 @@ export function createTicket(input: unknown): TicketResult {
     return invalid("description", "must be a string when present");
   }
 
-  let id: string;
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    if (SELECT_PROJECT_ID.get(projectId) === undefined) {
-      db.exec("ROLLBACK");
-      return { ok: false, status: 404, body: { error: "no_such_project", projectId } };
-    }
-
-    const counted = CLAIM_NEXT_NUMBER.get(projectId);
-    if (counted === undefined) throw new Error("next-number claim returned no row");
-    const number = int(counted, "next");
-    id = `${projectId}-${number}`;
-    // One timestamp, both columns: "never edited" then reads as createdAt === updatedAt.
-    const ts = nowIso();
-
-    INSERT_TICKET.run(id, projectId, number, title.trim(), description ?? "", ts, ts);
-    db.exec("COMMIT");
-  } catch (err) {
-    db.exec("ROLLBACK");
-    throw err;
+  // One timestamp, both columns: "never edited" then reads as createdAt === updatedAt.
+  const ts = nowIso();
+  // Atomic: the counter only advances if the insert lands, and two concurrent creates cannot
+  // claim the same number because each batch is one write transaction.
+  const [, inserted] = await db.batch([
+    { sql: ADVANCE_NUMBER, args: [projectId] },
+    { sql: INSERT_TICKET, args: [title.trim(), description ?? "", ts, ts, projectId] },
+  ]);
+  const id = inserted?.rows[0]?.["id"];
+  // No project row means both statements matched nothing: nothing advanced, nothing inserted.
+  if (typeof id !== "string") {
+    return { ok: false, status: 404, body: { error: "no_such_project", projectId } };
   }
 
-  const ticket = getTicket(id);
+  const ticket = await getTicket(id);
   if (ticket === undefined) throw new Error(`ticket ${id} vanished after insert`);
   return { ok: true, ticket };
 }
 
-export function updateTicket(id: string, input: unknown): TicketResult {
+export async function updateTicket(id: string, input: unknown): Promise<TicketResult> {
   if (typeof input !== "object" || input === null || Array.isArray(input)) return notAnObject;
 
-  const existing = getTicket(id);
+  const existing = await getTicket(id);
   if (existing === undefined) {
     return { ok: false, status: 404, body: { error: "no_such_ticket", id } };
   }
@@ -367,7 +369,7 @@ export function updateTicket(id: string, input: unknown): TicketResult {
   }
 
   const { title, description, playbook, priority, taskBreakdown, acceptanceCriteria }: TicketInput = input;
-  const columns: [string, SQLInputValue][] = [];
+  const columns: [string, Value][] = [];
   if (title !== undefined) {
     if (typeof title !== "string" || title.trim() === "") {
       return invalid("title", "must be a non-empty string");
@@ -413,31 +415,30 @@ export function updateTicket(id: string, input: unknown): TicketResult {
     );
   }
 
-  writeColumns(id, columns);
-  const ticket = getTicket(id);
+  await writeColumns(id, columns);
+  const ticket = await getTicket(id);
   if (ticket === undefined) throw new Error(`ticket ${id} vanished during update`);
   return { ok: true, ticket };
 }
 
-export function deleteTicket(id: string): { ok: boolean } {
-  return { ok: DELETE_TICKET.run(id).changes === 1 };
+export async function deleteTicket(id: string): Promise<{ ok: boolean }> {
+  const res = await db.execute("DELETE FROM tickets WHERE id = ?", [id]);
+  return { ok: res.rowsAffected === 1 };
 }
 
 /** The lifecycle writer. Booleans are INTEGER 0/1 in SQLite, converted here. */
-export function setRunFields(id: string, fields: RunFields): void {
-  const columns: [string, SQLInputValue][] = [];
+export async function setRunFields(id: string, fields: RunFields): Promise<void> {
+  const columns: [string, Value][] = [];
   if (fields.branch !== undefined) columns.push(["branch", fields.branch]);
   if (fields.agentName !== undefined) columns.push(["agent_name", fields.agentName]);
   if (fields.sessionDir !== undefined) columns.push(["session_dir", fields.sessionDir]);
   if (fields.startedAt !== undefined) columns.push(["started_at", fields.startedAt]);
   if (fields.finished !== undefined) columns.push(["finished", fields.finished ? 1 : 0]);
   if (fields.died !== undefined) columns.push(["died", fields.died ? 1 : 0]);
-  writeColumns(id, columns);
+  await writeColumns(id, columns);
 }
 
-const SET_ARCHIVED = db.prepare("UPDATE tickets SET archived = 1, updated_at = ? WHERE id = ?");
-
 /** One-way: there is no unset. Archiving hides a ticket from every board read for good. */
-export function archiveTicket(id: string): void {
-  SET_ARCHIVED.run(nowIso(), id);
+export async function archiveTicket(id: string): Promise<void> {
+  await db.execute("UPDATE tickets SET archived = 1, updated_at = ? WHERE id = ?", [nowIso(), id]);
 }

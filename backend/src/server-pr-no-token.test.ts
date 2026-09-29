@@ -21,7 +21,8 @@ process.env.STATE_DIR = dir;
 process.env.DB_PATH = join(dir, "10x.db");
 process.env.HERDR_SOCKET_PATH = socketPath;
 
-const { db, nowIso } = await import("./db.ts");
+const { db, initDb, nowIso } = await import("./db.ts");
+await initDb();
 
 const API_URL = `http://localhost:${PORT}`;
 const PROJECT_ID = "pr-no-token-test";
@@ -63,17 +64,19 @@ const herdr: Server = createServer((socket) => {
 
 // `owner`/`repo` stated explicitly: PR reads take the project's identity from these columns
 // now, and this fixture has no repo on disk for the startup backfill to read a remote from.
-db.prepare(
+await db.execute(
   `INSERT INTO projects (id, name, owner, repo, repo_path, base_branch, provision_state, created_at, updated_at)
    VALUES (?, ?, 'acme', 'proj', ?, ?, 'ready', ?, ?)`,
-).run(PROJECT_ID, PROJECT_ID, "/tmp/does-not-need-to-exist", "main", nowIso(), nowIso());
+  [PROJECT_ID, PROJECT_ID, "/tmp/does-not-need-to-exist", "main", nowIso(), nowIso()],
+);
 
 // A ticket already carrying a PR number but never reconciled — the pre-existing case, what
 // `10x-1` had before this change — with a non-terminal, never-checked `prState`.
-db.prepare(
+await db.execute(
   "INSERT INTO tickets (id, project_id, number, title, description, status, branch, pr_number, pr_url, pr_state, created_at, updated_at) " +
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-).run("t-no-token", PROJECT_ID, 1, "ticket t-no-token", "", "done", "ticket-no-token-1", 42, "https://github.com/acme/proj/pull/42", null, nowIso(), nowIso());
+  ["t-no-token", PROJECT_ID, 1, "ticket t-no-token", "", "done", "ticket-no-token-1", 42, "https://github.com/acme/proj/pull/42", null, nowIso(), nowIso()],
+);
 
 const child = spawn(process.execPath, [join(import.meta.dirname, "server.ts")], {
   env: {
@@ -114,7 +117,6 @@ after(async () => {
   const { promise, resolve } = Promise.withResolvers<void>();
   herdr.close(() => resolve());
   await promise;
-  db.close();
   rmSync(dir, { recursive: true, force: true });
 });
 

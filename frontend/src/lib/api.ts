@@ -569,6 +569,7 @@ async function mockCreateProject(input: CreateProjectInput): Promise<Project> {
     ownsClone: true,
     provisionState: "pending",
     provisionError: "",
+    devCommand: "",
     createdAt: now,
     updatedAt: now,
   };

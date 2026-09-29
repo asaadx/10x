@@ -31,7 +31,7 @@ export async function saveScreenshot(id: string, side: ScreenshotSide, data: Uin
   const name = fileFor(id, side);
   await writeFile(join(SCREENSHOTS_DIR, name), data);
   const servedPath = `/screenshots/${name}`;
-  setScreenshot(id, side, servedPath);
+  await setScreenshot(id, side, servedPath);
   return servedPath;
 }
 
