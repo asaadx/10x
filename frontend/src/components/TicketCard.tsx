@@ -60,13 +60,13 @@ import { runFailed } from "@/lib/board.ts";
 import { REMOTE_TARGET, remoteCommand, type SteerMode } from "@/lib/steer-mode.ts";
 import { PRIORITIES, type Priority, type ProvisionState, type Status, type Ticket } from "@/types.ts";
 
-const PR_ICON = {
+export const PR_ICON = {
   merged: GitMerge,
   closed: GitPullRequestClosed,
   open: GitPullRequest,
 } as const;
 
-const PR_TONE = {
+export const PR_TONE = {
   merged: "text-violet-600 dark:text-violet-400",
   closed: "text-red-600 dark:text-red-400",
   open: "text-emerald-600 dark:text-emerald-400",
@@ -122,7 +122,7 @@ function RunTimer({ since }: { since: string }) {
  * three-dot menu. Position in `PRIORITIES` is the count, the same rule the sheet's picker
  * uses, so there is no second low/medium/high-to-count mapping that could drift.
  */
-function PriorityBadge({ priority }: { priority: Priority }) {
+export function PriorityBadge({ priority }: { priority: Priority }) {
   const count = PRIORITIES.indexOf(priority) + 1;
   return (
     <span

@@ -18,9 +18,9 @@ import { useBoard } from "@/lib/use-board.ts";
  * board: the nav's project picker and theme toggle have to work identically regardless of
  * which route is active, and `BoardPage` needs the same `projectId` to filter its columns.
  *
- * `/` redirects to `/board`, which is the only route with real content today — `/dashboard`,
- * `/playbooks` and `/list` are placeholders (see their own files) until the pages described in
- * `docs/playbooks-and-dashboard.md` are built.
+ * `/` redirects to `/board`. `/list` is the same tickets as a sortable, filterable table, fed by
+ * the same `useBoard` read. `/dashboard` and `/playbooks` are placeholders (see their own files)
+ * until the pages described in `docs/playbooks-and-dashboard.md` are built.
  */
 export function App() {
   const { theme, toggleTheme } = useTheme();
@@ -61,7 +61,12 @@ export function App() {
         />
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/playbooks" element={<PlaybooksPage />} />
-        <Route path="/list" element={<ListPage />} />
+        <Route
+          path="/list"
+          element={
+            <ListPage projectId={projectId} tickets={tickets} projects={projects} error={error} refresh={refresh} />
+          }
+        />
       </Routes>
     </div>
   );

@@ -644,3 +644,71 @@ export const MOCK_TICKETS: Ticket[] = [
     updatedAt: iso(1, 16),
   },
 ];
+
+/**
+ * Bulk tickets for `/list`, whose whole reason to exist is a board past the point cards scale.
+ * Generated rather than hand-written because what matters here is spread, not individual
+ * states: every status, priority and playbook, checklists at several ratios, PRs with and
+ * without a known state, and `updatedAt` spread over weeks so every sort key has something to
+ * reorder. No PR is `open`, so the project-delete guard still reads only the fixtures above.
+ */
+const BULK_TITLES = [
+  "Paginate the tickets endpoint",
+  "Keyboard shortcut to create a ticket",
+  "Cache project lookups for a minute",
+  "Show the base branch on the project picker",
+  "Retry webhook deliveries that time out",
+  "Collapse empty columns on narrow screens",
+  "Explain why Start is disabled in a tooltip",
+  "Record who accepted a ticket",
+  "Document the agent reporting protocol",
+  "Move fixture data behind a factory",
+  "Research cheaper session start latency",
+  "Index tickets by project and status",
+  "Badge tickets whose agent asked a question",
+  "Trim trailing whitespace from checklist rows",
+  "Warn before closing a sheet with unsaved edits",
+  "Link the session tab from the card",
+  "Export the board as CSV",
+  "Surface the last agent note on hover",
+  "Rotate the webhook secret without downtime",
+  "Tighten the CSP for the served bundle",
+  "Add a dark-mode screenshot to the README",
+  "Profile the board read under 500 tickets",
+  "Let a playbook carry a default priority",
+  "Show relative time on done tickets",
+] as const;
+
+const BULK_STATUSES = ["backlog", "todo", "in_progress", "in_review", "done"] as const;
+const BULK_PLAYBOOKS = ["Fullstack", "Frontend", "Backend", "Database", "DevOps", "Docs", "Research"] as const;
+const BULK_PRIORITIES = ["low", "medium", "high"] as const;
+const BULK_PR_STATES = ["merged", "closed", null] as const;
+
+MOCK_TICKETS.push(
+  ...BULK_TITLES.map((title, i): Ticket => {
+    const number = 15 + i;
+    const status = BULK_STATUSES[(i * 3) % BULK_STATUSES.length]!;
+    const total = i % 4 === 0 ? 0 : 2 + (i % 5);
+    const done = status === "done" ? total : status === "backlog" ? 0 : Math.min(total, (i * 7) % (total + 1));
+    const hasPr = status === "done" || (status === "in_review" && i % 2 === 0);
+    return {
+      ...base,
+      id: `10x-${number}`,
+      number,
+      title,
+      description: `Bulk fixture ${number} for the list view.`,
+      status,
+      branch: `ticket/10x/${number}`,
+      agentName: `ticket-10x-${number}`,
+      playbook: BULK_PLAYBOOKS[i % BULK_PLAYBOOKS.length]!,
+      priority: BULK_PRIORITIES[(i * 2) % BULK_PRIORITIES.length]!,
+      taskBreakdown: Array.from({ length: total }, (_, k) => ({ text: `Step ${k + 1}`, done: k < done })),
+      finished: status === "in_review" || status === "done",
+      prNumber: hasPr ? 50 + i : null,
+      prUrl: hasPr ? `https://github.com/asaadx/10x/pull/${50 + i}` : null,
+      prState: hasPr ? BULK_PR_STATES[i % BULK_PR_STATES.length]! : null,
+      createdAt: iso(10 + (i % 20), 8),
+      updatedAt: iso((i * 5) % 26, 8 + (i % 9)),
+    };
+  }),
+);
