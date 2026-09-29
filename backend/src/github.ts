@@ -304,7 +304,7 @@ export type RepoMetadata = {
 export type GitHubApiErrorCode = "repo_not_found" | "repo_not_accessible" | "github_unavailable";
 
 /**
- * Same shape as `HerdrError`: the route layer switches on `code`, never on message text. The
+ * A coded error: the route layer switches on `code`, never on message text. The
  * codes are the wire codes the route answers with, so mapping one to a status is a lookup rather
  * than a translation.
  */

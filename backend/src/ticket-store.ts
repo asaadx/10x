@@ -14,7 +14,7 @@
  *     `taskBreakdown` and `acceptanceCriteria` — and nothing else. `status`, `branch`,
  *     `agent_name`, `session_dir`, `started_at`, `finished` and `died` belong to the
  *     spawn/teardown lifecycle — status in particular IS the concurrency lock
- *     (memory/herdr-omp-lifecycle.md memory/operations.md), so a PATCH that quietly reassigned it would
+ *     (memory/operations.md), so a PATCH that quietly reassigned it would
  *     walk the board straight past the compare-and-swap that stops a double spawn.
  *     A PATCH naming any of them is a 400; the lifecycle writes through `setRunFields`.
  *

@@ -1,15 +1,14 @@
 /**
  * Projects: the repo a ticket lives in, and the slug every derived identifier hangs off.
  *
- * Two things here are load-bearing, both from memory/herdr-omp-lifecycle.md memory/naming.md:
+ * Three things here are load-bearing (memory/naming.md):
  *
- *  1. The slug is validated at CREATION time. It feeds the branch and the Herdr agent
- *     name, whose charsets disagree — `my.app` yields a legal git branch and an illegal
- *     agent name, so without this check the worktree gets created and only `agent.start`
- *     fails, leaving residue behind a confusing error.
+ *  1. The slug is validated at CREATION time (lifecycle.ts `PROJECT_SLUG_RE`). It is the first
+ *     half of every ticket id, which ends up in branch names, directory names and SQL an agent
+ *     types by hand, so a bad one must be refused before anything is built on it.
  *
- *  2. The slug is IMMUTABLE. Branch and agent names are computed from it and existing
- *     worktrees already carry the old value, so renaming would orphan every one of them.
+ *  2. The slug is IMMUTABLE. Ticket ids are computed from it and every existing ticket, branch
+ *     and pull request already carries the old value, so renaming would orphan all of them.
  *     `owner`/`repo` are immutable for the same class of reason — they are the project's
  *     identity, and repointing a healthy project at a different repo would orphan its open
  *     pull requests. Only `name`, `description`, `baseBranch` and `devCommand` mutate freely.
