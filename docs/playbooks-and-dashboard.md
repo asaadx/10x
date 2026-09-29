@@ -1,5 +1,12 @@
 # Dashboard and Playbooks
 
+> **Historical design record.** Written before `prototype-cloud` replaced the local agent runtime
+> (Herdr: a terminal multiplexer running a third-party agent in per-ticket worktrees) with Claude
+> Code cloud sessions. Its inventory of "what data exists" names fields that runtime produced —
+> pane ids, spawn diagnostics, transcript directories — which are gone. Re-derive that inventory
+> from `backend/src/types.ts` and [`memory/cloud.md`](../memory/cloud.md) before building from it;
+> the rest is left as written because the design reasoning still applies.
+
 Design for the two nav destinations that exist today only as inert buttons beside Board
 (`frontend/src/components/NavBar.tsx`, `DESTINATIONS`). Nothing here is built. This document decides
 shape and data sourcing so that building either one is an implementation task rather than a design
@@ -78,7 +85,7 @@ had". The only two facts in the system that a sceptic cannot argue with are *a p
 and *the diff size GitHub itself reported*. Both are already recorded: `pr_state = 'merged'` and
 `pr_additions`/`pr_deletions`, written by the webhook receiver from the payload with no API call
 (`memory/github.md`). Anything derived from agent status, `finished`, or wall-clock durations is
-softer, because a turn ending is not the ticket succeeding (`memory/agent-status.md`) and the app
+softer, because an agent reporting `done` is not the ticket succeeding (`memory/cloud.md`) and the app
 deliberately never verifies success itself (`memory/parking-lot.md`).
 
 **The one thing it needs that does not exist: a merge timestamp.** The webhook payload carries
@@ -236,7 +243,7 @@ below). Header actions: **New playbook** (from a blank template, not an empty fi
 
 **Delete guard.** Deleting a playbook a ticket references should refuse and name the tickets, in the
 same spirit as the existing delete guard that refuses to delete a ticket whose PR is still open
-(`409 pr_open`, `memory/teardown.md`). The precedent is there; reuse the shape.
+(`409 pr_open`, `memory/github.md`). The precedent is there; reuse the shape.
 
 The seven slugs in the `Playbook` union (`fullstack`, `frontend`, `backend`, `database`, `devops`,
 `docs`, `research`) become the seven seed files shipped on first run. Their *content* does not exist
@@ -307,9 +314,9 @@ playbook fails to typecheck.
 **The playbook body should be snapshotted at spawn, not resolved live.** [inferred] A ticket that
 ran three weeks ago ran against the file as it was then. Resolving the slug at read time would
 misattribute a later edit to an earlier run, which quietly poisons any per-playbook figure on the
-dashboard. The cheap version is to write the resolved YAML into the run's system-prompt file, which
-`memory/spawn.md` establishes already lives outside the worktree so it never pollutes the ticket's
-diff. That gives an audit trail for free without a new table.
+dashboard. The cheap version is to write the resolved YAML into the session's opening message
+(`prompts.ts` `sessionMessage`), which is never committed and so never pollutes the ticket's diff.
+That gives an audit trail in the session itself without a new table.
 
 ## Example playbook
 
@@ -325,9 +332,8 @@ description: A React and Tailwind change inside frontend/, committed on the tick
 version: 1
 
 task:
-  # The agent receives the ticket title and description through agent.prompt, never as an
-  # omp positional argument: a positional arg makes OMP work during startup and races
-  # Herdr's readiness detection (memory/spawn.md).
+  # The agent receives the ticket title and description in the session's opening message
+  # (prompts.ts sessionMessage), ahead of the rendered instructions (memory/cloud.md).
   goal: >
     Implement the ticket's change in frontend/ and commit it on the ticket's own branch.
     Stop when the change is complete and the checks below are green.

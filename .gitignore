@@ -10,9 +10,6 @@ build/
 .cache/
 coverage/
 
-# generated on demand: herdr api schema --output <path>
-herdr-api.schema.json
-
 # local 10x state
 .10x/
 

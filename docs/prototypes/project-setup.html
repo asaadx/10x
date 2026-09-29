@@ -656,7 +656,7 @@
       function DeleteDialog({ open, onClose, project, projectTickets, onConfirm }) {
         if (project == null) return null;
 
-        // Which dials this delete actually turns, per memory/teardown.md's matrix: an agent is
+        // Which dials this delete actually turns, per the teardown matrix of the time: an agent is
         // alive from In Progress until it is retired, and Accept deliberately keeps a worktree
         // and branch, so Done still holds both.
         const agents = projectTickets.filter((t) => t.status === "in_progress" || t.status === "in_review");

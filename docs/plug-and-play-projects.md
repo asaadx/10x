@@ -1,6 +1,13 @@
 # Plug-and-play projects
 
-**Status:** proposed. Read this to decide whether the feature is right, not how it is built.
+> **Historical design record.** Written and built before `prototype-cloud` replaced the local
+> agent runtime (Herdr: a terminal multiplexer running agents in per-ticket worktrees) with Claude
+> Code cloud sessions. Its references to that runtime are left as they were, because they are the
+> reasoning behind decisions that still stand (10x owns its clones; empty repos are seeded). The
+> current mechanism is [`memory/cloud.md`](../memory/cloud.md); what project delete does today is in
+> [`memory/architecture.md`](../memory/architecture.md).
+
+**Status:** built. Read this for why the feature is shaped as it is, not how it is built.
 
 Today, adding a project means leaving the board: clone the repo yourself, find its folder path,
 invent a short name, know its main branch, and send all four to the server by hand. There is no
@@ -343,5 +350,6 @@ above is clickable, and the strip at the bottom forces each one (empty repo, no 
 failure, first run).
 
 **Technical mechanics** are not in this document on purpose. The verified findings behind §4 and §6
-live in [gotchas](../memory/gotchas.md) as **G7** and **G8**, and the project-delete gap behind §5.2
-is in [teardown](../memory/teardown.md).
+live in [gotchas](../memory/gotchas.md) as **G7** and **G8**. The project-delete gap behind §5.2
+was recorded in a memory node for the retired local runtime; what project delete does now is in
+[architecture](../memory/architecture.md) (the HTTP surface table).
