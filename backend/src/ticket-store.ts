@@ -51,6 +51,8 @@ export type RunFields = {
   /** The board writes `starting` and clears; every other value is the agent's own write. */
   agentState?: AgentState | null;
   agentNote?: string | null;
+  /** Never on the wire: the per-session write scope quoted in the agent's prompt (db.ts). */
+  runToken?: string | null;
   branch?: string | null;
   agentName?: string | null;
   sessionDir?: string | null;
@@ -456,6 +458,7 @@ export async function setRunFields(id: string, fields: RunFields): Promise<void>
   if (fields.sessionId !== undefined) columns.push(["session_id", fields.sessionId]);
   if (fields.sessionUrl !== undefined) columns.push(["session_url", fields.sessionUrl]);
   if (fields.sessionKind !== undefined) columns.push(["session_kind", fields.sessionKind]);
+  if (fields.runToken !== undefined) columns.push(["run_token", fields.runToken]);
   if (fields.agentState !== undefined) columns.push(["agent_state", fields.agentState]);
   if (fields.agentNote !== undefined) columns.push(["agent_note", fields.agentNote]);
   await writeColumns(id, columns);

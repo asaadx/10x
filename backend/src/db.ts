@@ -146,6 +146,10 @@ CREATE TABLE IF NOT EXISTS tickets (
   agent_state      TEXT,
   agent_note       TEXT,
   agent_updated_at TEXT,
+  -- A random token per session start, quoted in the agent's prompt; every agent write is
+  -- scoped 'WHERE id = ? AND run_token = ?', so a stale session (a planner left open, an
+  -- implementation that was cancelled and restarted) cannot move the current run.
+  run_token        TEXT,
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL,
   UNIQUE (project_id, number)
@@ -210,6 +214,7 @@ async function migrate(): Promise<void> {
     "agent_state",
     "agent_note",
     "agent_updated_at",
+    "run_token",
   ]) {
     await addColumnIfMissing("tickets", column, "TEXT");
   }

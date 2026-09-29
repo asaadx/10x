@@ -16,7 +16,7 @@ The board cannot see this conversation. It sees only what you write into its dat
 this helper (`TENX_DB_URL` and `TENX_DB_TOKEN` are already set in this environment):
 
 ```bash
-tenx_sql() { # tenx_sql "UPDATE tickets SET agent_state = ? WHERE id = ?" working {{ticketId}}
+tenx_sql() { # tenx_sql "UPDATE tickets SET agent_state = ? WHERE id = ? AND run_token = ?" working {{ticketId}} {{runToken}}
   local sql="$1"; shift; local args="[]"
   for a in "$@"; do args=$(jq -c --arg v "$a" '. + [{"type":"text","value":$v}]' <<<"$args"); done
   curl -sf "$TENX_DB_URL/v2/pipeline" -H "Authorization: Bearer $TENX_DB_TOKEN" \
@@ -25,11 +25,11 @@ tenx_sql() { # tenx_sql "UPDATE tickets SET agent_state = ? WHERE id = ?" workin
 }
 tenx_state() { # tenx_state working   |   tenx_state blocked "the question"
   if [ $# -ge 2 ]; then
-    tenx_sql "UPDATE tickets SET agent_state = ?, agent_note = ?, agent_updated_at = ? WHERE id = ?" \
-      "$1" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" {{ticketId}}
+    tenx_sql "UPDATE tickets SET agent_state = ?, agent_note = ?, agent_updated_at = ? WHERE id = ? AND run_token = ?" \
+      "$1" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" {{ticketId}} {{runToken}}
   else
-    tenx_sql "UPDATE tickets SET agent_state = ?, agent_updated_at = ? WHERE id = ?" \
-      "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" {{ticketId}}
+    tenx_sql "UPDATE tickets SET agent_state = ?, agent_updated_at = ? WHERE id = ? AND run_token = ?" \
+      "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" {{ticketId}} {{runToken}}
   fi
 }
 ```
@@ -37,6 +37,9 @@ tenx_state() { # tenx_state working   |   tenx_state blocked "the question"
 A failed write still exits 0 with `"type":"error"` in its output, so read what every call
 prints. If the database cannot be reached at all, tell the human in the conversation.
 
+- Every write is scoped `WHERE id = ? AND run_token = ?` with `{{runToken}}`, this session's
+  token — keep it in every UPDATE. If the human restarts the ticket, a new session gets a new
+  token and your writes stop landing (0 rows affected): that means stop, not retry.
 - Only ever write the row whose `id` is `{{ticketId}}`, and only these columns: `title`,
   `description`, `task_breakdown`, `acceptance_criteria`, `playbook`, `agent_state`,
   `agent_note`, `agent_updated_at`. Never `status`.
@@ -51,8 +54,8 @@ prints. If the database cannot be reached at all, tell the human in the conversa
   and each write replaces the whole list — always send the complete array:
 
   ```bash
-  tenx_sql "UPDATE tickets SET task_breakdown = ? WHERE id = ?" \
-    '[{"text":"Add the endpoint","done":false},{"text":"Wire the button","done":false}]' {{ticketId}}
+  tenx_sql "UPDATE tickets SET task_breakdown = ? WHERE id = ? AND run_token = ?" \
+    '[{"text":"Add the endpoint","done":false},{"text":"Wire the button","done":false}]' {{ticketId}} {{runToken}}
   ```
 
 - `playbook` must be exactly one of Fullstack, Frontend, Backend, Database, DevOps, Docs or

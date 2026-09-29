@@ -110,16 +110,22 @@ export function ticketBlock(ticket: Ticket): string {
  * leftover-marker check in `renderPrompt` — refusing a spawn over the user's own prose. Only
  * the values this module controls go through the marker checks.
  */
-export async function sessionMessage(kind: SessionKind, ticket: Ticket, project: Project): Promise<string> {
+export async function sessionMessage(
+  kind: SessionKind,
+  ticket: Ticket,
+  project: Project,
+  runToken: string,
+): Promise<string> {
   const repo = `${project.owner}/${project.repo}`;
   const instructions =
     kind === "impl"
       ? await loadPrompt("implementation", {
           ticketId: ticket.id,
+          runToken,
           branch: sessionBranchFor(ticket.id),
           baseBranch: project.baseBranch,
           repo,
         })
-      : await loadPrompt("plan", { ticketId: ticket.id, repo });
+      : await loadPrompt("plan", { ticketId: ticket.id, runToken, repo });
   return `${ticketBlock(ticket)}\n\n---\n\n${instructions}`;
 }

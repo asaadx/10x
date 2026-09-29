@@ -10,7 +10,7 @@ Define this helper in your shell before anything else. `TENX_DB_URL` and `TENX_D
 already set in this environment.
 
 ```bash
-tenx_sql() { # tenx_sql "UPDATE tickets SET agent_state = ? WHERE id = ?" working {{ticketId}}
+tenx_sql() { # tenx_sql "UPDATE tickets SET agent_state = ? WHERE id = ? AND run_token = ?" working {{ticketId}} {{runToken}}
   local sql="$1"; shift; local args="[]"
   for a in "$@"; do args=$(jq -c --arg v "$a" '. + [{"type":"text","value":$v}]' <<<"$args"); done
   curl -sf "$TENX_DB_URL/v2/pipeline" -H "Authorization: Bearer $TENX_DB_TOKEN" \
@@ -19,11 +19,11 @@ tenx_sql() { # tenx_sql "UPDATE tickets SET agent_state = ? WHERE id = ?" workin
 }
 tenx_state() { # tenx_state working   |   tenx_state blocked "the question"
   if [ $# -ge 2 ]; then
-    tenx_sql "UPDATE tickets SET agent_state = ?, agent_note = ?, agent_updated_at = ? WHERE id = ?" \
-      "$1" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" {{ticketId}}
+    tenx_sql "UPDATE tickets SET agent_state = ?, agent_note = ?, agent_updated_at = ? WHERE id = ? AND run_token = ?" \
+      "$1" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" {{ticketId}} {{runToken}}
   else
-    tenx_sql "UPDATE tickets SET agent_state = ?, agent_updated_at = ? WHERE id = ?" \
-      "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" {{ticketId}}
+    tenx_sql "UPDATE tickets SET agent_state = ?, agent_updated_at = ? WHERE id = ? AND run_token = ?" \
+      "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" {{ticketId}} {{runToken}}
   fi
 }
 ```
@@ -34,6 +34,9 @@ are empty), say so plainly in your final message: the board will never see this 
 
 Rules for the database:
 
+- Every write is scoped `WHERE id = ? AND run_token = ?` with `{{runToken}}`, this session's
+  token — keep it in every UPDATE. If the human restarts the ticket, a new session gets a new
+  token and your writes stop landing (0 rows affected): that means stop, not retry.
 - Only ever write the row whose `id` is `{{ticketId}}`. Never touch another ticket, and never
   another table.
 - Only these columns: `title`, `description`, `task_breakdown`, `acceptance_criteria`,
@@ -55,7 +58,7 @@ Rules for the database:
   ```bash
   tb=$(tenx_sql "SELECT task_breakdown FROM tickets WHERE id = ?" {{ticketId}} | jq -r '.results[0].response.result.rows[0][0].value')
   tb=$(jq -c 'map(if .text == "Wire the new endpoint" then .done = true else . end)' <<<"$tb")
-  tenx_sql "UPDATE tickets SET task_breakdown = ? WHERE id = ?" "$tb" {{ticketId}}
+  tenx_sql "UPDATE tickets SET task_breakdown = ? WHERE id = ? AND run_token = ?" "$tb" {{ticketId}} {{runToken}}
   ```
 
 ## Lifecycle — in this order
@@ -86,9 +89,9 @@ Rules for the database:
 9. Record the result:
 
    ```bash
-   tenx_sql "UPDATE tickets SET branch = ?, pr_number = ?, pr_url = ?, agent_note = ?, agent_updated_at = ? WHERE id = ?" \
+   tenx_sql "UPDATE tickets SET branch = ?, pr_number = ?, pr_url = ?, agent_note = ?, agent_updated_at = ? WHERE id = ? AND run_token = ?" \
      {{branch}} "<pr number>" "<pr url>" "<one paragraph: what changed, what you assumed, what you skipped>" \
-     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" {{ticketId}}
+     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" {{ticketId}} {{runToken}}
    ```
 
 10. **Very last action:** `tenx_state done`. Nothing after it — the board moves the ticket to

@@ -50,6 +50,7 @@ describe("loadPrompt", () => {
   test("the implementation prompt renders with the keys sessionMessage passes", async () => {
     const rendered = await loadPrompt("implementation", {
       ticketId: "demo-3",
+      runToken: "tok-123",
       branch: "claude/10x-demo-3",
       baseBranch: "dev",
       repo: "acme/demo",
@@ -64,7 +65,7 @@ describe("loadPrompt", () => {
   });
 
   test("the plan prompt renders with the keys the plan route passes", async () => {
-    const rendered = await loadPrompt("plan", { ticketId: "demo-3", repo: "acme/demo" });
+    const rendered = await loadPrompt("plan", { ticketId: "demo-3", runToken: "tok-123", repo: "acme/demo" });
     assert.ok(rendered.includes("tenx_state done"));
     assert.ok(rendered.includes("demo-3"));
     assert.ok(!rendered.includes("{{"));
@@ -117,7 +118,7 @@ const project = { owner: "acme", repo: "demo", baseBranch: "dev" } as Project;
 
 describe("sessionMessage", () => {
   test("opens with the id line the fake driver reads, then the ticket, then the instructions", async () => {
-    const message = await sessionMessage("impl", ticket, project);
+    const message = await sessionMessage("impl", ticket, project, "tok-123");
     assert.equal(ticketIdFromMessage(message), "demo-3");
     assert.ok(message.startsWith("10x ticket demo-3 — Add a {{button}}\n"));
     assert.ok(message.includes("- [x] Draw it\n- [ ] Wire it"));
@@ -127,12 +128,24 @@ describe("sessionMessage", () => {
 
   test("marker-shaped text in the user's own ticket does not trip the leftover check", async () => {
     // It would, if the ticket were substituted into the template rather than concatenated.
-    const message = await sessionMessage("plan", ticket, project);
+    const message = await sessionMessage("plan", ticket, project, "tok-123");
     assert.ok(message.includes("Users keep asking for {{it}}."));
   });
 
+  test("every agent UPDATE is scoped to this session's run token", async () => {
+    // A stale session (a planner left open, a cancelled run) must not move the current one:
+    // its token no longer matches, so its writes affect zero rows (db.ts run_token).
+    for (const kind of ["impl", "plan"] as const) {
+      const message = await sessionMessage(kind, ticket, project, "tok-123");
+      const updates = message.split("\n").filter((l) => l.includes("tenx_sql \"UPDATE"));
+      assert.ok(updates.length > 0, kind);
+      for (const line of updates) assert.ok(line.includes("WHERE id = ? AND run_token = ?"), `${kind}: ${line}`);
+      assert.ok(message.includes("demo-3 tok-123"), kind);
+    }
+  });
+
   test("a plan message names no branch, so the fake plays a planner", async () => {
-    const message = await sessionMessage("plan", ticket, project);
+    const message = await sessionMessage("plan", ticket, project, "tok-123");
     assert.ok(!message.includes("claude/10x-"));
   });
 });

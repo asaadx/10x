@@ -20,6 +20,7 @@
 // would read the defaults and silently use `~/.10x/10x.db` instead of the configured store —
 // no error, just the wrong database. `env.test.ts` fails if this line stops being the first import.
 import "./env.ts";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";
 import { readFile, realpath, rm, stat } from "node:fs/promises";
@@ -362,6 +363,7 @@ const CLEARED_SESSION = {
   agent_state: null,
   agent_note: null,
   agent_updated_at: null,
+  run_token: null,
 } as const;
 
 async function readBody(req: { on: (e: string, f: (c?: unknown) => void) => void }) {
@@ -686,18 +688,26 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
 
     inFlight.add(id);
     try {
-      await setRunFields(id, { sessionKind: "plan", agentState: "starting", sessionId: null, sessionUrl: null, agentNote: null });
+      const runToken = randomUUID();
+      await setRunFields(id, {
+        sessionKind: "plan",
+        agentState: "starting",
+        sessionId: null,
+        sessionUrl: null,
+        agentNote: null,
+        runToken,
+      });
       try {
         const session = await cloud.startSession({
           cwd: project.repoPath,
           baseBranch: project.baseBranch,
-          message: await sessionMessage("plan", ticket, project),
+          message: await sessionMessage("plan", ticket, project, runToken),
           title: `Plan ${ticket.id}: ${ticket.title}`,
         });
         await setRunFields(id, { sessionId: session.sessionId, sessionUrl: session.sessionUrl });
         return json({ ok: true, reused: false, ...session });
       } catch (err) {
-        await setRunFields(id, { sessionKind: null, agentState: null, sessionId: null, sessionUrl: null });
+        await setRunFields(id, { sessionKind: null, agentState: null, sessionId: null, sessionUrl: null, runToken: null });
         return json({ error: "session_start_failed", message: err instanceof Error ? err.message : String(err) }, 502);
       }
     } finally {
@@ -738,8 +748,10 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
      * sitting next to `in_progress` for even one poll would move the ticket straight to review.
      * `started_at` is stamped here, where the claim is won, because it is the run timer.
      */
+    const runToken = randomUUID();
     const claimed = await claimTicketWith(id, "todo", "in_progress", {
       ...CLEARED_SESSION,
+      run_token: runToken,
       session_kind: "impl",
       agent_state: "starting",
       finished: 0,
@@ -753,7 +765,7 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       const session = await cloud.startSession({
         cwd: project.repoPath,
         baseBranch: project.baseBranch,
-        message: await sessionMessage("impl", ticket, project),
+        message: await sessionMessage("impl", ticket, project, runToken),
         title: `${ticket.id}: ${ticket.title}`,
       });
       // Only the session columns: the agent may already have written `working`, and this must
