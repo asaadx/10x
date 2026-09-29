@@ -129,7 +129,8 @@ const cloud = cloudDriverFromEnv(db);
  * extra latency before a card moves is noise, while against Turso every tick is a network
  * round trip that a one-second loop would multiply by five for nothing.
  */
-const AGENT_POLL_MS = Number(process.env.AGENT_POLL_MS ?? 5000);
+// `||`: an empty `AGENT_POLL_MS=` line in `.env` means "use the default", not zero.
+const AGENT_POLL_MS = Number(process.env.AGENT_POLL_MS || 5000);
 if (!Number.isFinite(AGENT_POLL_MS) || AGENT_POLL_MS <= 0) {
   throw new Error(`AGENT_POLL_MS must be a positive number, got "${process.env.AGENT_POLL_MS}"`);
 }

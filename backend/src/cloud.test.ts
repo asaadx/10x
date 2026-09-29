@@ -247,6 +247,11 @@ describe("cloudDriverFromEnv", () => {
   test("a malformed FAKE_AGENT_MS throws", () => {
     assert.throws(() => cloudDriverFromEnv(sql, { CLOUD_DRIVER: "fake", FAKE_AGENT_MS: "soon" }), /FAKE_AGENT_MS/);
   });
+  test("empty values — what `.env.example` ships — mean unset", async () => {
+    const d = cloudDriverFromEnv(sql, { CLOUD_DRIVER: "fake", FAKE_AGENT_MS: "" });
+    // No agent playback configured, so nothing is scheduled and nothing throws.
+    await d.startSession({ cwd: "/", baseBranch: "m", message: "10x ticket x-1", title: "t" });
+  });
   test("fake with FAKE_CLOUD_FAIL=start fails its starts", async () => {
     const d = cloudDriverFromEnv(sql, { CLOUD_DRIVER: "fake", FAKE_CLOUD_FAIL: "start" });
     await assert.rejects(d.startSession({ cwd: "/", baseBranch: "m", message: "x", title: "t" }));

@@ -99,7 +99,7 @@ export const tail = (text: string, max = 2000): string =>
  * anything, and a timeout that fires first would leave a session running that the board never
  * learned the id of — an agent working on a ticket nobody can see.
  */
-const CLI_TIMEOUT_MS = Number(process.env.CLOUD_TIMEOUT_MS ?? 180_000);
+const CLI_TIMEOUT_MS = Number(process.env.CLOUD_TIMEOUT_MS || 180_000);
 
 type ExecError = Error & { stdout?: unknown; stderr?: unknown; code?: unknown };
 
@@ -114,7 +114,10 @@ function cliError(what: string, err: unknown, stdout = "", stderr = ""): Error {
   );
 }
 
-export function cliDriver(bin = process.env.CLAUDE_BIN ?? "claude"): CloudDriver {
+// `||`, not `??`, for every variable read here: `.env.example` lists them with empty values,
+// and `loadEnvFile` sets an empty line to "" — which must mean "unset", not "run a binary
+// named ''" or "play the agent after 0 ms".
+export function cliDriver(bin = process.env.CLAUDE_BIN || "claude"): CloudDriver {
   const opts = { timeout: CLI_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 };
   return {
     async startSession({ cwd, baseBranch, message }) {
@@ -258,7 +261,7 @@ export function fakeDriver(o: FakeOptions = {}): FakeDriver {
 
 /** The driver the server uses, from the environment. `sql` is only read by the fake. */
 export function cloudDriverFromEnv(sql: Sql, env: NodeJS.ProcessEnv = process.env): CloudDriver {
-  const kind = env.CLOUD_DRIVER ?? "cli";
+  const kind = env.CLOUD_DRIVER || "cli";
   if (kind === "cli") return cliDriver();
   if (kind === "fake") {
     const fail = new Set(
@@ -267,7 +270,7 @@ export function cloudDriverFromEnv(sql: Sql, env: NodeJS.ProcessEnv = process.en
         .map((s) => s.trim())
         .filter((s): s is "start" | "send" => s === "start" || s === "send"),
     );
-    const agentMs = env.FAKE_AGENT_MS === undefined ? undefined : Number(env.FAKE_AGENT_MS);
+    const agentMs = env.FAKE_AGENT_MS ? Number(env.FAKE_AGENT_MS) : undefined;
     if (agentMs !== undefined && !(Number.isFinite(agentMs) && agentMs >= 0)) {
       throw new Error(`FAKE_AGENT_MS must be a non-negative number, got "${env.FAKE_AGENT_MS}"`);
     }
