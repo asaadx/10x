@@ -265,30 +265,30 @@ export type Diagnostics = {
  * Lives here rather than in reconcile.ts, which produces it, because it is part of the
  * `GET /tickets` response and this file is the only one the frontend may reach.
  */
-export type Orphan = { branch: string; path: string };
-
 /**
- * What `GET /tickets` actually returns for each ticket: the stored row plus everything the
- * board resolves at read time. Distinct from `Ticket` on purpose — most of these fields exist
- * only in the response, and a frontend typed against `Ticket` would be quietly wrong.
+ * A local Preview of a ticket's pushed branch (docs/prototype-cloud.md "Preview"): the branch
+ * fetched into a detached worktree under `$STATE_DIR/previews/<ticketId>`, a port block
+ * reserved for it, and — only when the project has a `devCommand` — that command running.
+ * Held in server memory, so it is gone after a backend restart.
  */
-export type BoardTicket = Ticket & {
-  branch: string; // resolved, never null in a response
-  agentName: string; // resolved, never null in a response
-  /**
-   * Herdr's `agent_status` string, passed through untouched. Left as `string` deliberately:
-   * nothing in this codebase knows the closed set Herdr emits — `isSettled` and
-   * `isAgentReady` in lifecycle.ts test individual values against a bare `string` — and a
-   * union guessed here would silently exclude a status the board then failed to display.
-   */
-  agentStatus: string | null;
-  hasWorktree: boolean;
-  worktreePath: string | null;
-  paneId: string | null;
-  workspaceId: string | null;
-  busy: boolean;
-  diagnostics: Diagnostics;
+export type Preview = {
+  path: string;
+  port: number;
+  url: string;
+  /** The project's dev command, or `""` when none is configured and nothing was started. */
+  command: string;
+  running: boolean;
 };
 
-/** The `GET /tickets` body. `board()` in server.ts is annotated with this so it cannot drift. */
-export type BoardResponse = { tickets: BoardTicket[]; unowned: Orphan[] };
+/**
+ * What `GET /tickets` returns for each ticket. Since the move to cloud sessions the board is a
+ * pure database read: everything about the agent (session link, state, last note) was written
+ * into the row by the board or by the agent itself, and the only thing resolved at read time is
+ * the in-memory Preview and whether an operation is in flight.
+ */
+export type BoardTicket = Ticket & {
+  busy: boolean;
+  preview: Preview | null;
+};
+
+export type BoardResponse = { tickets: BoardTicket[] };
