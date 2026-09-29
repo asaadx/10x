@@ -1,11 +1,10 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import { setTimeout as delay } from "node:timers/promises";
-import { cleanupAll, makeRepo, requireHerdr, startBoard, type Board } from "./fixtures.ts";
+import { cleanupAll, createProject, makeRepo, startBoard, type Board } from "./fixtures.ts";
 
 let board: Board;
 
 test.beforeAll(async () => {
-  requireHerdr();
   board = await startBoard();
 });
 
@@ -41,12 +40,12 @@ function ticketIds(body: Record<string, unknown>): string[] {
   return tickets.map((ticket: unknown) => stringField(objectFrom(ticket), "id"));
 }
 
-/** Each test gets its own project so ticket numbering is never coupled to test order. */
-async function project(request: APIRequestContext, id: string): Promise<string> {
-  const res = await request.post(`${board.baseUrl}/projects`, {
-    data: { id, name: `Project ${id}`, repoPath: await makeRepo(), baseBranch: "dev" },
-  });
-  expect(res.status()).toBe(201);
+/**
+ * Each test gets its own project so ticket numbering is never coupled to test order. Seeded
+ * through the fixture: `POST /projects` clones from GitHub, which this suite never touches.
+ */
+async function project(_request: APIRequestContext, id: string): Promise<string> {
+  await createProject(board, id, await makeRepo());
   return id;
 }
 
