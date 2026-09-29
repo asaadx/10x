@@ -223,7 +223,7 @@ export async function getProject(id: string): Promise<Project | undefined> {
 }
 
 /**
- * Takes `{ remote, name, description?, id?, baseBranch? }`. The row lands `pending`: the clone
+ * Takes `{ remote, name, description?, id?, baseBranch?, devCommand? }`. The row lands `pending`: the clone
  * is minutes of work on a large repo and the caller kicks it off separately, so this stays the
  * fast, synchronous half — parse, validate, insert, answer.
  *
@@ -257,6 +257,10 @@ export async function createProject(input: unknown): Promise<ProjectResult> {
   if (!description.ok) return description;
   const baseBranch = checkBaseBranch("baseBranch" in input ? input.baseBranch : "main");
   if (!baseBranch.ok) return baseBranch;
+  // Accepted at creation too, so the dialog can set it in one request rather than a create
+  // followed by a PATCH that could fail after the project already exists.
+  const devCommand = checkDevCommand("devCommand" in input ? input.devCommand : "");
+  if (!devCommand.ok) return devCommand;
 
   // ON CONFLICT DO NOTHING makes the insert its own duplicate check: no read-then-write
   // window, and `rowsAffected` tells us which of the two happened.
@@ -264,8 +268,8 @@ export async function createProject(input: unknown): Promise<ProjectResult> {
   const res = await db.execute(
     `INSERT INTO projects
        (id, name, description, owner, repo, repo_path, base_branch,
-        provision_state, provision_error, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?)
+        provision_state, provision_error, dev_command, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?, ?)
      ON CONFLICT (id) DO NOTHING`,
     [
       id.value,
@@ -275,6 +279,7 @@ export async function createProject(input: unknown): Promise<ProjectResult> {
       remote.repo,
       projectRepoPath(id.value),
       baseBranch.value,
+      devCommand.value,
       now,
       now,
     ],
