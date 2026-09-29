@@ -17,7 +17,7 @@ which one spawns real agents). The Herdr/OMP behaviour this code is written agai
 | Language | TypeScript executed directly — `node backend/src/server.ts`, no build step |
 | Runtime dependencies | **zero**; `backend/package.json` has no `dependencies` key at all |
 | devDependencies | `typescript`, `@types/node` for `tsc --noEmit`, plus `@playwright/test` for the e2e suite — all at the workspace root, none in `backend/`. No runtime dependency, ever. |
-| Built-ins used | `node:sqlite`, `node:http`, `node:net`, `node:test`, `node:fs`, `node:child_process`, `node:timers/promises` |
+| Built-ins used | `node:sqlite`, global `fetch` (the Turso driver), `node:http`, `node:net`, `node:test`, `node:fs`, `node:child_process`, `node:timers/promises` |
 | tsconfig | `module`/`moduleResolution: nodenext`, `allowImportingTsExtensions`, `noEmit`, `strict`, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`, `erasableSyntaxOnly`, `target ES2023`; `include` covers `backend/src/`, `e2e/` and `playwright.config.ts` |
 
 Imports carry the `.ts` extension (`./herdr.ts`): Node resolves the real file, and `allowImportingTsExtensions` makes `tsc` agree.
@@ -70,7 +70,7 @@ So: no constructor parameter properties, no `enum`. `HerdrError` in `backend/src
 
 - **It does not override a variable already in the environment** — so the unit suite and `e2e/fixtures.ts` keep winning with the `STATE_DIR`, `DB_PATH` and `PORT` they pass, while `.env` still supplies `GITHUB_TOKEN`. *(Verified end to end: a `.env` setting `STATE_DIR` did not displace one passed to the child, and no directory was created at the file's path.)*
 - **Every failed open is reported as `ENOENT`, `EACCES` included** — a `.env` with mode `000` throws `ENOENT` where `readFileSync` throws `EACCES`. So the error code alone cannot distinguish "no `.env`" from "a `.env` we may not read", and `existsSync` decides: absent is swallowed (a fresh clone and CI have none, and both must boot), present-but-unopenable throws with its own message rather than Node's misleading "no such file". *(Verified: mode `000` → exit 1 at boot; file removed → boots with `GITHUB_TOKEN` unset.)*
-- **Import order is load-bearing and its failure is silent.** `db.ts` reads `STATE_DIR` and `DB_PATH` at module load and opens the database right there, and `ports.ts` reads its pool configuration at load too, so an `./env.ts` moved below either reads the defaults — opening `~/.10x/10x.db` instead of the configured file, with no error at all. `env.test.ts` reads `server.ts` and fails unless that import is the first one; the guard is a **test** because this repo has no linter and nothing else would notice a human tidying the imports. *(Verified falsifiable: moving the import below the `db.ts` one reddens that test.)*
+- **Import order is load-bearing and its failure is silent.** `db.ts` reads `STATE_DIR`, `DB_PATH` and `TURSO_DATABASE_URL` at module load to pick its driver and file (it opens nothing until the first query), and `ports.ts` reads its pool configuration at load too, so an `./env.ts` moved below either reads the defaults — opening `~/.10x/10x.db` instead of the configured file, with no error at all. `env.test.ts` reads `server.ts` and fails unless that import is the first one; the guard is a **test** because this repo has no linter and nothing else would notice a human tidying the imports. *(Verified falsifiable: moving the import below the `db.ts` one reddens that test.)*
 
 A malformed line is **not** an error to `loadEnvFile`: a line with no `=`, or a stray `NUL`, is skipped, and `A="unterminated` yields the literal `"unterminated`. Nothing in the code can catch that, so `.env.example` is the only guard against a typo.
 
@@ -85,7 +85,9 @@ Line counts are `wc -l`, current as of this node.
 | `backend/src/server.ts` | 1141 | HTTP routing, the static asset route, the screenshot upload/serving route, per-run in-memory state, boot reconciliation | `node:http` |
 | `backend/src/runner.ts` | 404 | `spawn` / `teardown` / `retireAgent` for one ticket; worktree, port block, skill provisioning, event-stream reopen | Herdr socket, fs, `git` via `execFile` |
 | `backend/src/agent-boot.ts` | 251 | **The readiness guard.** `bootAgent` (start → poll `agent.get` → prompt) and `reattachAgent`; the only module that calls `agent.start`, used by `runner.ts` and `planner.ts` alike | Herdr socket |
-| `backend/src/db.ts` | 413 | Schema + in-place migration, connection, row types, the status and PR-state parse boundaries, `claimTicket` CAS, port-slot reserve/release, `setPullRequest`, `setPullRequestState`, `setScreenshot` | SQLite (opens DB at import) |
+| `backend/src/db.ts` | 608 | Schema + `initDb()` migration, the `db` client, row types, the status / PR-state / agent-state parse boundaries, `claimTicket` CAS, port-slot reserve/release, `setPullRequest`, `setPullRequestState`, `setScreenshot` — all async | `Sql` (nothing at import) |
+| `backend/src/sql.ts` | 275 | The async `Sql` client: Turso (Hrana-over-HTTP via `fetch`) and local `node:sqlite` drivers, chosen by `TURSO_DATABASE_URL` | `fetch` or SQLite |
+| `backend/src/sql.test.ts` | 220 | One contract suite run against both drivers (Turso via `scripts/fake-turso.ts`) | temp dir, loopback HTTP |
 | `backend/src/ticket-store.ts` | 294 | Ticket persistence + `/tickets` handler bodies, input narrowing | SQLite |
 | `backend/src/db.test.ts` | 326 | Tests for the CAS, the Accept/Reject hand-backs and `setPullRequestState`, against a temp DB | SQLite (temp dir) |
 | `backend/src/projects.ts` | 214 | Project CRUD, slug / repo / base-branch validation | SQLite, `existsSync` |
@@ -143,9 +145,36 @@ Every read joins on **branch and agent name**, never on a path — in `board()` 
 
 ## 4. Database schema
 
-SQLite at `$DB_PATH`, defaulting to `$STATE_DIR/10x.db`, `STATE_DIR` defaulting to `~/.10x`. Opened at module import in `db.ts` with `PRAGMA journal_mode = WAL` and `PRAGMA foreign_keys = ON`.
+Every query goes through the async `Sql` client in `backend/src/sql.ts` (`execute` + an atomic
+`batch`), which has two drivers and no dependencies:
 
-**`projects`** — `id` TEXT PRIMARY KEY (the immutable slug, feeds branch and agent name) · `name` TEXT NOT NULL (display only, freely renameable) · `description` TEXT NOT NULL DEFAULT `''` (the user's note about the project; display only, deliberately NOT sent to agents) · `owner`, `repo` TEXT NOT NULL DEFAULT `''` (**the project's identity**: what every push and pull request targets, read from a column rather than re-derived by shelling `git remote get-url origin`) · `repo_path` TEXT NOT NULL (**derived, never supplied**: `$PROJECTS_ROOT/<id>`, which 10x clones itself) · `base_branch` TEXT NOT NULL DEFAULT `'main'` (the **bare** upstream name; `worktree.create` gets it prefixed with `origin/` at the call site, a PR needs it unprefixed) · `provision_state` TEXT NOT NULL DEFAULT `'ready'` (`pending|cloning|ready|failed`; the default backfills existing projects as usable) · `provision_error` TEXT NOT NULL DEFAULT `''` (redacted) · `next_number` INTEGER NOT NULL DEFAULT 1 (monotonic ticket counter) · `created_at`, `updated_at` TEXT NOT NULL (ISO instants).
+- **Turso** when `TURSO_DATABASE_URL` is set (`libsql://` rewritten to `https://`, bearer
+  `TURSO_AUTH_TOKEN`), over Hrana-over-HTTP `POST /v2/pipeline` with plain `fetch`. `execute` is
+  one pipeline `execute` + `close`. `batch` is **one** pipeline `batch` request: `BEGIN IMMEDIATE`,
+  each statement conditioned on `ok` of the previous step, `COMMIT` on `ok` of the last, and
+  `ROLLBACK` on `not ok(COMMIT)` — never BEGIN/COMMIT as separate requests, where a failed middle
+  statement would still let its siblings commit. Integers go over the wire as strings and decode
+  to `number`. *(Verified: `sql.test.ts` runs one contract — batch atomicity, CAS row count,
+  integer round-trip, RETURNING — against both drivers, the Turso one talking to
+  `scripts/fake-turso.ts`; not yet run against real Turso.)*
+- **Local** `node:sqlite` at `$DB_PATH` otherwise (defaulting to `$STATE_DIR/10x.db`,
+  `STATE_DIR` defaulting to `~/.10x`), opened on **first query**, not at import, with
+  `journal_mode = WAL`, `foreign_keys = ON` and `busy_timeout = 5000`.
+
+**Nothing migrates at import.** `initDb()` (schema + every `addColumnIfMissing`, idempotent and
+memoised) is awaited by `server.ts` before it listens and by each DB test after its dynamic
+import. A query before it resolves hits a missing table.
+
+**Foreign keys are not relied on.** `PRAGMA foreign_keys` is per connection and a Hrana request has
+no connection to set it on, so `deleteProject` deletes the project's tickets explicitly in the same
+batch rather than trusting `ON DELETE CASCADE` *(inferred for real Turso; the fake runs with FKs off
+and the delete still sweeps the tickets — verified)*.
+
+`scripts/fake-turso.ts` (`node scripts/fake-turso.ts --port 8080 --db ./x.db`, or
+`startFakeTurso()` from a test) is enough Hrana to point the whole board at "Turso" offline:
+`TURSO_DATABASE_URL=http://127.0.0.1:8080`. Not a production path.
+
+**`projects`** — `id` TEXT PRIMARY KEY (the immutable slug, feeds branch and agent name) · `name` TEXT NOT NULL (display only, freely renameable) · `description` TEXT NOT NULL DEFAULT `''` (the user's note about the project; display only, deliberately NOT sent to agents) · `owner`, `repo` TEXT NOT NULL DEFAULT `''` (**the project's identity**: what every push and pull request targets, read from a column rather than re-derived by shelling `git remote get-url origin`) · `repo_path` TEXT NOT NULL (**derived, never supplied**: `$PROJECTS_ROOT/<id>`, which 10x clones itself) · `base_branch` TEXT NOT NULL DEFAULT `'main'` (the **bare** upstream name; `worktree.create` gets it prefixed with `origin/` at the call site, a PR needs it unprefixed) · `provision_state` TEXT NOT NULL DEFAULT `'ready'` (`pending|cloning|ready|failed`; the default backfills existing projects as usable) · `provision_error` TEXT NOT NULL DEFAULT `''` (redacted) · `next_number` INTEGER NOT NULL DEFAULT 1 (monotonic ticket counter) · `dev_command` TEXT NOT NULL DEFAULT `''` (what Preview runs in a ticket's checkout with `PORT` set; `''` = start nothing; PATCHable as `devCommand`) · `created_at`, `updated_at` TEXT NOT NULL (ISO instants).
 
 **`tickets`**
 
@@ -163,6 +192,9 @@ SQLite at `$DB_PATH`, defaulting to `$STATE_DIR/10x.db`, `STATE_DIR` defaulting 
 | `pr_number`, `pr_url` | INTEGER / TEXT (nullable) | written together by `setPullRequest`, only when Accept opens the PR |
 | `pr_state` | TEXT (nullable) | `open` \| `merged` \| `closed`, from the webhook. Unlike `status`, an unrecognised value decodes to **`null`** in `toPullRequestState`, because "no news about this PR" is a real state |
 | `pr_additions`, `pr_deletions` | INTEGER (nullable) | ±LOC, read straight off the `pull_request` payload — no API call ([github](./github.md)) |
+| `session_id`, `session_url`, `session_kind` | TEXT (nullable) | the cloud session working the ticket; written by the board when it starts one. `session_kind` is `plan` \| `impl`, anything else decodes to `null` |
+| `agent_state` | TEXT (nullable) | `starting` (board) then `working` \| `done` \| `blocked` \| `failed`, **written by the agent itself** over Turso's HTTP API ([docs/prototype-cloud.md](../docs/prototype-cloud.md)). Parsed, not cast, in `toAgentState`: an unrecognised value is `null` |
+| `agent_note`, `agent_updated_at` | TEXT (nullable) | the agent's last summary or question, and the ISO instant of its last write |
 | `created_at`, `updated_at` | TEXT NOT NULL | equal ⇒ never edited |
 | — | — | **`UNIQUE (project_id, number)`** |
 
@@ -183,7 +215,7 @@ A malformed value throws at load rather than falling back, so a typo cannot masq
 
 **A bounded pool, not `base + ticket.number`.** Ticket numbers grow without bound and would eventually walk into ports other software owns; a fixed pool cannot, and a freed slot is reused rather than retired. **A block, not one port**, because a project running Vite beside an API needs two and retrofitting a second port means renumbering everything.
 
-**The UNIQUE index is the safety**, exactly as the conditional UPDATE is for `claimTicket`: SQLite makes a double assignment impossible instead of application code promising not to make one. NULLs are distinct in SQLite, so any number of tickets may hold no slot. `reservePortSlot` picks the lowest free slot inside a `BEGIN IMMEDIATE`, so the read of the held set and the write that joins it cannot be split by a second writer; it is idempotent, returning the slot a ticket already holds rather than stranding it.
+**The UNIQUE index is the safety**, exactly as the conditional UPDATE is for `claimTicket`: SQLite makes a double assignment impossible instead of application code promising not to make one. NULLs are distinct in SQLite, so any number of tickets may hold no slot. `reservePortSlot` computes the lowest free slot **in SQL** (a recursive CTE over `[0, MAX_PORT_SLOTS)` minus the held set) inside the same `UPDATE` that writes it, so the read of the held set and the write that joins it are one statement — there is no connection over HTTP to hold a `BEGIN IMMEDIATE` on. It is idempotent (`WHERE port_slot IS NULL`), returning the slot a ticket already holds rather than stranding it, and an exhausted pool writes nothing.
 
 **Reserved at spawn, before the agent starts**, because the block is written into the worktree the agent boots in and there is no later point at which it could be injected. The accepted consequence is that `MAX_PORT_SLOTS` is *also* a cap on tickets that are in progress or in review. Released by every teardown path — cancel, ticket delete, worktree-only delete, and a failed spawn — from a `finally`, so a Herdr call that fails halfway cannot strand a tenth of the pool.
 
@@ -194,19 +226,22 @@ A malformed value throws at load rather than falling back, so a typo cannot masq
 **`next_number` is why ticket numbers are safe.** The next number is claimed by *advancing* the counter, never by `MAX(number)+1`:
 
 ```sql
-UPDATE projects SET next_number = next_number + 1 WHERE id = ? RETURNING next_number - 1 AS next
+UPDATE projects SET next_number = next_number + 1 WHERE id = ?;
+INSERT INTO tickets (id, project_id, number, …)
+  SELECT id || '-' || (next_number - 1), id, next_number - 1, … FROM projects WHERE id = ? RETURNING id;
 ```
 
-Deleting the highest ticket would otherwise recycle its number. Deleting a ticket **deliberately leaves its worktree on disk** ([teardown](./teardown.md)), so a recycled number would produce a branch colliding with the orphan still there — and the new ticket would silently inherit another ticket's work. The claim and the `INSERT` share a `BEGIN IMMEDIATE`, so two concurrent creates cannot read the same counter and race the `UNIQUE` constraint.
+Deleting the highest ticket would otherwise recycle its number. Deleting a ticket **deliberately leaves its worktree on disk** ([teardown](./teardown.md)), so a recycled number would produce a branch colliding with the orphan still there — and the new ticket would silently inherit another ticket's work. The two statements are one `batch` (one write transaction), and the insert reads its number back out of the counter rather than from a JS variable, so neither needs the other's result and two concurrent creates cannot claim the same number. A missing project is a zero-row insert, which is how `createTicket` answers 404.
 
 ## 5. The CAS — status is the lock
 
 ```ts
-export function claimTicket(id: string, from: Status, to: Status): boolean {
-  const res = db
-    .prepare("UPDATE tickets SET status = ?, updated_at = ? WHERE id = ? AND status = ?")
-    .run(to, nowIso(), id, from);
-  return res.changes === 1;
+export async function claimTicket(id: string, from: Status, to: Status): Promise<boolean> {
+  const res = await db.execute(
+    "UPDATE tickets SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
+    [to, nowIso(), id, from],
+  );
+  return res.rowsAffected === 1;
 }
 ```
 
