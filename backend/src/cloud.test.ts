@@ -15,6 +15,7 @@ import {
   fakeDriver,
   parseSendResult,
   parseSessionUrl,
+  runTokenFromMessage,
   tail,
   ticketIdFromMessage,
 } from "./cloud.ts";
@@ -146,14 +147,21 @@ describe("cli driver", () => {
 
 describe("fake driver", () => {
   const sql = localSql(join(dir, "fake.db"));
-  const seed = async (id: string) => {
+  const seed = async (id: string, runToken: string) => {
     await sql.execute(
-      "CREATE TABLE IF NOT EXISTS tickets (id TEXT PRIMARY KEY, session_id TEXT, branch TEXT, " +
+      "CREATE TABLE IF NOT EXISTS tickets (id TEXT PRIMARY KEY, run_token TEXT, branch TEXT, " +
         "agent_state TEXT, agent_note TEXT, agent_updated_at TEXT)",
     );
-    await sql.execute("INSERT INTO tickets (id, agent_state) VALUES (?, 'starting')", [id]);
+    await sql.execute("INSERT INTO tickets (id, run_token, agent_state) VALUES (?, ?, 'starting')", [id, runToken]);
   };
   const row = async (id: string) => (await sql.execute("SELECT * FROM tickets WHERE id = ?", [id])).rows[0];
+  // The shape sessionMessage produces: ticket block, separator, instructions whose scoped
+  // tenx_sql calls end in "<ticketId> <runToken>". The title deliberately ends in the id plus
+  // a word, which must not be mistaken for the token.
+  const message = (id: string, token: string, impl: boolean) =>
+    `10x ticket ${id} — Fix ${id} bug\n\n---\n\n` +
+    `tenx_sql "UPDATE tickets SET agent_state = ? WHERE id = ? AND run_token = ?" working ${id} ${token}\n` +
+    (impl ? `Push to claude/10x-${id}.\n` : "");
 
   test("records calls and hands out distinct fake sessions", async () => {
     const fake = fakeDriver();
@@ -169,17 +177,15 @@ describe("fake driver", () => {
     );
   });
 
+  test("runTokenFromMessage reads the token after the id, never the title", () => {
+    assert.equal(runTokenFromMessage(message("p-9", "tok-9", true), "p-9"), "tok-9");
+    assert.equal(runTokenFromMessage("10x ticket p-9 — Fix p-9 bug", "p-9"), null);
+  });
+
   test("plays an implementation agent: working, then done with a branch and a note", async () => {
-    await seed("p-1");
+    await seed("p-1", "tok-1");
     const fake = fakeDriver({ sql, agentMs: 150 });
-    const s = await fake.startSession({
-      cwd: "/r",
-      baseBranch: "main",
-      message: "10x ticket p-1 — t\nPush to claude/10x-p-1.",
-      title: "t",
-    });
-    // What the board does right after startSession resolves.
-    await sql.execute("UPDATE tickets SET session_id = ? WHERE id = ?", [s.sessionId, "p-1"]);
+    await fake.startSession({ cwd: "/r", baseBranch: "main", message: message("p-1", "tok-1", true), title: "t" });
     // Checked mid-window (150..300 ms) so a loaded machine does not flake it.
     await delay(225);
     assert.equal((await row("p-1"))?.["agent_state"], "working");
@@ -192,29 +198,26 @@ describe("fake driver", () => {
   });
 
   test("a plan session writes no branch", async () => {
-    await seed("p-2");
+    await seed("p-2", "tok-2");
     const fake = fakeDriver({ sql, agentMs: 10 });
-    const s = await fake.startSession({ cwd: "/r", baseBranch: "main", message: "10x ticket p-2 — plan it", title: "t" });
-    await sql.execute("UPDATE tickets SET session_id = ? WHERE id = ?", [s.sessionId, "p-2"]);
+    await fake.startSession({ cwd: "/r", baseBranch: "main", message: message("p-2", "tok-2", false), title: "t" });
     await delay(60);
     assert.equal((await row("p-2"))?.["agent_state"], "done");
     assert.equal((await row("p-2"))?.["branch"], null);
   });
 
-  test("a turn whose session was cleared (cancel) writes nothing", async () => {
-    await seed("p-3");
+  test("a turn whose run was replaced (cancel, restart, a stale planner) writes nothing", async () => {
+    await seed("p-3", "tok-new");
     const fake = fakeDriver({ sql, agentMs: 10 });
-    await fake.startSession({ cwd: "/r", baseBranch: "main", message: "10x ticket p-3\nclaude/10x-p-3", title: "t" });
-    // session_id never stored — as after a failed spawn or a cancel.
+    await fake.startSession({ cwd: "/r", baseBranch: "main", message: message("p-3", "tok-old", true), title: "t" });
     await delay(60);
     assert.equal((await row("p-3"))?.["agent_state"], "starting");
   });
 
-  test("a follow-up message replays a turn", async () => {
-    await seed("p-4");
+  test("a follow-up message replays a turn under the same token", async () => {
+    await seed("p-4", "tok-4");
     const fake = fakeDriver({ sql, agentMs: 10 });
-    const s = await fake.startSession({ cwd: "/r", baseBranch: "main", message: "10x ticket p-4\nclaude/10x-p-4", title: "t" });
-    await sql.execute("UPDATE tickets SET session_id = ? WHERE id = ?", [s.sessionId, "p-4"]);
+    const s = await fake.startSession({ cwd: "/r", baseBranch: "main", message: message("p-4", "tok-4", true), title: "t" });
     await delay(60);
     await sql.execute("UPDATE tickets SET agent_state = 'working' WHERE id = 'p-4'");
     await fake.sendMessage(s.sessionId, "again");

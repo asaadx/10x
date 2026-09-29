@@ -413,7 +413,7 @@ export async function setProvisionState(
  * would have fired, and the batch keeps "project gone, tickets left" from ever being visible.
  *
  * Deliberately NOT the whole story: agents, worktrees, branches and the clone directory are all
- * outside SQLite, and destroying them is the caller's job (memory/teardown.md). The route owns
+ * outside SQLite, and destroying them is the caller's job. The route owns
  * that sequence because it is the only layer that can refuse the delete first — a ticket with an
  * open pull request must block it, since force-removing that branch would strand a review.
  */

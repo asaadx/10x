@@ -1,13 +1,10 @@
 /**
- * The app's GitHub calls, made with `fetch` and `git` directly — no client class, no injected
- * transport. Publishing a ticket's branch as a pull request (push with a scoped token, then open
- * or adopt the PR), and the repo read that admits a project onto the board in the first place.
+ * The app's GitHub calls, made with `fetch` directly — no client class, no injected transport.
+ * Publishing a ticket's work (mark the agent's draft PR ready, or open one from the branch the
+ * agent pushed), and the repo read that admits a project onto the board in the first place.
  */
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type { PullRequestState } from "./types.ts";
 
-const run = promisify(execFile);
 
 export type PullRequest = { number: number; url: string; state: PullRequestState; additions: number | null; deletions: number | null };
 
@@ -34,28 +31,10 @@ export const pullRequestBody = (description: string, ticketId: string): string =
   `${description}\n\n10x opened this pull request for ticket ${ticketId}.`;
 
 /**
- * Every call below takes `owner`/`repo` as arguments. They used to be re-derived by shelling
- * `git remote get-url origin` inside the repo on every push, PR open and PR read — a subprocess
- * per call to recover something the project row now stores. It also meant the project's GitHub
- * identity lived only on disk, so a repo whose remote was missing or non-GitHub failed here, at
- * the finish line, rather than when it was added.
- *
- * `repoPath` stays where git itself needs a working tree to push from; it is no longer where
- * the identity comes from.
+ * Every call below takes `owner`/`repo` as arguments, read from the project row rather than
+ * re-derived from a clone's remote. There is no push here any more: a cloud session pushes its
+ * own branch, so the board only ever talks to the GitHub API (docs/prototype-cloud.md).
  */
-export const pushTicketBranch = async (
-  repoPath: string,
-  identity: { owner: string; repo: string },
-  branch: string,
-  token: string,
-): Promise<void> => {
-  try {
-    const url = `https://x-access-token:${token}@github.com/${identity.owner}/${identity.repo}.git`;
-    await run("git", ["push", url, `${branch}:${branch}`], { cwd: repoPath });
-  } catch (error) {
-    throw new Error(redact(String(error), token));
-  }
-};
 
 /** Narrows an unknown JSON value's field, or returns undefined if it isn't the wanted type. */
 function field<T>(value: unknown, key: string, isType: (v: unknown) => v is T): T | undefined {

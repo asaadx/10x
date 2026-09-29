@@ -3,8 +3,7 @@
  * body construction — plus `openPullRequest` and `fetchPullRequestSnapshot`'s metadata
  * extraction, against a real local git repo (for `origin` remote resolution, no network) with
  * `fetch` swapped for a queue of canned responses. `fetchRepoMetadata` needs no repo at all,
- * only the same canned `fetch`. `pushTicketBranch` still needs a real push and stays covered
- * only by the end-to-end test against a real throwaway repo.
+ * only the same canned `fetch`.
  */
 import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";

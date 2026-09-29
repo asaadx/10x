@@ -182,8 +182,8 @@ const SELECT_ONE = "SELECT * FROM tickets WHERE id = ?";
 /**
  * Claim the next ticket number by ADVANCING the project's counter, never by reading
  * MAX(number). Deleting the highest ticket would otherwise recycle its number, and since
- * deleting a ticket deliberately leaves its worktree in place (memory/teardown.md), the new ticket's
- * branch would collide with the orphan still on disk — inheriting another ticket's work.
+ * deleting a ticket leaves its branch on GitHub, the new ticket's branch (claude/10x-<id>)
+ * would collide with the one left behind — inheriting another ticket's work.
  */
 const ADVANCE_NUMBER = "UPDATE projects SET next_number = next_number + 1 WHERE id = ?";
 /**

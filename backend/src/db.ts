@@ -68,8 +68,8 @@ CREATE TABLE IF NOT EXISTS projects (
   provision_error TEXT NOT NULL DEFAULT '',
   -- Monotonic ticket counter. NEVER derive the next number from MAX(number): deleting the
   -- highest ticket would hand its number to the next one, and since deleting a ticket does
-  -- not remove its worktree (memory/teardown.md), the new ticket's branch would collide with the orphan
-  -- left behind — silently adopting another ticket's work.
+  -- not delete its branch on GitHub, the new ticket's branch (claude/10x-<id>) would
+  -- collide with the one left behind — silently adopting another ticket's work.
   next_number INTEGER NOT NULL DEFAULT 1,
   -- The shell command Preview runs in a ticket's checkout, with PORT set. '' means none:
   -- Preview still checks the branch out, it just starts nothing.

@@ -187,12 +187,26 @@ export function ticketIdFromMessage(message: string): string | null {
  * An implementation session is told which branch to push (`claude/10x-<id>`); a plan session
  * has no branch. That is the only difference the fake agent's behaviour depends on.
  */
+/**
+ * The run token, read the way a real agent reads it: the prompts pass it as the argument right
+ * after the ticket id at the end of every scoped `tenx_sql` call (prompts/*.md).
+ */
+export function runTokenFromMessage(message: string, ticketId: string): string | null {
+  const escaped = ticketId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Only the instructions, which follow the ticket block (prompts.ts sessionMessage): a title
+  // like "Fix demo-3 bug" must not read as the token "bug".
+  const separator = message.lastIndexOf("\n---\n");
+  if (separator === -1) return null;
+  const instructions = message.slice(separator + 1);
+  return new RegExp(`${escaped} (\\S+)[ \\t]*$`, "m").exec(instructions)?.[1] ?? null;
+}
+
 const isImplementation = (message: string): boolean => message.includes("claude/10x-");
 
 export function fakeDriver(o: FakeOptions = {}): FakeDriver {
   const calls: FakeCall[] = [];
   /** sessionId → what the fake agent needs to replay a turn on a follow-up message. */
-  const sessions = new Map<string, { ticketId: string; impl: boolean }>();
+  const sessions = new Map<string, { ticketId: string; runToken: string; impl: boolean }>();
   let n = 0;
 
   const record = (call: FakeCall) => {
@@ -201,19 +215,19 @@ export function fakeDriver(o: FakeOptions = {}): FakeDriver {
   };
 
   /*
-   * Every write is conditioned on `session_id = ?`, exactly as a real agent's writes would be
-   * scoped to its own row — but here it also matters for correctness of the test harness: the
-   * board stores the session id only AFTER `startSession` resolves, and Cancel clears it, so a
-   * turn that outlives its session (a cancelled ticket, a board that failed the spawn) writes
-   * nothing instead of resurrecting state on a row that has moved on.
+   * Every write is conditioned on `run_token = ?`, the token the board quoted in the opening
+   * message — exactly the scope the real prompts give an agent (prompts/*.md, db.ts run_token).
+   * So the fake exercises the real guard: a turn that outlives its run (a cancelled ticket, a
+   * spawn the board handed back, a planner left open after Start) writes nothing instead of
+   * resurrecting state on a row that has moved on.
    */
-  const write = async (sessionId: string, ticketId: string, set: Record<string, string>) => {
+  const write = async (runToken: string, ticketId: string, set: Record<string, string>) => {
     if (!o.sql) return;
     const columns = Object.keys(set);
     await o.sql.execute(
       `UPDATE tickets SET ${columns.map((c) => `${c} = ?`).join(", ")}, agent_updated_at = ? ` +
-        "WHERE id = ? AND session_id = ?",
-      [...columns.map((c) => set[c] ?? null), new Date().toISOString(), ticketId, sessionId],
+        "WHERE id = ? AND run_token = ?",
+      [...columns.map((c) => set[c] ?? null), new Date().toISOString(), ticketId, runToken],
     );
   };
 
@@ -221,10 +235,10 @@ export function fakeDriver(o: FakeOptions = {}): FakeDriver {
     const session = sessions.get(sessionId);
     const ms = o.agentMs;
     if (!session || ms === undefined || !o.sql) return;
-    const { ticketId, impl } = session;
+    const { ticketId, runToken, impl } = session;
     const fail = (err: unknown) => console.warn(`[fake agent ${ticketId}] write failed:`, err);
     setTimeout(() => {
-      write(sessionId, ticketId, { agent_state: "working" }).catch(fail);
+      write(runToken, ticketId, { agent_state: "working" }).catch(fail);
     }, ms);
     setTimeout(() => {
       const done: Record<string, string> = impl
@@ -235,7 +249,7 @@ export function fakeDriver(o: FakeOptions = {}): FakeDriver {
         : { agent_note: "Fake planner: nothing to add (no real conversation took place)." };
       // `agent_state` last in the SET list is cosmetic — one UPDATE is atomic either way — but
       // it mirrors the real protocol, where `done` is the agent's very last write.
-      write(sessionId, ticketId, { ...done, agent_state: "done" }).catch(fail);
+      write(runToken, ticketId, { ...done, agent_state: "done" }).catch(fail);
     }, ms * 2);
   };
 
@@ -247,7 +261,8 @@ export function fakeDriver(o: FakeOptions = {}): FakeDriver {
       record({ kind: "start", sessionId, cwd, baseBranch, title, message });
       if (o.fail?.has("start")) throw new Error("fake cloud: startSession configured to fail");
       const ticketId = ticketIdFromMessage(message);
-      if (ticketId) sessions.set(sessionId, { ticketId, impl: isImplementation(message) });
+      const runToken = ticketId ? runTokenFromMessage(message, ticketId) : null;
+      if (ticketId && runToken) sessions.set(sessionId, { ticketId, runToken, impl: isImplementation(message) });
       playTurn(sessionId);
       return { sessionId, sessionUrl: `https://claude.ai/code/${sessionId}` };
     },
