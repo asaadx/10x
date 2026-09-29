@@ -29,7 +29,6 @@ export default defineConfig({
       "/tickets": "http://127.0.0.1:4010",
       "/projects": "http://127.0.0.1:4010",
       "/webhooks": "http://127.0.0.1:4010",
-      "/screenshots": "http://127.0.0.1:4010",
     },
   },
   build: {

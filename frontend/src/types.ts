@@ -10,8 +10,7 @@
  *
  * The duplication this replaces is exactly the drift the monorepo was split to prevent: the
  * frontend once rendered `prState`/`prAdditions`/`prDeletions` as `undefined` because its idea
- * of a ticket lagged the schema, and it was missing `worktreePath`, `paneId`, `workspaceId` and
- * `busy` entirely. Adding a field to the response is now a compile error here.
+ * of a ticket lagged the schema, and it was missing `busy` entirely. Adding a field to the response is now a compile error here.
  *
  * Keep this file free of anything but the re-exports and what is genuinely frontend-local.
  */
@@ -25,23 +24,23 @@ import type { Status } from "@10x/backend/types";
 export { PLAYBOOKS, PRIORITIES } from "@10x/backend/types";
 
 export type {
+  AgentState,
   BoardResponse,
-  Diagnostics,
-  Orphan,
   Playbook,
+  Preview,
   Priority,
   Project,
   ProvisionState,
   PullRequestState,
-  ScreenshotSide,
+  SessionKind,
   Status,
 } from "@10x/backend/types";
 
 /**
  * The board renders the RESPONSE ticket, never the stored row, so `Ticket` here is
- * `BoardTicket`. The backend's `Ticket` deliberately lacks `agentStatus`, `hasWorktree`,
- * `diagnostics` and the rest — a component typed against it would compile and then render
- * nothing for them, which is the bug this whole arrangement exists to make impossible.
+ * `BoardTicket`. The backend's `Ticket` lacks `busy` and `preview` — a component typed against
+ * it would compile and then render nothing for them, which is the bug this whole arrangement
+ * exists to make impossible.
  */
 export type { BoardTicket as Ticket } from "@10x/backend/types";
 

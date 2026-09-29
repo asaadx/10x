@@ -47,8 +47,8 @@ export function DeleteTicketDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Delete {ticket.id}?</AlertDialogTitle>
           <AlertDialogDescription>
-            Stops the agent, removes the worktree, and deletes the branch and the transcript. This cannot be
-            undone. The server refuses to delete a ticket whose pull request is still open.
+            Removes the ticket from the board. This cannot be undone. Its cloud session stays on claude.ai, and
+            the server refuses to delete a ticket whose pull request is still open.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

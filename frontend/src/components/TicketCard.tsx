@@ -1,13 +1,11 @@
-import { IconChristmasTreeFilled } from "@tabler/icons-react";
 import {
   Archive,
   ArrowLeft,
   ArrowRight,
   Ban,
-  Bot,
   Check,
   CircleAlert,
-  ExternalLink,
+  Eye,
   GitBranch,
   GitMerge,
   GitPullRequest,
@@ -16,15 +14,15 @@ import {
   MoreHorizontal,
   NotebookPen,
   Play,
-  ShipWheel,
+  Square,
+  SquareArrowOutUpRight,
   Star,
   Trash2,
-  TriangleAlert,
   Undo2,
-  Unplug,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { AgentStateBadge, previewPhase, SessionLink } from "@/components/AgentSession.tsx";
 import { DeleteTicketDialog } from "@/components/DeleteTicketDialog.tsx";
 import {
   AlertDialog,
@@ -50,14 +48,14 @@ import {
   archiveTicket,
   cancelTicket,
   deleteTicket,
-  deleteWorktree,
   moveTicket,
   rejectTicket,
   spawnAgent,
   startPlanning,
+  startPreview,
+  stopPreview,
 } from "@/lib/api.ts";
-import { runFailed } from "@/lib/board.ts";
-import { REMOTE_TARGET, remoteCommand, type SteerMode } from "@/lib/steer-mode.ts";
+import { previewOffered, runFailed } from "@/lib/board.ts";
 import { PRIORITIES, type Priority, type ProvisionState, type Status, type Ticket } from "@/types.ts";
 
 export const PR_ICON = {
@@ -72,12 +70,11 @@ export const PR_TONE = {
   open: "text-emerald-600 dark:text-emerald-400",
 } as const;
 
-// Idle icon colour per identifier kind: git-derived identifiers (branch, worktree) share one
-// tone so they read as a pair; the agent gets its own to stand apart from both.
+// Idle icon colour per identifier kind: the branch gets the git tone so it stands apart from
+// the plain ticket id beside it.
 const COPY_BUTTON_TONE = {
   default: "text-muted-foreground",
   git: "text-emerald-600 dark:text-emerald-400",
-  agent: "text-violet-600 dark:text-violet-400",
 } as const;
 
 function formatElapsed(ms: number): string {
@@ -138,16 +135,12 @@ export function PriorityBadge({ priority }: { priority: Priority }) {
 }
 
 /**
- * Click-to-copy for the identifiers a ticket is handled by.
+ * Click-to-copy for the identifiers a ticket is handled by: its id, and the branch the agent
+ * reported pushing. The branch is a value you paste into a terminal, never one you read, so it
+ * is an icon here and spelled out in full in the sheet.
  *
- * The branch and the worktree path are pure functions of the ticket id — Herdr derives the
- * directory from the branch and the branch is `ticket/<project>/<number>` (memory/naming.md) —
- * so rendering either as text would be the id again in a longer font. They are values you paste
- * into a terminal, never values you read, which is exactly what a copy affordance is for. Both
- * are still spelled out in full when the card is expanded.
- *
- * Every glyph sits in its own `size-4` box and the label runs at `leading-4`, so all three share
- * one 16px line box instead of each being centred against whatever happens to sit beside it.
+ * Every glyph sits in its own `size-4` box and the label runs at `leading-4`, so they share one
+ * 16px line box instead of each being centred against whatever happens to sit beside it.
  */
 function CopyButton({
   value,
@@ -161,7 +154,7 @@ function CopyButton({
   // lucide-react and @tabler/icons-react export incompatible component types, so this only
   // names the props CopyButton actually passes through, which both packages satisfy structurally.
   icon: React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
-  tone?: "default" | "git" | "agent";
+  tone?: "default" | "git";
   children?: React.ReactNode;
 }) {
   const [copied, setCopied] = useState(false);
@@ -236,63 +229,6 @@ function PullRequestLine({ ticket }: { ticket: Ticket }) {
 }
 
 /**
- * Focus, not prompt — this always POSTs `/tickets/:id/focus`, which calls `agent.focus` in the
- * backend, never `agent.prompt`. Two mechanisms follow from that rather than from a prompt
- * refusal:
- *
- * Focusing marks the tab "seen", and that is what flips a `done` agent back to `idle`
- * (verified in `herdr --skill`) — steering a ticket the agent just finished can reopen it as a
- * side effect of this same call.
- *
- * Herdr also has per-client focus — `herdr --skill` warns "Do not rely on another client's
- * focused pane" — so whether a remote client freshly attached with `herdr --remote` lands on
- * the pane this call focused is UNVERIFIED; this button only guarantees the focus call itself.
- *
- * Remote mode additionally copies the attach command, reusing the tick-feedback timer
- * `CopyButton` already uses above rather than inventing a second pattern.
- */
-function SteerButton({ ticket, steerMode }: { ticket: Ticket; steerMode: SteerMode }) {
-  const [copied, setCopied] = useState(false);
-  const timer = useRef<number | undefined>(undefined);
-
-  // A card unmounts on every poll that changes it, and a pending timer would then set state on
-  // a dead component.
-  useEffect(() => () => clearTimeout(timer.current), []);
-
-  const remoteConfigured = steerMode === "remote" && REMOTE_TARGET !== "";
-  const title =
-    steerMode === "local"
-      ? "Focuses the agent's pane in Herdr."
-      : remoteConfigured
-        ? "Copies the remote attach command and focuses the agent's pane in Herdr."
-        : "VITE_HERDR_REMOTE_TARGET is unset, so the attach command cannot be copied.";
-
-  return (
-    <Button
-      size="sm"
-      className="h-7 gap-1 px-2 text-[11px]"
-      title={title}
-      onClick={() => {
-        // Never copy "herdr --remote " with a missing target — copying only happens once a
-        // target is actually configured. Focusing still runs either way.
-        if (remoteConfigured) {
-          void navigator.clipboard.writeText(remoteCommand());
-          setCopied(true);
-          clearTimeout(timer.current);
-          timer.current = window.setTimeout(() => setCopied(false), 1200);
-        }
-        void fetch(`/tickets/${ticket.id}/focus`, { method: "POST" });
-      }}
-    >
-      {copied ? <Check aria-hidden className="size-3" /> : <ShipWheel aria-hidden className="size-3" />}
-      Steer
-    </Button>
-  );
-}
-
-type PreviewState = "idle" | "starting" | "live" | "stopping";
-
-/**
  * The one write this card has in flight, or null. A single slot rather than a flag per button,
  * because the card's rule is one write at a time: every button that could start another is
  * disabled while one runs, and the value names which so only that button shows a spinner.
@@ -306,8 +242,75 @@ type PendingAction =
   | "reject"
   | "cancel"
   | "archive"
-  | "deleteWorktree"
+  | "preview"
+  | "stopPreview"
   | "deleteTicket";
+
+/**
+ * Preview, driven entirely by `ticket.preview` from the poll: no local lifecycle, so a preview
+ * started from the sheet (or before a reload) shows here too.
+ *
+ * - none: a button that POSTs `/tickets/:id/preview`.
+ * - running: a link to the dev server, pulsing, in a new tab. Stopping lives in the overflow
+ *   menu and the sheet, because this slot is the link.
+ * - checkout (the project has no dev command) and exited: a button that opens the sheet, which
+ *   has the checkout path to copy and says why nothing is serving.
+ */
+function PreviewButton({
+  ticket,
+  pending,
+  onStart,
+  onOpenSheet,
+}: {
+  ticket: Ticket;
+  pending: PendingAction;
+  onStart: () => void;
+  onOpenSheet: () => void;
+}) {
+  const phase = previewPhase(ticket.preview);
+  const classes = "h-7 gap-1 px-2 text-[11px]";
+  if (phase === "running" && ticket.preview !== null) {
+    return (
+      <Button asChild size="sm" className={classes}>
+        <a href={ticket.preview.url} target="_blank" rel="noopener noreferrer" title={`Open ${ticket.preview.url}`}>
+          <span aria-hidden className="size-2 shrink-0 animate-pulse rounded-full bg-emerald-400" />
+          Live
+        </a>
+      </Button>
+    );
+  }
+  if (phase === "checkout" || phase === "exited") {
+    return (
+      <Button
+        size="sm"
+        variant="outline"
+        className={classes}
+        title={
+          phase === "checkout"
+            ? "Checked out locally, but this project has no dev command. Open the ticket for the path."
+            : "The dev command exited. Open the ticket to restart it."
+        }
+        onClick={onOpenSheet}
+      >
+        <Eye aria-hidden className="size-3" />
+        {phase === "checkout" ? "Checkout" : "Exited"}
+      </Button>
+    );
+  }
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      className={classes}
+      disabled={pending !== null}
+      title="Checks the pushed branch out locally and runs the project's dev command on its own port."
+      onClick={onStart}
+    >
+      {pending === "preview" ? <Spinner aria-hidden className="size-3" /> : <Eye aria-hidden className="size-3" />}
+      {pending === "preview" ? "Starting..." : "Preview"}
+    </Button>
+  );
+}
 
 /**
  * Wraps a button that spawns an agent, and explains the one reason it can be dead through no
@@ -329,7 +332,7 @@ type PendingAction =
  * direction the banner takes. A backend that predates `provision_state` sends no such field,
  * and disabling Plan and Start on every project because a field is missing would break the
  * board outright. The server refuses a genuine non-ready spawn with 409 either way, so the
- * cost of being wrong here is a visible error message, not a bad worktree.
+ * cost of being wrong here is a visible error message, not a broken session.
  */
 const SPAWN_BLOCKED: Record<string, (action: string) => string> = {
   pending: (action) => `10x is still downloading the repo. ${action} becomes available when it finishes.`,
@@ -367,19 +370,23 @@ function SpawnGate({
  * 409 from anywhere else — so an `else` would put a button on a card whose status cannot take
  * it. Done is terminal and its only run action is Archive; its pull request fills the rest of the row.
  * The two manual moves sit alongside them — To Do on `backlog`, Backlog on `todo`. Both are
- * human-only: they spawn nothing and retire nothing, which is why they are the only
+ * human-only: they start nothing and stop nothing, which is why they are the only
  * transitions in this row that are pure status writes.
+ *
+ * Steer is a link to the cloud session, not a board action. A Backlog ticket whose planning
+ * session is already open trades Plan for it — a second Plan would be a second paid session —
+ * and In Review reaches its session from the icon in the card's top row, since that row
+ * already holds three buttons.
  *
  * Variants carry the consequence: the forward move is primary, a reversible move is outline,
  * and only the one that destroys something is destructive. Exactly one primary per card, so
  * the card always names a single next step — which is why a Backlog ticket hands the primary
  * from Plan to To Do the moment it HAS a plan, rather than showing two. Everything that is
- * not a state transition — Delete worktree, Edit, Delete — lives in the expanded region,
- * which is also what keeps this row inside the width of a five-column card.
+ * not a state transition — Edit, Delete, Stop preview — lives in the overflow menu or the
+ * sheet, which is also what keeps this row inside the width of a five-column card.
  */
 function RunActions({
   ticket,
-  steerMode,
   provisionState,
   pending,
   onPlan,
@@ -389,11 +396,10 @@ function RunActions({
   onReject,
   onCancel,
   onArchive,
-  previewState,
-  onTogglePreview,
+  onPreview,
+  onOpenSheet,
 }: {
   ticket: Ticket;
-  steerMode: SteerMode;
   provisionState: ProvisionState | undefined;
   pending: PendingAction;
   onPlan: () => void;
@@ -403,43 +409,50 @@ function RunActions({
   onReject: () => void;
   onCancel: () => void;
   onArchive: () => void;
-  previewState: PreviewState;
-  onTogglePreview: () => void;
+  onPreview: () => void;
+  onOpenSheet: () => void;
 }) {
+  const preview = previewOffered(ticket) ? (
+    <PreviewButton ticket={ticket} pending={pending} onStart={onPreview} onOpenSheet={onOpenSheet} />
+  ) : null;
+
   if (ticket.status === "backlog") {
     // The whole readiness signal, and deliberately the whole of it: a plan exists once BOTH
-    // checklists are non-empty, which is exactly what the planning agent PATCHes back when it
+    // checklists are non-empty, which is exactly what the planning agent writes back when it
     // is finished. Either alone is half a plan — a breakdown with nothing to check it against,
     // or criteria with no work behind them — and neither is inspected any further, because the
-    // agent proposes by filling them in and the human confirms by clicking To Do. Computing it
-    // here is the point: which plans are ripe has to be readable off the board without opening
-    // a pane.
+    // agent proposes by filling them in and the human confirms by clicking To Do.
     const planned = ticket.taskBreakdown.length > 0 && ticket.acceptanceCriteria.length > 0;
+    const planning = ticket.sessionKind === "plan" && ticket.sessionUrl !== null;
     return (
       <>
-        {/*
-          Not instant: the route creates a workspace, a pane and an agent before it answers, so
-          the spinner is the only thing between the click and several seconds of apparent
-          nothing. Disabled for the whole of it — a second POST would answer 409
-          `operation_in_flight`, and a planner that did start twice would be a paid agent.
-        */}
-        <SpawnGate state={provisionState} action="Plan">
-          <Button
-            size="sm"
-            variant={planned ? "outline" : "default"}
-            className="h-7 w-full gap-1 px-2 text-[11px]"
-            disabled={pending !== null || spawnBlocked(provisionState)}
-            title="Talks the idea through with a planning agent until it is ready to start."
-            onClick={onPlan}
-          >
-            {pending === "plan" ? (
-              <Spinner aria-hidden className="size-3" />
-            ) : (
-              <NotebookPen aria-hidden className="size-3" />
-            )}
-            {pending === "plan" ? "Planning..." : "Plan"}
-          </Button>
-        </SpawnGate>
+        {planning ? (
+          <SessionLink ticket={ticket} variant={planned ? "outline" : "default"} />
+        ) : (
+          /*
+            Not instant: the route starts a cloud session before it answers, so the spinner is
+            the only thing between the click and several seconds of apparent nothing. Disabled
+            for the whole of it — a second POST would answer 409 `operation_in_flight`, and a
+            planner that did start twice would be a second paid session.
+          */
+          <SpawnGate state={provisionState} action="Plan">
+            <Button
+              size="sm"
+              variant={planned ? "outline" : "default"}
+              className="h-7 w-full gap-1 px-2 text-[11px]"
+              disabled={pending !== null || spawnBlocked(provisionState)}
+              title="Starts a planning session on claude.ai to talk the idea through until it is ready to start."
+              onClick={onPlan}
+            >
+              {pending === "plan" ? (
+                <Spinner aria-hidden className="size-3" />
+              ) : (
+                <NotebookPen aria-hidden className="size-3" />
+              )}
+              {pending === "plan" ? "Planning..." : "Plan"}
+            </Button>
+          </SpawnGate>
+        )}
         <Button
           size="sm"
           variant={planned ? "default" : "outline"}
@@ -462,20 +475,17 @@ function RunActions({
     return (
       <>
         {/*
-          The slowest write on the board: the route creates the worktree, reserves the port
-          block, writes the injected `.env` and waits for the agent to be genuinely ready
-          before it answers, so there are several seconds between the click and anything
-          changing. Disabled throughout, because a second POST that won the race would be a
-          second paid agent — and the two 409s it can answer instead (`not_in_todo`,
-          `port_pool_exhausted`) both roll the claim back to To Do, so the message on the card
-          is the only evidence the click did anything at all.
+          Slow: the route starts a Claude Code cloud session before it answers. Disabled
+          throughout, because a second POST that won the race would be a second paid session —
+          and a failed start hands the claim back to To Do, so the message on the card is the
+          only evidence the click did anything at all.
         */}
         <SpawnGate state={provisionState} action="Start">
           <Button
             size="sm"
             className="h-7 w-full gap-1 px-2 text-[11px]"
             disabled={pending !== null || spawnBlocked(provisionState)}
-            title="Spawns the agent in its own worktree, branch and port block."
+            title="Starts a Claude Code cloud session that implements this ticket and opens a draft PR."
             onClick={onStart}
           >
             {pending === "start" ? (
@@ -503,18 +513,14 @@ function RunActions({
   if (ticket.status === "in_progress") {
     return (
       <>
-        {/*
-          Always offered, so every card in a column carries the same actions. This focuses
-          rather than prompts — see the doc comment on `SteerButton` for the two mechanisms
-          that follow from a focus call instead of a prompt.
-        */}
-        <SteerButton ticket={ticket} steerMode={steerMode} />
+        <SessionLink ticket={ticket} />
+        {preview}
         <Button
           size="sm"
           variant="destructive"
           className="h-7 gap-1 px-2 text-[11px]"
           disabled={pending !== null}
-          title="Discards the attempt: deletes the branch and worktree."
+          title="Tells the agent to stop and returns the ticket to To Do."
           onClick={onCancel}
         >
           <Ban aria-hidden className="size-3" />
@@ -527,18 +533,16 @@ function RunActions({
     return (
       <>
         {/*
-          Pushes the branch and opens the pull request before it answers, so it is slow for the
-          same reason Start is — and the only irreversible action on the board, since the pull
-          request outlives any local rollback. When the push or the PR call fails the server
-          hands the claim back to `in_review`, so the card must be seen to return to this
-          column with the message showing rather than settle into Done: that is exactly what
-          refreshing only on success buys.
+          The only irreversible action on the board: the pull request outlives any local
+          rollback. When the GitHub call fails the server hands the claim back to `in_review`,
+          so the card must be seen to return to this column with the message showing rather
+          than settle into Done: that is exactly what refreshing only on success buys.
         */}
         <Button
           size="sm"
           className="h-7 gap-1 px-2 text-[11px]"
           disabled={pending !== null}
-          title="Pushes the branch, opens a pull request, and retires the agent."
+          title="Marks the agent's draft pull request ready for review (or opens one from its branch)."
           onClick={onAccept}
         >
           {pending === "accept" ? (
@@ -553,66 +557,28 @@ function RunActions({
           variant="outline"
           className="h-7 gap-1 px-2 text-[11px]"
           disabled={pending !== null}
-          title="Sends feedback back to the agent, which keeps working. Nothing is destroyed."
+          title="Sends feedback to the agent's session, which keeps working. Nothing is destroyed."
           onClick={onReject}
         >
           <Undo2 aria-hidden className="size-3" />
           Reject
         </Button>
-        {/*
-          MUST become conditional on the project's run config — command, port count and path
-          to open — before this is wired: a backend-only project has no meaningful preview,
-          and the recorded decision is that it HIDES rather than fails
-          (memory/parking-lot.md). It binds the ticket's own port block, which is why a
-          ticket in review still holds one. All three In Review buttons run at this tighter
-          size so a labelled Preview still fits a five-column card. The lifecycle below is a
-          local timer, so nothing is actually started or killed yet.
-        */}
-        <Button
-          size="sm"
-          variant={previewState === "live" || previewState === "stopping" ? "default" : "outline"}
-          className="h-7 gap-1 px-2 text-[11px]"
-          disabled={previewState === "starting" || previewState === "stopping"}
-          title={
-            previewState === "live"
-              ? "Stop the preview server."
-              : previewState === "idle"
-                ? "Preview — opens the agent's dev server on this ticket's port block."
-                : undefined
-          }
-          onClick={onTogglePreview}
-        >
-          {previewState === "starting" || previewState === "stopping" ? (
-            <Spinner aria-hidden className="size-3" />
-          ) : previewState === "live" ? (
-            <span aria-hidden className="size-2 shrink-0 animate-pulse rounded-full bg-emerald-400" />
-          ) : (
-            <ExternalLink aria-hidden className="size-3" />
-          )}
-          {previewState === "starting"
-            ? "Starting..."
-            : previewState === "live"
-              ? "Live"
-              : previewState === "stopping"
-                ? "Teardown..."
-                : "Preview"}
-        </Button>
+        {preview}
       </>
     );
   }
   if (ticket.status === "done") {
-    // Done is terminal, its pull request is already linked from the description row, and
-    // reclaiming the worktree lives in the overflow menu — so the single action here is
-    // Archive, now wired to the `archived` flag (memory/parking-lot.md). Disabled until the
-    // PR is recorded and terminal, because the server re-verifies live and answers 409
-    // otherwise — this is only so the button does not invite a click that cannot succeed.
+    // Done is terminal and its pull request is already linked from the description row, so the
+    // single action here is Archive. Disabled until the PR is recorded and terminal, because
+    // the server re-verifies live and answers 409 otherwise — this is only so the button does
+    // not invite a click that cannot succeed.
     return (
       <Button
         size="sm"
         variant="outline"
         className="h-7 gap-1 px-2 text-[11px]"
         disabled={pending !== null || ticket.prNumber === null || (ticket.prState !== "merged" && ticket.prState !== "closed")}
-        title="Stops the agent, deletes the worktree, branch and transcript, and hides the ticket for good."
+        title="Hides the ticket from the board for good."
         onClick={onArchive}
       >
         <Archive aria-hidden className="size-3" />
@@ -626,21 +592,19 @@ function RunActions({
 /**
  * Every card is the same height, whatever state its ticket is in: an identity row, a one-line
  * title, a one-line description slot that is reserved even when empty, and one row that holds
- * the run actions plus whatever that ticket's state is worth saying — a live timer, a pull
- * request, a dead run. Everything else — the full description, derived fields, diagnostics,
- * Save/Delete — lives in `TicketSheet`, opened via the title or the overflow menu.
+ * the run actions plus whatever that ticket's state is worth saying — the agent's state, a
+ * pull request, a failed click. Everything else — the full description, the agent's note, the
+ * preview's details, Save/Delete — lives in `TicketSheet`, opened via the title or the overflow menu.
  *
  * The top right holds the overflow menu and nothing else.
  */
 export function TicketCard({
   ticket,
-  steerMode,
   provisionState,
   onOpen,
   onChanged,
 }: {
   ticket: Ticket;
-  steerMode: SteerMode;
   /** False while 10x is still downloading this ticket's project, which gates Plan and Start. */
   provisionState: ProvisionState | undefined;
   /**
@@ -652,23 +616,14 @@ export function TicketCard({
   onChanged: () => void;
 }) {
   const failed = runFailed(ticket);
-  const running = ticket.status === "in_progress" && !failed;
-  // Herdr refuses a prompt to a blocked agent — `agent.prompt` answers `agent_blocked` and sends
-  // nothing (memory/agent-status.md) — so the ticket cannot move until a human answers in Herdr.
-  // The elapsed time is noise next to that, so this replaces it rather than joining it.
-  const blocked = ticket.agentStatus === "blocked";
-  // A branch name and an agent name are formulas over the project slug and ticket number
-  // (memory/naming.md), so every ticket has them as strings whether or not anything was ever
-  // spawned. Only a run makes them real, and these two fields are what report one.
-  const dispatched = ticket.sessionDir !== null || ticket.hasWorktree;
+  // The run timer is the least urgent thing on the card, so it only shows while the agent has
+  // not said anything about itself yet; any reported state takes the slot instead.
+  const showTimer = ticket.status === "in_progress" && ticket.agentState === null && ticket.startedAt !== null;
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [confirmWorktree, setConfirmWorktree] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [confirmReject, setConfirmReject] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
   const [confirmArchive, setConfirmArchive] = useState(false);
-  const [previewState, setPreviewState] = useState<PreviewState>("idle");
-  const previewTimer = useRef<number | undefined>(undefined);
   const [pending, setPending] = useState<PendingAction>(null);
   // The last write that failed, or null. The failure belongs to THIS ticket — `not_in_backlog`
   // means someone else's click already moved it, `transition_has_side_effects` means the button
@@ -683,23 +638,6 @@ export function TicketCard({
   // store.
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // A card unmounts on every poll that changes it, and a pending timer would then set state on
-  // a dead component.
-  useEffect(() => () => clearTimeout(previewTimer.current), []);
-
-  const handleTogglePreview = () => {
-    // A click mid-transition must do nothing: the button is also disabled in these states, so
-    // together they rule out a double-click queuing a second timer or leaving a stale one.
-    if (previewState === "starting" || previewState === "stopping") return;
-    if (previewState === "idle") {
-      setPreviewState("starting");
-      previewTimer.current = window.setTimeout(() => setPreviewState("live"), 2000);
-    } else {
-      setPreviewState("stopping");
-      previewTimer.current = window.setTimeout(() => setPreviewState("idle"), 2000);
-    }
-  };
-
   /**
    * The one path every wired button on this card takes. The guard is belt to the buttons'
    * braces: they are all disabled while a write runs, but a click already dispatched — or a
@@ -713,7 +651,7 @@ export function TicketCard({
    * the message on it — which is where the server rolled its claim back to anyway.
    *
    * Returns whether the write succeeded, which is all a confirmation dialog needs to decide
-   * its own fate: Cancel, Delete worktree and Delete ticket close themselves on `true` and
+   * its own fate: Cancel, Reject, Archive and Delete close themselves on `true` and
    * stay open on `false`, so a failure is read in place — next to the button that can retry
    * it — instead of behind a dialog that already closed.
    */
@@ -743,13 +681,14 @@ export function TicketCard({
           this must not move with it. */}
       <article
         aria-label={ticket.id}
-        data-died={failed || undefined}
+        data-failed={failed || undefined}
+        data-blocked={ticket.agentState === "blocked" || undefined}
         onClick={(e) => {
           // Every interactive child already has its own job; only bare card surface opens the sheet.
           if ((e.target as HTMLElement).closest("button, a, input, select, [role='menu']")) return;
           onOpen(actionError);
         }}
-        className="group cursor-pointer rounded-md border bg-card p-3 text-card-foreground shadow-xs transition-colors data-[died]:border-destructive/60"
+        className="group cursor-pointer rounded-md border bg-card p-3 text-card-foreground shadow-xs transition-colors data-[blocked]:border-amber-500/60 data-[failed]:border-destructive/60"
       >
         {/* `h-5` keeps this row a fixed 20px whatever it contains, which is half of what makes
             every card the same height. */}
@@ -762,22 +701,23 @@ export function TicketCard({
             <CopyButton value={ticket.id} label={`Ticket id ${ticket.id}`} icon={Hash}>
               <span className="truncate text-[11px] tabular-nums">{ticket.id}</span>
             </CopyButton>
-            {dispatched && ticket.branch && (
+            {/* The agent writes `branch` once it has pushed, so its presence is the evidence. */}
+            {ticket.branch !== null && (
               <CopyButton value={ticket.branch} label={`Branch ${ticket.branch}`} icon={GitBranch} tone="git" />
             )}
-            {ticket.worktreePath && (
-              <CopyButton
-                value={ticket.worktreePath}
-                label={`Worktree ${ticket.worktreePath}`}
-                icon={IconChristmasTreeFilled}
-                tone="git"
-              />
-            )}
-            {/* Gated on agentStatus, not agentName: the name is a formula and exists whether or
-                not an agent does, so only agentStatus proves Herdr currently has one
-                (memory/naming.md). */}
-            {ticket.agentStatus !== null && (
-              <CopyButton value={ticket.agentName} label={`Agent ${ticket.agentName}`} icon={Bot} tone="agent" />
+            {/* The session link on every card that has one, whatever its column — In Review
+                and a planned Backlog ticket have no Steer button in their action row. */}
+            {ticket.sessionUrl !== null && (
+              <a
+                href={ticket.sessionUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open session on claude.ai (new tab)"
+                aria-label="Open session"
+                className="inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-violet-600 transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none dark:text-violet-400"
+              >
+                <SquareArrowOutUpRight aria-hidden className="size-3" />
+              </a>
             )}
           </div>
 
@@ -798,15 +738,15 @@ export function TicketCard({
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onClick={() => onOpen(actionError)}>Open</DropdownMenuItem>
-                {/*
-                  Not column-scoped: Accept keeps the worktree and the branch, so a worktree can
-                  exist on a ticket in any column, and manual removal is the only thing that
-                  reclaims one (memory/teardown.md).
-                */}
-                {ticket.hasWorktree && (
-                  <DropdownMenuItem onSelect={() => setConfirmWorktree(true)}>
-                    <IconChristmasTreeFilled aria-hidden />
-                    Delete worktree
+                {/* Not status-scoped: a preview outlives a move to Done, and this is the only
+                    way to free its ports from the card. */}
+                {ticket.preview !== null && (
+                  <DropdownMenuItem
+                    disabled={pending !== null}
+                    onSelect={() => void runAction("stopPreview", () => stopPreview(ticket.id))}
+                  >
+                    <Square aria-hidden />
+                    Stop preview
                   </DropdownMenuItem>
                 )}
                 <DropdownMenuSeparator />
@@ -853,33 +793,22 @@ export function TicketCard({
             {ticket.description || "n/a"}
           </p>
           {/*
-            Two chip slots, and never a third: the row is a fixed `h-4` on a five-column card,
-            so a third word would squeeze the description away — and `blocked`, `died` and a
-            failed action can all hold at once. Which two win is chosen so that nothing only
-            this row can say is dropped.
+            Two chip slots after the pull request, and never a third: the row is a fixed `h-4`
+            on a five-column card, so a third word would squeeze the description away.
 
-            `blocked` keeps the first slot over the elapsed timer: it is Herdr-actionable and
-            the timer is the least urgent thing on the card.
-
-            `failed` takes the second slot from `died`, because a dead run is already said twice
-            more — this card's destructive border and the sheet's dead-run notice — while a
-            failed click has no other feedback at all. Both are destructive-toned, so the slot
-            reads the same either way.
+            The first is the agent's own state (a blocked agent's question is its tooltip), or
+            the run timer while it has not reported yet. The second is a failed click, which
+            has no other feedback at all.
           */}
           <div className="flex shrink-0 items-center gap-2">
             <PullRequestLine ticket={ticket} />
-            {blocked ? (
-              <span
-                className="inline-flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400"
-                title="The agent is waiting on a question or approval. Answer it in Herdr."
-              >
-                <TriangleAlert aria-hidden className="size-3" />
-                blocked
-              </span>
+            {showTimer && ticket.startedAt !== null ? (
+              <RunTimer since={ticket.startedAt} />
             ) : (
-              running && ticket.startedAt !== null && <RunTimer since={ticket.startedAt} />
+              // A Done ticket's agent is done by definition, and its PR needs the room.
+              <AgentStateBadge state={ticket.status === "done" ? null : ticket.agentState} note={ticket.agentNote} />
             )}
-            {actionError !== null ? (
+            {actionError !== null && (
               // `role` is what the full-text line this replaces carried, and the click that
               // caused the failure gave no other feedback. The visible word is only "failed",
               // so the message itself is announced from an `sr-only` span — absolutely
@@ -893,13 +822,6 @@ export function TicketCard({
                 failed
                 <span className="sr-only">: {actionError}. Open the ticket to read it.</span>
               </span>
-            ) : (
-              failed && (
-                <span className="inline-flex items-center gap-1 text-[11px] text-destructive" title="The pane exited before the agent finished.">
-                  <Unplug aria-hidden className="size-3" />
-                  died
-                </span>
-              )
             )}
           </div>
         </div>
@@ -909,7 +831,6 @@ export function TicketCard({
         <div className="mt-3 flex h-7 items-center gap-1.5 [&>*]:min-w-0 [&>*]:flex-1">
           <RunActions
             ticket={ticket}
-            steerMode={steerMode}
             provisionState={provisionState}
             pending={pending}
             onPlan={() => void runAction("plan", () => startPlanning(ticket.id))}
@@ -919,46 +840,19 @@ export function TicketCard({
             onReject={() => setConfirmReject(true)}
             onCancel={() => setConfirmCancel(true)}
             onArchive={() => setConfirmArchive(true)}
-            previewState={previewState}
-            onTogglePreview={handleTogglePreview}
+            onPreview={() => void runAction("preview", () => startPreview(ticket.id).then(() => undefined))}
+            onOpenSheet={() => onOpen(actionError)}
           />
         </div>
       </article>
-      <AlertDialog open={confirmWorktree} onOpenChange={setConfirmWorktree}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete worktree?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Stops the running agent and closes its pane, force-removes the worktree directory and deletes the
-              transcript. The branch and its commits are kept.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={pending !== null}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              disabled={pending !== null}
-              onClick={(e) => {
-                e.preventDefault();
-                void runAction("deleteWorktree", () => deleteWorktree(ticket.id)).then((ok) => {
-                  if (ok) setConfirmWorktree(false);
-                });
-              }}
-            >
-              {pending === "deleteWorktree" && <Spinner aria-hidden />}
-              {pending === "deleteWorktree" ? "Deleting worktree..." : "Delete worktree"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
       <AlertDialog open={confirmCancel} onOpenChange={setConfirmCancel}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Cancel this attempt?</AlertDialogTitle>
             <AlertDialogDescription>
-              Stops the agent and closes its pane, force-removes the worktree, deletes the branch and the
-              transcript. Everything the agent did is discarded and the ticket returns to To Do. This cannot be
-              undone.
+              Tells the agent to stop, unlinks its session from this ticket and returns the ticket to To Do. The
+              session itself stays in claude.ai — archive it there if you want it gone — and anything it already
+              pushed stays on GitHub.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -974,7 +868,7 @@ export function TicketCard({
               }}
             >
               {pending === "cancel" && <Spinner aria-hidden />}
-              {pending === "cancel" ? "Discarding..." : "Discard attempt"}
+              {pending === "cancel" ? "Cancelling..." : "Cancel attempt"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -990,7 +884,7 @@ export function TicketCard({
           <AlertDialogHeader>
             <AlertDialogTitle>Reject this work?</AlertDialogTitle>
             <AlertDialogDescription>
-              Sends the reason below back to the agent, which keeps working on this ticket. Nothing is deleted.
+              Sends the reason below to the agent's session, which keeps working on this ticket and pushes to the same pull request.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <textarea
@@ -1023,8 +917,8 @@ export function TicketCard({
           <AlertDialogHeader>
             <AlertDialogTitle>Archive this ticket?</AlertDialogTitle>
             <AlertDialogDescription>
-              Stops the agent, force-removes the worktree, deletes the branch and the transcript. The ticket is
-              hidden from the board for good — there is no un-archive. This cannot be undone.
+              The ticket is hidden from the board for good — there is no un-archive. Its pull request and branch
+              stay on GitHub. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

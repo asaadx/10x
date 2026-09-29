@@ -1,6 +1,7 @@
 import { ArrowDown, ArrowUp, ChevronDown, ChevronsUpDown, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { AgentStateBadge } from "@/components/AgentSession.tsx";
 import { PR_ICON, PR_TONE, PriorityBadge } from "@/components/TicketCard.tsx";
 import { TicketSheet } from "@/components/TicketSheet.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -53,6 +54,7 @@ const HEADERS: Array<{ key: ListSortKey; label: string; className: string }> = [
   { key: "id", label: "ID", className: "w-28" },
   { key: "title", label: "Title", className: "min-w-64" },
   { key: "status", label: "Status", className: "w-32" },
+  { key: "agent", label: "Agent", className: "w-28" },
   { key: "priority", label: "Priority", className: "w-24" },
   { key: "playbook", label: "Playbook", className: "w-28" },
   { key: "checklist", label: "Checklist", className: "w-28" },
@@ -397,6 +399,13 @@ export function ListPage({ projectId, tickets, projects, error, refresh }: Props
                         {STATUS_LABEL[ticket.status]}
                       </span>
                     </td>
+                    <td className="px-2 whitespace-nowrap">
+                      {ticket.agentState === null ? (
+                        <span className="text-xs text-muted-foreground/60">—</span>
+                      ) : (
+                        <AgentStateBadge state={ticket.agentState} note={ticket.agentNote} className="text-xs" />
+                      )}
+                    </td>
                     <td className="px-2">
                       <PriorityBadge priority={ticket.priority} />
                     </td>
@@ -453,11 +462,12 @@ export function ListPage({ projectId, tickets, projects, error, refresh }: Props
         onOpenChange={setSheetOpen}
         projects={projects}
         defaultProjectId={projectId === ALL_PROJECTS ? "" : projectId}
-        ticket={sheetTicket}
+        ticket={sheetTicket === null ? null : (tickets.find((t) => t.id === sheetTicket.id) ?? sheetTicket)}
         createInto="backlog"
         actionError={null}
         onCreated={refresh}
         onSaved={refresh}
+        onChanged={refresh}
       />
     </>
   );

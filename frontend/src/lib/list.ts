@@ -1,6 +1,6 @@
 import { matchesSearch } from "@/lib/board.ts";
 import { COLUMNS, PLAYBOOKS, PRIORITIES } from "@/types.ts";
-import type { Playbook, Priority, SortDirection, Status, Ticket } from "@/types.ts";
+import type { AgentState, Playbook, Priority, SortDirection, Status, Ticket } from "@/types.ts";
 
 /**
  * `/list` derivations. Pure like `board.ts` — no DOM, no fetch — except for the two
@@ -8,7 +8,16 @@ import type { Playbook, Priority, SortDirection, Status, Ticket } from "@/types.
  * storage failure (private mode, quota, a blocked origin) rather than take the page down.
  */
 
-export type ListSortKey = "id" | "title" | "status" | "priority" | "playbook" | "checklist" | "pr" | "updated";
+export type ListSortKey =
+  | "id"
+  | "title"
+  | "status"
+  | "agent"
+  | "priority"
+  | "playbook"
+  | "checklist"
+  | "pr"
+  | "updated";
 
 /** `null` is the default composite order: status, then priority desc, then updated desc. */
 export type ListSort = { key: ListSortKey; direction: SortDirection } | null;
@@ -30,6 +39,14 @@ export const STATUS_LABEL: Record<Status, string> = Object.fromEntries(
 
 const statusRank = (t: Ticket): number => COLUMNS.findIndex((c) => c.status === t.status);
 const priorityRank = (t: Ticket): number => PRIORITIES.indexOf(t.priority);
+
+/**
+ * How much the agent's state wants a human, ascending: nothing reported, then done, starting,
+ * working, failed, and blocked highest — so the first (descending) click on the Agent header
+ * puts the questions waiting for an answer at the top.
+ */
+const AGENT_RANK: Record<AgentState, number> = { done: 1, starting: 2, working: 3, failed: 4, blocked: 5 };
+const agentRank = (t: Ticket): number => (t.agentState === null ? 0 : AGENT_RANK[t.agentState]);
 
 /** Ticked and total items of the task breakdown — the plan the agent works through. */
 export function checklistProgress(ticket: Ticket): { done: number; total: number } {
@@ -77,6 +94,8 @@ function compareBy(key: ListSortKey, a: Ticket, b: Ticket): number {
       return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
     case "status":
       return statusRank(a) - statusRank(b);
+    case "agent":
+      return agentRank(a) - agentRank(b);
     case "priority":
       return priorityRank(a) - priorityRank(b);
     case "playbook":
@@ -113,6 +132,7 @@ export const FIRST_DIRECTION: Record<ListSortKey, SortDirection> = {
   id: "asc",
   title: "asc",
   status: "asc",
+  agent: "desc",
   playbook: "asc",
   priority: "desc",
   checklist: "desc",
@@ -151,7 +171,7 @@ export function relativeTime(iso: string, now: number): string {
 
 const KEY = "10x.list";
 
-const SORT_KEYS: readonly ListSortKey[] = ["id", "title", "status", "priority", "playbook", "checklist", "pr", "updated"];
+const SORT_KEYS: readonly ListSortKey[] = ["id", "title", "status", "agent", "priority", "playbook", "checklist", "pr", "updated"];
 const STATUSES: readonly Status[] = COLUMNS.map((c) => c.status);
 
 /**

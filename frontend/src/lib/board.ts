@@ -68,10 +68,21 @@ export function ticketsForColumn(
  * "is anything running", and a count would only restate the badges already on the cards.
  */
 export function columnIsWorking(tickets: Ticket[]): boolean {
-  return tickets.some((t) => t.agentStatus === "working");
+  return tickets.some((t) => t.agentState === "working" || t.agentState === "starting");
 }
 
-/** A run that died without ever finishing. `died` alone does not mean failure. */
+/**
+ * The agent reported that it gave up. Self-reported like every other agent state: the board has
+ * no way to read a cloud session's status, so a session that dies silently never gets here.
+ */
 export function runFailed(ticket: Ticket): boolean {
-  return ticket.died && !ticket.finished;
+  return ticket.agentState === "failed";
+}
+
+/**
+ * Preview needs something pushed to check out, and only makes sense while the work is live —
+ * In Progress or In Review. Done has its pull request instead.
+ */
+export function previewOffered(ticket: Ticket): boolean {
+  return ticket.branch !== null && (ticket.status === "in_progress" || ticket.status === "in_review");
 }

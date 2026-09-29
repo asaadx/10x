@@ -6,7 +6,6 @@ import { Link, useLocation } from "react-router-dom";
 import { DeleteProjectDialog, ProjectDialog } from "@/components/ProjectDialog.tsx";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select.tsx";
 import { ALL_PROJECTS } from "@/lib/board.ts";
-import type { SteerMode } from "@/lib/steer-mode.ts";
 import type { Theme } from "@/lib/theme.ts";
 import type { Project } from "@/types.ts";
 
@@ -14,8 +13,6 @@ type Props = {
   projects: Project[];
   projectId: string;
   onProjectChange: (id: string) => void;
-  steerMode: SteerMode;
-  onSteerModeChange: (mode: SteerMode) => void;
   theme: Theme;
   onThemeToggle: () => void;
 };
@@ -56,16 +53,9 @@ export function NavBar({
   projects,
   projectId,
   onProjectChange,
-  steerMode,
-  onSteerModeChange,
   theme,
   onThemeToggle,
 }: Props) {
-  // steerMode is the persisted lowercase SteerMode union member; capitalizing it for
-  // display/aria text is purely presentational, so both derive from this one lowercase
-  // value instead of a second hardcoded capitalized literal that can drift out of sync.
-  const otherSteerMode: SteerMode = steerMode === "local" ? "remote" : "local";
-
   // All of it stays here: the dialogs belong to the controls that open them, so adding a
   // project needs nothing threaded down from `App.tsx`.
   const [editorOpen, setEditorOpen] = useState(false);
@@ -104,38 +94,6 @@ export function NavBar({
 
         <div className="flex items-center gap-3 justify-self-end">
           {/*
-            One button, not a segmented pair: the control only ever shows the mode that's
-            active, so there is nothing for a second segment to add — the label already names
-            the alternative it will switch to. Amber marks remote because amber already means
-            "a human has to go do something in Herdr" on the card's `blocked` chip, and remote
-            steering is exactly that meaning again, not a new colour code; local is the direct,
-            nothing-else-needed state, so it gets emerald like a `done` column dot.
-          */}
-          <button
-            type="button"
-            onClick={() => onSteerModeChange(otherSteerMode)}
-            aria-label={`Steer mode: ${steerMode.charAt(0).toUpperCase() + steerMode.slice(1)}. Switch to ${
-              otherSteerMode.charAt(0).toUpperCase() + otherSteerMode.slice(1)
-            }.`}
-            title={
-              steerMode === "local"
-                ? "Local steering focuses the agent's pane on this machine."
-                : "Remote steering also copies the herdr --remote attach command."
-            }
-            className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border px-3 text-sm transition-colors ${
-              steerMode === "local"
-                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                : "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
-            }`}
-          >
-            <span
-              aria-hidden
-              className={`size-2 rounded-full ${steerMode === "local" ? "bg-emerald-500" : "bg-amber-500"}`}
-            />
-            <span className="capitalize">{steerMode}</span>
-          </button>
-
-          {/*
             A real <select>, not the Radix listbox: the e2e suite asserts
             getByRole("option", { name }) without opening anything, and Radix only renders its
             options into a portal while open. `aria-label="Project"` is the only thing naming this
@@ -173,8 +131,8 @@ export function NavBar({
           {/*
             Edit is here; DELETE IS NOT. Delete lives inside the edit dialog, because a
             one-click destructive control sitting between the project picker and the theme
-            toggle is a control you hit by accident — and this one stops agents, destroys
-            worktrees and unmerged branches, and removes the clone. Reaching it should take a
+            toggle is a control you hit by accident — and this one removes every ticket and
+            the downloaded clone. Reaching it should take a
             deliberate second step. Edit stays rendered-but-disabled on "All projects": hiding
             it is what review rejected, since a first-time user then never learns it exists.
           */}
