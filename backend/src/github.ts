@@ -154,6 +154,79 @@ export const openPullRequest = async (
 };
 
 /**
+ * Accept for a cloud agent's pull request: the agent opened it as a DRAFT on its own branch
+ * (prompts/implementation.md), and Accept is the human saying "this is ready". REST has no
+ * endpoint for leaving draft — only the GraphQL `markPullRequestReadyForReview` mutation does —
+ * and that mutation wants the PR's node id, so this is a REST read followed, only for a draft,
+ * by one mutation.
+ *
+ * Returns the PR as read, so the caller records state and ±LOC with no third call. An already
+ * non-draft PR is a success with no mutation: a retry after a partial failure, or a human who
+ * clicked "Ready" on GitHub first, must not fail Accept.
+ */
+export const markPullRequestReady = async (
+  identity: { owner: string; repo: string },
+  prNumber: number,
+  token: string,
+): Promise<PullRequest> => {
+  const { owner, repo } = identity;
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "Content-Type": "application/json",
+  };
+  let parsed: unknown;
+  let status: number;
+  try {
+    const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`, { headers });
+    status = response.status;
+    parsed = await response.json();
+  } catch (error) {
+    throw new Error(redact(`GitHub unreachable reading PR #${prNumber}: ${String(error)}`, token));
+  }
+  if (status !== 200) {
+    const message = stringField(parsed, "message") ?? JSON.stringify(parsed);
+    throw new Error(redact(`GitHub API error (${status}) reading PR #${prNumber}: ${message}`, token));
+  }
+  const pr = toPullRequest(parsed);
+  if (!pr) throw new Error(redact(`GitHub returned an unrecognized pull request: ${JSON.stringify(parsed)}`, token));
+
+  const draft = field(parsed, "draft", (v): v is boolean => typeof v === "boolean") ?? false;
+  if (!draft) return pr;
+  const nodeId = stringField(parsed, "node_id");
+  if (nodeId === undefined) throw new Error(`PR #${prNumber} has no node_id to mark ready`);
+
+  let result: unknown;
+  let gqlStatus: number;
+  try {
+    const response = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        query:
+          "mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) " +
+          "{ pullRequest { isDraft } } }",
+        variables: { id: nodeId },
+      }),
+    });
+    gqlStatus = response.status;
+    result = await response.json();
+  } catch (error) {
+    throw new Error(redact(`GitHub unreachable marking PR #${prNumber} ready: ${String(error)}`, token));
+  }
+  // GraphQL answers 200 with an `errors` array for a refused mutation, so the status alone
+  // proves nothing — both have to be clean.
+  const errors = typeof result === "object" && result !== null ? (result as Record<string, unknown>)["errors"] : undefined;
+  if (gqlStatus !== 200 || (Array.isArray(errors) && errors.length > 0)) {
+    const message = Array.isArray(errors)
+      ? errors.map((e) => stringField(e, "message") ?? JSON.stringify(e)).join("; ")
+      : JSON.stringify(result);
+    throw new Error(redact(`GitHub refused to mark PR #${prNumber} ready (${gqlStatus}): ${message}`, token));
+  }
+  return pr;
+};
+
+/**
  * `merged` and `closed` are terminal: a PR cannot leave them, so a stored terminal state is
  * as good as a fresh read and needs no API call. Anything else — including `null`, which
  * only ever means "no webhook has told us" — has to be asked about.
