@@ -14,7 +14,7 @@ git fetch origin prototype-cloud && git checkout prototype-cloud
 pnpm install
 ```
 
-Node 24 as before. Herdr does **not** need to be running any more.
+Node 24 as before. Nothing but the board needs to be running locally any more.
 
 ## 2. The `claude` CLI on your machine
 
@@ -117,8 +117,10 @@ lifecycle without spending anything.
 - The board cannot read a session's real status — it trusts what the agent writes. A session that
   crashes without writing `failed` stays *working*; open it via **Steer**.
 - Cancel sends a "stop" message; archiving the session is manual in claude.ai.
-- Agents hold a DB token that can write any ticket (convention says "only your own row").
+- Agents hold a DB token that can write any ticket (convention says "only your own row"). Each
+  session's writes are scoped by a per-session `run_token`, which stops a *stale* session (one you
+  cancelled, or a planner left open) from moving the current run — it is not a security boundary.
 - No auth on the board yet; don't expose it publicly. Only you can start sessions because they run
   on your local `claude` login.
-- OMP-based skills haven't been ported, except ticket-api and visual-diff, which are folded into
-  the agent prompts.
+- The old local runtime's skills haven't been ported, except ticket-api and visual-diff, which are
+  folded into the agent prompts.

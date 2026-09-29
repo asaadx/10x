@@ -1,14 +1,19 @@
 # prototype-cloud — agents on Claude Code cloud sessions
 
-Branch `prototype-cloud`, cut from `dev`. This document is the build plan every worker follows,
-and afterwards the description of how the prototype works. `dev` is untouched.
+Branch `prototype-cloud`, cut from `dev`. This document is the build plan every worker followed,
+and afterwards the description of how the prototype works. `dev` is untouched. Where the code
+ended up differing from the plan, the plan below has been updated and the difference is listed
+under [Implemented deviations](#implemented-deviations). The mechanism as built, with file
+citations, is [`memory/cloud.md`](../memory/cloud.md).
 
 ## Goal
 
-Replace Herdr + OMP (local terminal panes running a third-party agent) with **Claude Code cloud
-sessions** started from the board, and move the board's database to **Turso** (hosted SQLite) so
-cloud agents and the local board share one store. Also: build the **List** view, and run **Plan**
-as a cloud session too. Herdr is removed entirely, not kept as a fallback.
+Replace the local agent runtime — a terminal multiplexer (Herdr) running a third-party coding
+agent in local terminals — with **Claude Code cloud sessions** started from the board, and move the
+board's database to **Turso** (hosted SQLite) so cloud agents and the local board share one store.
+Also: build the **List** view, and run **Plan** as a cloud session too. The local runtime is
+removed entirely, not kept as a fallback. *(This paragraph is the one place the retired runtime is
+named, so a reader who meets it in `git log` knows what was replaced.)*
 
 ## Constraints that shaped the design (all researched 2026-09-29)
 
@@ -71,10 +76,12 @@ export interface Sql {
 | `agent_note` | the agent's last one-paragraph summary / question | agent |
 | `agent_updated_at` | ISO instant of the agent's last write | agent |
 | `branch`, `pr_number`, `pr_url` | existing columns; now written by the agent | agent |
+| `run_token` | a random UUID minted per session start (Start, or a fresh Plan) and quoted in the opening message; every agent write is scoped `WHERE id = ? AND run_token = ?`. Cleared by Cancel and by a failed start. Never on the wire | board |
 
-Project gains `dev_command` (TEXT, default `''`) for Preview. Columns tied to Herdr
-(`agent_name`, `session_dir`, `died`, screenshots) may stay in the schema for migration safety but
-leave the API types.
+Project gains `dev_command` (TEXT, default `''`) for Preview. Columns tied to the retired runtime
+(`agent_name`, `session_dir`, `died`, screenshots) stay in the schema for migration safety; nothing
+writes them any more (bar `died = 0` on Start/Cancel), and `Ticket` still carries them until the
+frontend drops them.
 
 ## Agent ↔ board protocol
 
@@ -83,7 +90,7 @@ session's opening message because `--cloud` has no system-prompt flag we rely on
 **"Reporting to 10x"** section with a bash helper:
 
 ```bash
-tenx_sql() { # tenx_sql "UPDATE tickets SET agent_state = ? WHERE id = ?" working <ticketId>
+tenx_sql() { # tenx_sql "UPDATE tickets SET agent_state = ? WHERE id = ? AND run_token = ?" working <ticketId> <runToken>
   local sql="$1"; shift; local args="[]"
   for a in "$@"; do args=$(jq -c --arg v "$a" '. + [{"type":"text","value":$v}]' <<<"$args"); done
   curl -sf "$TENX_DB_URL/v2/pipeline" -H "Authorization: Bearer $TENX_DB_TOKEN" \
@@ -92,10 +99,21 @@ tenx_sql() { # tenx_sql "UPDATE tickets SET agent_state = ? WHERE id = ?" workin
 }
 ```
 
+(The prompts also define a `tenx_state <state> [note]` wrapper that stamps `agent_updated_at`.)
+
 `TENX_DB_URL` / `TENX_DB_TOKEN` are cloud-environment variables (set once by the user). The agent
 may only write its own ticket row, and only these columns: `title`, `description`,
 `task_breakdown`, `acceptance_criteria`, `playbook`, `agent_state`, `agent_note`,
-`agent_updated_at`, `branch`, `pr_number`, `pr_url`. (Convention, not enforcement — prototype.)
+`agent_updated_at`, `branch`, `pr_number`, `pr_url` (a plan agent: the first eight). (Convention,
+not enforcement — prototype.)
+
+**Every agent UPDATE is scoped `WHERE id = ? AND run_token = ?`.** The board mints `run_token`
+when it starts the session and substitutes it into the prompt (`{{runToken}}`). Cancel clears it
+and a re-Start replaces it, so a stale session — a planner left open after the ticket was started,
+an implementation that was cancelled and restarted — matches zero rows and cannot move the current
+run. The prompts tell the agent that 0 rows affected means *stop*, not retry. Reads
+(`SELECT … WHERE id = ?`) are not scoped. The token is scoping, not security: it is in the row, and
+the agent's DB token can read the row.
 
 **Implementation agent lifecycle:** first action `agent_state=working`; work on branch
 `claude/10x-<ticketId>`; commit, run checks, push; open a **draft** PR against the base branch;
@@ -110,33 +128,48 @@ arrays of `{text, done}`), then `agent_state=done`.
 
 ## Board behaviour
 
-- **Poller** (in `server.ts`, every `AGENT_POLL_MS`, default 5000): for tickets `in_progress`
-  whose `agent_state = 'done'`, CAS `in_progress → in_review` (the old "turn settled" move).
-  `blocked` shows a flag on the card. Nothing else is automatic.
-- **Spawn / Start** (`POST /tickets/:id/spawn`): CAS `todo → in_progress`, set `agent_state =
-  starting`, `session_kind = impl`, call `cloud.startSession`, store `session_id/url`. Failure hands
-  the claim back and clears the session fields. No worktree, no port slot.
+- **Poller** (`poller.ts`, a self-scheduling loop that never overlaps itself, ticked from
+  `server.ts` every `AGENT_POLL_MS`, default 5000): for tickets `in_progress` whose
+  `agent_state = 'done'`, CAS `in_progress → in_review` (the old "turn settled" move); then
+  refresh PR state (below). `blocked` shows a flag on the card. Nothing else is automatic.
+- **Spawn / Start** (`POST /tickets/:id/spawn`): CAS `todo → in_progress` **in the same statement**
+  as `agent_state = starting`, `session_kind = impl`, a new `run_token` and cleared session fields;
+  call `cloud.startSession`, store `session_id/url`. Failure hands the claim back, clears the
+  session fields and answers **502 `session_start_failed`** with the CLI's output tails. No
+  worktree, no port slot.
 - **Plan** (`POST /tickets/:id/plan`): backlog only; same, `session_kind = plan`; status unchanged.
-- **Reject** (`POST /tickets/:id/reject {reason}`): CAS `in_review → in_progress`, `agent_state =
-  working`, `cloud.sendMessage(sessionId, reason + "report done when finished")`. Send failure
-  hands the claim back (409 `prompt_failed`).
-- **Cancel**: best-effort `sendMessage("Ticket cancelled — stop work now.")`, clear session fields,
-  back to `todo`. The user archives the session in claude.ai if they want.
-- **Steer**: no route. The card links to `session_url` (new tab). `/focus` and the steer-mode
-  local/remote toggle are deleted.
+  **Idempotent**: a ticket with a live plan session (id and URL present, `agent_state` not
+  `failed`) answers `{ok, reused: true, sessionId, sessionUrl}` and starts nothing. Start failure is
+  502 `session_start_failed`.
+- **Reject** (`POST /tickets/:id/reject {reason}`): CAS `in_review → in_progress` **in the same
+  statement** as `agent_state = working`, then `cloud.sendMessage(sessionId, reason + "report done
+  when finished")`. Send failure hands the claim back, restoring the agent's last `agent_state`
+  (409 `prompt_failed`).
+- **Cancel**: clear session fields (including `run_token`) and the reported `branch`, back to
+  `todo`, stop any Preview, then a best-effort `sendMessage("Ticket cancelled — stop work now.")`.
+  The user archives the session in claude.ai if they want.
+- **Steer**: no route. The card links to `session_url` (new tab). The old focus route and the
+  steer-mode local/remote toggle are deleted.
 - **Accept**: if the agent recorded `pr_number`, mark the draft PR ready for review (GraphQL
   `markPullRequestReadyForReview`, `GITHUB_TOKEN`); otherwise open a PR from `branch` with the
   existing `openPullRequest` (no local push — the branch is already on GitHub). Target status and
   guards as today.
-- **Preview** (`POST /tickets/:id/preview`, `DELETE /tickets/:id/preview`): in the project's local
-  clone, `git fetch origin <branch>`, `git worktree add --detach $STATE_DIR/previews/<ticketId>
-  FETCH_HEAD` (replace if present), reserve a port block (existing pool), write the `.env` port
-  block, and if `project.devCommand` is set spawn it (`sh -c`, detached process group, `PORT` in
-  env). Respond `{path, port, url, command, running}`. DELETE kills the process group, removes the
-  worktree, releases the slot. Preview state is in memory (lost on restart — fine).
-- **Board read** (`GET /tickets`) is now a pure DB read. `BoardTicket` loses `paneId`,
-  `workspaceId`, `worktreePath`, `hasWorktree`, `diagnostics`, `agentStatus`; gains `sessionUrl`,
-  `sessionKind`, `agentState`, `agentNote`, `agentUpdatedAt`, `preview`. `unowned` is dropped.
+- **Preview** (`POST /tickets/:id/preview`, `DELETE /tickets/:id/preview`): reserve a port block
+  (existing pool), then in the project's local clone
+  `git fetch origin +refs/heads/<branch>:refs/10x/preview/<ticketId>` and
+  `git worktree add --detach $STATE_DIR/previews/<ticketId> refs/10x/preview/<ticketId>` (replace
+  if present), write the `.env` port block, and if `project.devCommand` is set spawn it (`sh -c`,
+  detached process group, `PORT` in env, board secrets withheld). Respond
+  `{path, port, url, command, running}`. DELETE kills the process group, removes the worktree and
+  the ref, releases the slot. Preview state is in memory (lost on restart — fine; boot sweeps the
+  checkouts and releases every slot).
+- **Board read** (`GET /tickets`) is now a pure DB read. `BoardTicket` loses the six fields of the
+  old live join (`workspaceId`, `worktreePath`, `hasWorktree`, `diagnostics`, `agentStatus`, and
+  the terminal id; `cloud-routes.test.ts` lists them); gains `sessionUrl`, `sessionKind`,
+  `agentState`, `agentNote`, `agentUpdatedAt`, `preview`. `unowned` is dropped.
+- **PR state**: because the agent writes only `pr_number`/`pr_url`, the poller also reads each
+  non-terminal PR live from GitHub at most once per 60 s per ticket and stores its state and ±LOC.
+  Webhooks still work when forwarded.
 
 `backend/src/cloud.ts` — the only module that knows about `claude`:
 
@@ -148,24 +181,47 @@ export interface CloudDriver {
 }
 ```
 
-`CLOUD_DRIVER=cli` (default): `execFile(CLAUDE_BIN ?? "claude", ["--cloud", message, "--ref",
+`CLOUD_DRIVER=cli` (default): `execFile(CLAUDE_BIN || "claude", ["--cloud", message, "--ref",
 baseBranch], {cwd})`, parse the first `https://claude.ai/code/(session_\w+|cse_\w+)` in stdout;
 `sendMessage` via `-p … --cloud <id> --output-format json`. Errors carry stdout/stderr tails.
 `CLOUD_DRIVER=fake`: records calls in memory, returns `session_fake_<n>`; with `FAKE_AGENT_MS=<n>`
 it plays the agent (writes `working`, then `done` + a fake branch) through the same `Sql` client,
-so e2e can drive Backlog → Review with no network.
+so e2e can drive Backlog → Review with no network. The fake scopes its writes by `session_id`
+rather than `run_token`, so no test exercises a real agent's token scoping end to end.
+
+## Implemented deviations
+
+Where the code differs from the plan as first written (all reflected in the sections above):
+
+- **`run_token`** — not in the original protocol. Added so a stale session cannot write into the
+  current run; see the protocol section and the column table.
+- **Preview fetches into a per-ticket ref**, `refs/10x/preview/<ticketId>`, not `FETCH_HEAD`.
+  `FETCH_HEAD` is one file per clone, so two Previews of the same project started together would
+  race on it and one could check out the other's branch. The fetch is forced (`+`) so an agent
+  force-pushing after a Reject cannot wedge a Preview.
+- **PR-state reconcile runs in the poller**, not in the board read, so `GET /tickets` stays a
+  pure DB read.
+- **Plan is idempotent** — a second click on a ticket with a live plan session leads back to that
+  conversation instead of starting a rival planner that knows nothing.
+- **A failed session start is 502 `session_start_failed`** (Start and Plan), carrying the CLI's
+  stdout and stderr tails, since a started-then-lost session can only be found from that output.
+- **Spawn and Reject write the session columns in the same statement as the status**
+  (`claimTicketWith`). Separate writes would let one poll see a leftover `done` beside
+  `in_progress` and bounce the ticket to review — for Reject, silently undoing the rejection.
 
 ## Deleted
 
-`herdr.ts`, `runner.ts`, `agent-boot.ts`, `panes.ts`, `reconcile.ts`, `dev-server.ts`,
-`diagnostics.ts`, `skills.ts`, `screenshots.ts` + the screenshot routes, the Herdr parts of
-`lifecycle.ts`, `instance-lock.ts` if only Herdr needs it, their tests, the steer-mode code,
-`skills/` (content folded into the prompts), memory nodes `socket.md`, `spawn.md`,
-`agent-status.md`, `teardown.md`, `reconciliation.md` (replaced by `memory/cloud.md`).
+The local runtime's modules — its socket client, the runner and agent-boot readiness guard, the
+terminal focus helper, boot reconciliation, the dev-server reaper, spawn diagnostics, skill
+provisioning, screenshot storage and routes, the instance lock — with their tests, the old half of
+`lifecycle.ts`, the steer-mode code, `skills/` (content folded into the prompts), the demo
+recording scripts that drove the old runtime, and the memory nodes that described it (replaced by
+`memory/cloud.md`).
 
 ## Out of scope tonight
 
-The CTO auto-dispatcher, access roles for other users, porting other OMP skills, hosted deploy.
+The CTO auto-dispatcher, access roles for other users, porting the old runtime's other skills,
+hosted deploy.
 
 ## Morning setup (for the user)
 
