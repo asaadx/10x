@@ -2,245 +2,76 @@
 
 **Node:** gotchas · Parent: [INDEX.md](./INDEX.md)
 
-Each failure mode below is a Herdr behaviour verified directly against a live server, paired
-with the symptom it produces when violated. These are the traps to design against.
-
-> **Unverified lead, not knowledge.** A read-only audit of an earlier abandoned attempt reported
-> that its spawn path predicted worktree paths in three places while correctly reading pane IDs
-> from responses, and that it never hand-assembled topology. That report came from an agent with
-> a large context working in a known-broken codebase and was never independently confirmed; the
-> branch is dead. Treat it only as a hint that [the branch-is-the-identity rule](./naming.md)
-> deserves the most design attention. Do not cite it as fact, and do not let it narrow the
-> checks in this node.
+The traps that do not belong to one subsystem, each paired with the symptom it produces. The
+session-specific gaps (no status, no archive, full-access token) are in [cloud](./cloud.md) →
+Known gaps; this node does not repeat them.
 
 ## Gotchas
 
-- **`focus: false` on everything.** Spawning must never steal the user's focus. The CLI flag is
-  `--no-focus`.
-- **Do not close workspaces, tabs, or panes you did not create.**
-- **Never run `herdr server stop`** from the app. It kills every pane process on the machine.
-- **`agent.prompt` has an atomic `wait` option** (`{until, timeout_ms}`) that submits the prompt
-  and starts the wait in one request, avoiding a prompt/wait race. Useful for scripted probes;
-  the app should prefer the event subscription so the HTTP request does not block.
-- **`agent_prompt_stalled`** — a prompt sent from a non-working state that produces no observed
-  lifecycle change within 5 s returns this rather than hanging.
-- **`agent_blocked`** — `agent.prompt` refuses a blocked agent and sends nothing
-  ([agent-status](./agent-status.md)). Reliable on 0.8.2; was broken on 0.8.0.
-- **`pane.exited` and `pane.closed`** — subscribe to **both**. Both are global (no `pane_id`), so
-  one connection covers every ticket. Without them, an OMP crash, a typed `exit`, or a hand-closed
-  tab leaves a ticket hanging in In Progress with no status change coming. They are not
-  interchangeable — see [agent-status](./agent-status.md).
-- **`agent_not_ready`** — two causes. From `agent.start`: the agent was blocked during startup, and
-  the name stays usable for `agent.read` / `agent.send_keys`. From `agent.prompt`: the agent is not
-  registered yet, i.e. the fresh-pane race ([spawn](./spawn.md)). Both mean "wait for idle, then
-  prompt" — retry, do not fail the ticket. **Retrying the prompt is the fallback, not the fix:**
-  the wait is `agent.get` polled until ready, and 10x does it in one place,
-  `backend/src/agent-boot.ts`. Skipping it and leaning on the retry is a shipped bug, with the
-  giveaway being a running but *unnamed* agent in the pane while `agent.get <name>` answers
-  `agent_not_found` ([spawn](./spawn.md)).
-- **`agent.start` startup timeout** defaults to 30 s; accepts `timeout_ms` between 3,000 and
-  300,000.
-- **Reading agent output:** prefer `--source recent-unwrapped` for logs and transcripts. If
-  raising `--lines` reveals nothing more, the agent is on the terminal's alternate screen and
-  those rows are unrecoverable from scrollback — ask the agent to write a file instead.
-- **Bootstrap/recovery:** `session.snapshot` returns a one-time full snapshot (focused ids,
-  workspaces, tabs, panes, layouts, agents). It is not a subscription. Call it on reconnect or
-  whenever the local cache may be stale, then re-subscribe. CLI: `herdr api snapshot`.
-- **The installed binary is the authority.** This document is pinned to **herdr 0.8.2, protocol
-  20**. After upgrading, regenerate the schema with `herdr api schema --output <path>`, diff the
-  method list, and re-run the [verification](./verification.md) probes.
-- **Headless pane geometry is 120×40** when no client is attached (#2828). 10x creates panes with
-  no client attached, so this is the size agents render into.
+- **A Hrana SQL error is an HTTP 200.** `POST /v2/pipeline` answers 200 with
+  `{"type":"error"}` in the result for a failed statement, so `curl -sf` exits 0. The board's
+  driver checks every result (`sql.ts` `first`, and `step_errors` for a batch) and throws; an
+  agent's `tenx_sql` does not, which is why both prompts tell the agent to read every response.
+  Symptom when ignored: an agent that believes it reported `done` and a card that never moves.
+- **Zero rows affected is the stale-session signal.** Every agent UPDATE is scoped by
+  `run_token`, so after a Cancel or a re-Start the old session's writes succeed at the HTTP level
+  and change nothing. That is the design, not a bug to retry ([cloud](./cloud.md)).
+- **A stale `done` beside `in_progress` is moved on the next poll.** Anything that puts a ticket
+  back into `in_progress` must reset `agent_state` **in the same statement** as the status
+  (`claimTicketWith`) — Start and Reject do. A new route that claims `in_progress` with a bare
+  `claimTicket` and resets `agent_state` afterwards would bounce the ticket straight to review.
+- **An empty `.env` line is `""`, not unset.** `process.loadEnvFile` sets `FOO=` to the empty
+  string, and `.env.example` lists most variables that way. Read them with `||` (or check
+  `.trim() === ""`), never `??` — `cloud.ts`, `server.ts` (`AGENT_POLL_MS`) and `sql.ts`
+  (`TURSO_DATABASE_URL`) all do. Symptom: running a binary named `''`, or a poll interval of 0.
+- **`agent_state` is agent-written free text.** It is parsed, not cast (`db.ts`
+  `toAgentState`): anything outside the union reads as `null`, never as a state that could trigger
+  the move to review. The same distrust applies to `branch` — Preview refuses an unsafe name
+  before git sees it (`preview.ts` `isSafeBranch`) — and to `playbook`, which nothing validates
+  on an agent write.
+- **The fake agent scopes by `session_id`, the real one by `run_token`.** Tests that pass with
+  `CLOUD_DRIVER=fake` prove the board's side of the protocol, not that a real agent's scoped
+  writes land ([cloud](./cloud.md) → The fake driver).
+- **A Preview's dev server does not get the board's secrets.** `GITHUB_TOKEN`, `GH_TOKEN`,
+  `TURSO_*` and `TENX_DB_*` are stripped from its environment (`preview.ts` `WITHHELD_ENV`),
+  because it runs unreviewed agent code. A project whose dev server genuinely needs one of those
+  has to get it some other way.
+- **A Preview is gone after a board restart; the session is not.** Previews live in memory and
+  the boot sweep deletes their checkouts and releases every port slot. Cloud sessions keep running
+  and keep writing; the first poll after boot catches up on whatever they wrote.
+- **A timed-out `claude --cloud` may still have started a session.** The board hands the claim
+  back and never learns the id; the 502 body's stdout tail is the only trace. Do not lower
+  `CLOUD_TIMEOUT_MS` to make Start feel snappier.
 
 ---
 
-## `worktree.create` is one call, not three
+## Known gaps and settled mechanisms
 
-It atomically creates the git worktree, the branch, the Herdr workspace, the tab, **and** the
-root pane. One request returns all of it:
+- **G7 — the base branch a session starts from.** Start and Plan pass `--ref <base_branch>`, the
+  **bare** upstream name, and the session clones the repo in the cloud, so it starts from
+  GitHub's tip of that branch *(inferred from the CLI docs; not observed)*. 10x never refreshes its
+  own local clone after provisioning — it is only the CLI's `cwd` and the place Preview fetches
+  into, and Preview fetches the agent's branch explicitly (`+refs/heads/<branch>:refs/10x/preview/<id>`),
+  so a stale local base is harmless *(verified: `preview.test.ts` previews a branch that exists
+  only on the upstream)*. `base_branch` stays the bare name because both `--ref` and a PR's base
+  want it that way.
+- **G8 — a repo with no commits is seeded, not rejected (verified).** A branch is a label pointing
+  at a commit, so a commitless repo has no base branch whatever the GitHub API says:
+  `GET /repos` returns `default_branch: "main"` as a *setting*, while a clone of that repo has zero
+  refs, a dangling HEAD (`git rev-parse --verify HEAD` → `fatal: Needed a single revision`), and a
+  local `init.defaultBranch` name that need not match GitHub's. A session told `--ref main` on such
+  a repo has nothing to start from.
 
-```
-.result.workspace.workspace_id
-.result.tab.tab_id
-.result.root_pane.pane_id
-.result.worktree.path
-.result.worktree.branch
-```
-
-Symptom when violated: *"the pane doesn't get created."* Hand-assembling the topology with
-separate `workspace.create` / `tab.create` / `pane.split` calls — or running `git worktree add`
-yourself and then trying to attach a pane — reintroduces every failure mode this call already
-solved. `agent.start` explicitly never creates, splits, or moves layout; it requires a pane that
-already exists.
-
-Emitted events: `workspace.created`, `tab.created`, `pane.created`, `worktree.created`.
-
-Branch semantics: if the requested branch already exists locally, it is checked out; otherwise
-it is created from `base`, or from `HEAD` if `base` is omitted.
-
-## Subscribe before starting
-
-See [agent-status](./agent-status.md). Subscribing after `agent.start` can miss the first
-transition; the ticket then looks stuck in In Progress.
-
-## Check `.error.code` before using any ID
-
-Every response is either `result` or `error`. Treating a failed create as success and issuing
-the next call with an undefined pane ID produces confusing downstream failures that look like
-"the agent didn't start" rather than "the worktree was never created."
-
----
-
-## Known gaps and unvalidated claims
-
-Recorded so nobody assumes these are proven.
-
-- **G2 — restart resilience, partly closed (verified).** A 10x backend restart on the same
-  database keeps a finished ticket in `in_review` with its `finished` flag, its branch, its
-  worktree and its port block, and the board re-reads the live agent as `done` — covered by
-  `e2e/resilience.spec.ts`. **What is still missing is re-subscribing:** the new process holds no
-  event subscription for a running ticket, and nothing at boot creates one, so a turn that ends
-  *after* the restart is never recorded — the ticket keeps reading unfinished and **sticks in In
-  Progress permanently**, because the transition rides on that same subscription. Boot
-  reconciliation only reports it ([reconciliation](./reconciliation.md), divergence row 1).
-
-  **A dropped socket is now detected and reopened (verified).** `subscribe()` takes an optional
-  third argument, `onClose`, fired at most once when the connection drops from the far end and
-  never when the caller calls the returned `close()` — the `closedByUs` flag, which is what stops
-  teardown from triggering a pointless reopen. **Node emits `'close'` on a graceful hangup and
-  `'error'` only on ECONNRESET/EPIPE/connect failure**, and always emits `'close'` after `'error'`,
-  so the single `'close'` handler covers both. Before it, a clean Herdr restart matched none of the
-  registered handlers: the stream object stayed truthy, every status event stopped, and
-  `pane.exited`/`pane.closed` stopped with them, so even dead-pane detection died. Silently.
-
-  `runner.ts` responds by probing `agent.get` on a bounded backoff (`STREAM_REOPEN_DELAYS_MS`,
-  250 ms → 4 s): agent alive → re-subscribe to its authoritative `pane_id`; `agent_not_found` →
-  `onPaneExit()`, the existing dead-pane path. **The probe is load-bearing, not decoration** —
-  `pane.exited` is a global subscription we are not listening to during the gap, so the probe is
-  the only dead-pane detection for that window. Covered by `backend/src/herdr.test.ts` against a real unix
-  socket; falsifiable (neuter the handler and two of its three tests time out).
-
-  **The mechanism that closes the restart half needs no subscription at all:** a
-  `state_change_seq` recorded at prompt time and persisted beside the ticket turns completion into
-  one point-in-time `agent.get`
-  ([agent-status](./agent-status.md)) — verified against a live Herdr, not yet built. That is what
-  makes "derive the transition from the agent's current state" sound: status *alone* is not enough,
-  because the first `idle` arrives before the prompt, but status paired with a counter that has
-  moved since the prompt is. A plain boot catch-up (`in_progress AND finished → in_review`) was
-  designed and **deliberately dropped**, and still should be: it makes steering worse, since
-  restarting while you are talking to an agent jumps the ticket immediately.
-
-  **Until it is built: do not restart the board while an agent is working.** If Herdr restarts,
-  restart the board *after* it. A Herdr server restart is still unaddressed: panes and agents die
-  with it, and it is also the one thing that resets `state_change_seq` — which fails closed,
-  stalling a ticket rather than falsely completing one.
-- **G3 — concurrency, proven at two agents (verified).** Two tickets spawned with `Promise.all`
-  both reached ready in 3.2-3.9 s, ran their turns simultaneously, and each committed its own
-  file: distinct branches, worktrees, agent names and panes, with a third unrelated agent live in
-  the same Herdr session. Concurrency costs nothing measurable — a concurrent spawn is as fast as
-  a solo one, and `worktree.create` twice at once in one repo does not race git.
-  **The `agent_pane_busy` retry is the norm, not an edge case:** across 16 measured spawns, 13
-  needed it (12 × 1 retry, 1 × 2) and 3 did not, with no relation to concurrency — the three clean
-  ones were the first spawns of a run. Readiness always needed polling (19-24 polls, ~125 ms
-  apart); the prompt was always accepted first try. Beyond two concurrent agents is still
-  unexercised, and so is the cap in [operations](./operations.md).
-- **G4 — `pnpm` and worktree dependencies.** The claim that a content-addressed store makes
-  per-worktree `node_modules` cheap ([reconciliation](./reconciliation.md)) is reasoned, not
-  measured.
-- **G5 — the attention-aware transition.** The `idle`/`done` split
-  ([agent-status](./agent-status.md)) currently has a stopgap (treat both as finished). The
-  intended fix — an OMP end-of-turn hook plus focus/attach awareness — is unbuilt and untested,
-  and it now has something concrete to gate: the automatic move to In Review fires on a settled
-  status whether or not the user is watching that pane ([operations](./operations.md)).
-- **G6 — pinned to herdr 0.8.2, protocol 20.** Schema checked against 0.8.0: 90 → 91 methods, only
-  `pane.input.set` added, nothing removed, and every parameter shape this document depends on is
-  unchanged (`WorktreeCreateParams`, `WorktreeRemoveParams`, `AgentStartParams`,
-  `AgentPromptParams`, `EventsSubscribeParams`, and `pane.agent_status_changed` still requiring
-  `pane_id`). Not yet exercised on 0.8.2:
-
-  - **Headless pane geometry is now 120×40** (was 80×24) when no client is attached (#2828). 10x
-    creates panes with no client attached, so this is the size agents render into. Unmeasured.
-  - **The bundled agent skill now matches the release** (#2847). `herdr --skill` has not been
-    re-read since upgrading; it may describe lifecycle behaviour more precisely than
-    [agent-status](./agent-status.md).
-  - `pane.current` / `pane.get` / `pane.layout --current` now resolve the *calling* pane rather than
-    another client's focused pane (#2297, #2298).
-  - `agent send-keys` preserves Shift for `shift+tab` (#1561) — how agent permission modes are
-    cycled programmatically.
-
-  **On the next upgrade:** regenerate the schema (`herdr api schema --output <path>`), diff the
-  method list, update the version and protocol in this document's header, re-read `herdr --skill`,
-  and re-run the [verification](./verification.md) probes. Also re-`strace` the CLI for any command
-  whose raw-socket behaviour looks wrong: the CLI adds orchestration the socket method does not
-  perform ([spawn](./spawn.md)).
-
-- **G9 — `sweepPlanWorkspaces` at boot is not scoped to the ticket DB it is given (verified,
-  the hard way).** Booting `server.ts` against a **fresh, empty ticket database** while
-  `HERDR_SOCKET_PATH` still points at the **real, shared Herdr socket** closed a live plan
-  workspace belonging to a ticket that only existed in the real database — logged plainly
-  (`plan sweep closed <ticket>-plan: no ticket owns this label`), by design
-  ([reconciliation](./reconciliation.md), the plan-workspace sweep section): the
-  sweep's "no ticket owns this label" check reads `listTickets()` from whichever DB it was given,
-  then closes any Herdr workspace labelled as a planner that this (possibly unrelated) list does
-  not recognise. An empty or partial ticket DB therefore reads every real planner on the host as
-  orphaned. `e2e/fixtures.ts`'s `startBoard()` has exactly this shape — throwaway `STATE_DIR` and
-  `DB_PATH`, real `HERDR_SOCKET_PATH` — so **any** e2e run, not just a manual one, can close
-  another ticket's live plan conversation if one happens to be open at that moment. Closing a
-  plan workspace destroys no worktree, branch or commit, but it does end a live conversation
-  with no warning to whoever was in it.
-
-  **The only fully safe way to boot this server against throwaway state on a host with other
-  live tickets:** also point `HERDR_SOCKET_PATH` at a socket that does not exist. Every Herdr
-  call then fails fast and every reconciliation step degrades to a logged warning instead of a
-  mutation — the same technique [testing](./testing.md) already documents for proving reads
-  survive Herdr being absent. Do **not** boot this server with a throwaway ticket DB against the
-  real socket "just to check a static route" or similar — verify HTTP-surface-only changes that
-  way instead.
-
-**G7 and G8 are closed.** Both were real, both are fixed, and the mechanisms they turned on are
-now how the product works — so they live here as truth rather than as warnings.
-
-**The base branch is refreshed before every worktree (verified).** `spawn` runs
-`git fetch --prune origin` in the project's repo and then creates the worktree from
-`origin/<base>`, never from the local branch. This matters because 10x owns the clone, so no
-human pulls it: without the fetch, every ticket for the life of a project would branch off the
-commit that existed at clone time.
-
-A local fast-forward is **not** the alternative — in a normal clone the base branch is checked
-out, and git refuses: `git fetch origin main:main` →
-`fatal: refusing to fetch into branch 'refs/heads/main' checked out at '<clone>'`. Branching off
-the remote-tracking ref sidesteps that and leaves the local branch deliberately stale and
-irrelevant. Confirmed through Herdr itself, not just git (live herdr 0.8.2, one run against a
-clone two commits behind):
-
-| `worktree.create` params | resulting worktree HEAD |
-|---|---|
-| `{cwd, branch: "probe/stale", base: "main"}` | `c35f078` — the **stale** local branch |
-| `{cwd, branch: "probe/fresh", base: "origin/main"}` | `4a512b6` — the **upstream tip** |
-
-So Herdr hands `base` to git verbatim and `origin/<base>` is legal there. **`base_branch` stays
-the bare name in the column** — `openPullRequest` needs it as the PR base — and only the
-worktree call takes the prefix. Covered by `runner-base.test.ts`, which fails if either the
-fetch or the prefix is removed.
-
-**Worktrees live outside the repo (verified).** `~/.herdr/worktrees/<repo-name>/<branch-dir>`,
-e.g. `~/.herdr/worktrees/clone10x/probe-fresh` for `cwd: …/clone10x`. Deleting a project's repo
-directory therefore does **not** remove its worktrees: they are a second location, and
-orphaning them leaves `.git` links pointing at a repo that no longer exists. `DELETE
-/projects/:id` removes both.
-
-**A repo with no commits is seeded, not rejected (verified).** A branch is a label pointing at a
-commit, so a commitless repo has no base branch whatever the GitHub API says: `GET /repos`
-returns `default_branch: "main"` as a *setting*, while a clone of that repo has zero refs, a
-dangling HEAD (`git rev-parse --verify HEAD` → `fatal: Needed a single revision`), and a local
-`init.defaultBranch` name that need not match GitHub's. `git worktree add -b ticket/x/1 <path>
-main` → `fatal: invalid reference: main`.
-
-Detection needs no API call: `git ls-remote --heads <url>` returns zero refs with exit 0 on an
-empty repo, and exit 128 on one that cannot be reached. `provision.ts` uses that, then writes a
-first commit on `base_branch` — after `git symbolic-ref HEAD refs/heads/<base>`, because the
-clone's HEAD points at the local default, not GitHub's. Never trust `default_branch` as proof a
-ref exists.
-
-**G1 (`blocked`) is closed.** A prose question reports `done`; the `ask` tool reports `blocked`.
-See [agent-status](./agent-status.md).
+  Detection needs no API call: `git ls-remote --heads <url>` returns zero refs with exit 0 on an
+  empty repo, and exit 128 on one that cannot be reached. `provision.ts` uses that
+  (`remoteHasCommits`), then — when the user agreed in the project dialog — writes a first commit
+  on `base_branch` after `git symbolic-ref HEAD refs/heads/<base>`, because the clone's HEAD points
+  at the local default, not GitHub's. `GET /projects/lookup` reports `empty` from the same check.
+  **Never trust `default_branch` as proof a ref exists.**
+- **G10 — nothing notices a dead agent.** A session that never writes `working`, or stops writing
+  mid-run, leaves the card on `starting`/`working` indefinitely. `agent_updated_at` is stored but
+  nothing compares it to the clock. Recovery is manual: open the session, then Cancel.
+- **G11 — `pr_url` must match exactly.** The webhook and `setPullRequestState` match tickets by
+  `pr_url`, and the agent writes that value itself. A URL with a trailing slash or a different
+  host form matches nothing, silently, until Accept overwrites it with GitHub's own `html_url`
+  *(inferred; not observed)*.

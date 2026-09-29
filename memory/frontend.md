@@ -124,7 +124,7 @@ fixtures *(verified)*.
   `acceptTicket`, `cancelTicket`, `deleteTicket`, `archiveTicket`, `rejectTicket`, `startPreview`
   and `stopPreview` do not — they call `request()` unconditionally. The dev proxy also always points at
   `http://127.0.0.1:4010` regardless of mock mode, and that port is 10x's own live board, not a
-  disposable target — a project ticket's own worktree gets its dev server from `.env`'s
+  disposable target — a ticket's Preview gets its dev server port from `.env`'s
   `PORT_RANGE_START..END`, never 4010. Clicking Add/Save/Delete/Accept/Reject/Cancel-run while
   "smoke-testing in mock mode" therefore mutates the **real** board over that proxy; this created
   a stray real ticket during 10x-30's own smoke test, cleaned up with `DELETE /tickets/<id>`
@@ -157,7 +157,8 @@ screenshot routes); in production the backend serves the built
 bundle itself. Paths in `api.ts` are therefore relative on purpose, no origin is ever configured, and
 **the zero-dependency backend needs no CORS handling — because it never sees a cross-origin request**
 *(verified)*. `build.outDir` is `dist` with the default asset layout, which matters because the
-backend's static handler allow-lists only `.html/.css/.js/.svg`.
+backend's static handler allow-lists only `.html/.css/.js/.svg/.woff2/.ico/.png`
+([architecture](./architecture.md)).
 
 ## 4. Two layout rules that are easy to destroy
 
@@ -202,19 +203,12 @@ string to drift. Two things inside it are contracts, not styling:
   in the column footer for exactly this reason, or it would append its label to the region name.
 
 **Cards are `<article aria-label={ticket.id}>`** in `TicketCard.tsx` *(verified)*. This is now **the
-only place a ticket id is exposed to assistive tech** as a name. `resilience.spec.ts` and `spawn.spec.ts` locate a
+only place a ticket id is exposed to assistive tech** as a name. `spawn.spec.ts` locates a
 specific ticket as `getByRole("region", {name: /^In Review/}).getByRole("article", {name: id})` and
-then `getByTitle` inside it — the badges' `title` is their accessible handle, so which column a card
-is in is part of the contract.
-
-**Three places the suite is out of date with the board** *(all verified against the working tree,
-none fixed here)*: `board.spec.ts` enumerates **four** column names
-(`["Backlog 1", "In Progress 0", "In Review 0", "Done 0"]`) while `COLUMNS` has five — To Do is
-missing. `board.spec.ts` also asserts a **`Start` button on a Backlog ticket**, but `RunActions` in
-`TicketCard.tsx` scopes Backlog to *Plan* and *To Do* and Start to `todo`. And `spawn.spec.ts`'s
-first test still scopes by `#in-progress-cards [data-id="<id>"]` — DOM structure plus an element id,
-neither of which the React board renders (`resilience.spec.ts` already documents the accessible
-replacement). All three are spec-side work; see [testing](./testing.md).
+then the buttons and links inside it by role and name, so which column a card is in is part of the
+contract. `board.spec.ts` asserts all five column names in order
+(`["Backlog 1", "To Do 0", "In Progress 0", "In Review 0", "Done 0"]`) and that a Backlog card
+offers Plan but no Start *(verified — read from the specs; see [testing](./testing.md))*.
 
 ## 6. `capitalize` lies to `textContent`
 
@@ -225,9 +219,9 @@ Assert the accessible name or take the screenshot — never `textContent` on a `
 
 ## 7. Cloud sessions on the board
 
-Herdr-era UI is gone *(verified — this branch)*: no steer-mode toggle or `lib/steer-mode.ts`, no
-`/focus` call, no worktree/pane/agent-name copy buttons, no Delete worktree, no diagnostics panel,
-no `unowned` list, no Before/After screenshot panes. `components/AgentSession.tsx` holds what
+The UI for locally run agents is gone *(verified — this branch)*: no steer-mode toggle or
+`lib/steer-mode.ts`, no `/focus` call, no worktree/agent-name copy buttons, no Delete worktree, no
+diagnostics panel, no `unowned` list, no Before/After screenshot viewer. `components/AgentSession.tsx` holds what
 replaced them, shared by card, sheet and List:
 
 - **`AgentStateBadge`** — the agent's self-reported `agentState` (starting = spinner, working =

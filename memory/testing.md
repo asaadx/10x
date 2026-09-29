@@ -2,130 +2,106 @@
 
 **Node:** testing · Parent: [INDEX.md](./INDEX.md)
 
-The two suites 10x has, what each one is for, and — the part that costs money if you get it wrong —
-**which of them spawns real coding agents.** What is being tested is described in
-[architecture](./architecture.md); how to reproduce a Herdr claim from scratch is in
-[verification](./verification.md).
+The two suites 10x has and what each one is for. **Neither starts a real agent or spends
+money**: every server under test runs with `CLOUD_DRIVER=fake` ([cloud](./cloud.md)). What is
+being tested is described in [architecture](./architecture.md); how to reproduce a claim by hand
+is in [verification](./verification.md).
 
 ## 1. Two suites, three commands
 
-Deliberately separate. `pnpm test` (`node --test 'src/*.test.ts'`) is the pure-unit layer and needs
-nothing running. Playwright drives the real HTTP surface and the real page, and it is split into
-**two projects, not one filtered run**: `pnpm e2e` (`playwright test --project=fast`) runs only
-the specs known not to spawn a coding agent, and `pnpm e2e:full`
-(`playwright test --project=full`) runs every spec.
+`pnpm test` (`pnpm -r test` → `node --test 'src/*.test.ts'` in `backend/`) is the unit and
+route layer and needs nothing running. Playwright drives the real HTTP surface and the real page,
+split into **two projects, not one filtered run**: `pnpm e2e` (`pnpm build && playwright test
+--project=fast`) and `pnpm e2e:full` (`--project=full`, every `*.spec.ts`).
 
-**`fast` is an allow-list, and that is the whole point.** Its `testMatch` names
-`projects.spec.ts`, `tickets.spec.ts` and `board.spec.ts` explicitly. A deny-list of the spawning
-specs would default a newly added spec to *included*, so a spec that spawns real agents would
-silently start spawning under the default `pnpm e2e`. An allow-list fails safe instead: a
-forgotten new spec merely runs slower under `e2e:full` and never spawns unexpectedly.
+**`fast` is an allow-list, and that stays the point** (`playwright.config.ts`). Today it names
+every spec — `projects`, `tickets`, `board`, `spawn`, `reject`, `preview` — because the board runs
+with the fake driver, so `fast` and `full` run the same thing. It is kept an allow-list so that a
+spec added later which needs a **real** cloud session cannot run (and spend) under the default
+`pnpm e2e` unless someone deliberately lists it.
+
+CI (`.github/workflows/ci.yml`) runs `pnpm typecheck` and `pnpm test` only.
 
 ## 2. The unit suite
 
-**The glob matters and so do the quotes.** `node --test src` does not pick up `.ts` files —
-verified: it reports `✖ src (40ms) 'test failed'`. Quote the glob so the shell hands it to Node
-rather than expanding it. Current state: **241 tests, 57 suites, 0 failures**, `duration_ms` ≈ 4160
-(the readiness-guard tests spend most of it polling a fake Herdr at the real 125 ms cadence).
+**The glob matters and so do the quotes.** `node --test src` does not pick up `.ts` files; quote
+the glob so the shell hands it to Node. Current state: **296 tests, 69 suites, 0 failures**,
+`duration_ms` ≈ 15 000 *(verified on this branch)* — the route suites start real server
+children and wait on the fake agent and the poller.
 
-| Target | Why it is tested |
-| --- | --- |
-| `normalizeEvent` | Herdr emits `pane.agent_status_changed` dotted and `pane_closed` underscored. Matching either literally drops half the stream with **no error attached** — it cost this project its status pipeline once. |
-| `isAgentReady` / `isSettled` | `done` and `idle` are the same underlying ready state. Accepting only `idle` broke agent reuse 100% of the time and hung for the full 60 s timeout. `interactive_ready` is the tell for a premature `agent.start` return. |
-| `branchFor` / `agentNameFor` | The alignment invariant: branch lowercased with `/`→`-` must equal the agent name. If they drift, reuse, teardown and dispatch break at once. |
-| agent-name budget | `ticket-` (7) + separator (1) leaves 24 of the 32-char ceiling; a 20-char slug + 4-digit number lands exactly on 32. That is *why* the slug cap is 20. |
-| `validateProjectSlug` | Dots are branch-legal and agent-name-illegal, so a dotted slug fails only at spawn time, after the worktree exists. Also pins that a leading digit is legal — `10x` is this project's own name. |
-| `claimTicket` | The only lock in the system: a second click loses, a mismatched `from` loses, an unknown id loses instead of throwing, bystanders are untouched, `updated_at` is bumped only on a win. Pinned on the edges the routes actually take — spawn's `todo → in_progress`, cancel's `in_progress → todo`, and the two manual Backlog/To Do moves `/status` makes — plus the rule that a **rollback restores the claim's source**, so a failed spawn lands back in To Do. Also pinned across `in_review`: a settled turn claims `in_progress → in_review`, a **second settle** finds nothing and leaves even `updated_at` alone, and a cancel cannot claim a ticket that has already moved to review — which is why an In Review card renders no Cancel. Runs against a temp DB via `mkdtempSync` and a **dynamic** import, because `db.ts` opens the database at module load and a static import would hoist above the `DB_PATH` assignment. |
-| the transitions table | The state machine is data (`backend/src/transitions.ts`), so the tests are about its refusals: a pure move is allowed, a pair the machine does not have is `illegal_transition`, and a real move asked through `/status` is `transition_has_side_effects` **naming the route that owns it** — the refusal that stops a caller reaching In Progress without a worktree, a branch, a port block or an agent. Also pins that `done` is terminal, that every status appears in the machine, and — as a compile-time assertion rather than a runtime one — that the `Status` union the table restates has not drifted from `types.ts`. |
-| the port pool | A wrong slot hands two live agents the same TCP port, and the symptom is an `EADDRINUSE` inside somebody's worktree rather than an error on the board. Pinned: lowest-free selection, reuse after release, exhaustion at the cap, the block arithmetic including the last slot's upper bound (4199, not 4200), and the cap coming from `MAX_PORT_SLOTS`. The persistence half additionally pins that the UNIQUE index — not the allocator — is what refuses a double assignment, and that the boot reclaim **spares an `in_review` ticket's block** while still freeing one dropped back out of a run. |
-| `subscribe` `onClose` | Node emits `'close'` on a graceful hangup and `'error'` only on ECONNRESET/EPIPE, so a clean Herdr restart fired none of the registered handlers and every ticket status silently stopped updating. Pinned against a **real unix socket** (`net.createServer` in a temp dir): a far-end `end()` fires `onClose` exactly once, a caller-initiated `close()` never fires it — the flag that stops teardown triggering a pointless reopen — and an event still arrives before the close. Same **dynamic** import trick as the CAS tests, because `SOCKET_PATH` is read from the env at module load. |
-| the agent boot's readiness guard | `agent.start` returns before the agent is usable, and Plan once shipped without the poll that covers it — a production 500 with a running but *unnamed* agent in the pane ([spawn](./spawn.md)). Pinned through **both** callers, `startPlanning` in `plan.test.ts` and `spawn` in `spawn.test.ts`, against a fake Herdr on a **real unix socket** whose `agent.start` returns premature, whose `agent.get` answers `agent_not_found` for the first n polls, and which **refuses any `agent.prompt` that arrives before the agent is ready** and counts it. Falsifiable: delete the poll from `agent-boot.ts` and 14 tests redden (verified). Also pins the `agent_pane_busy` retry, the runner's `Diagnostics` counters, and that `agent_name_taken` re-attaches, still waits, and sends **no** prompt. |
-| `pullRequestUpdate` | The webhook's whole decision surface, and pure, so it costs nothing to pin. Derives state from `merged` + `state` rather than `action`, so pinning **closed-but-unmerged → `closed`, not `merged`** is what stops the delete guard later reading a rejected PR as a safe one. Also pins that a missing LOC pair still yields a valid update, and that a non-`pull_request` body yields `null` instead of throwing. |
-| `setPullRequestState` | Matched by `pr_url`, because PR numbers collide across repos. Pins that an unknown URL returns `false` and leaves every row untouched — a webhook for somebody else's repo is normal traffic, not an error. |
-| `killDevServers` | Killing by port alone would shoot a stranger that happens to share the ticket's range, so the containment check — the process's `/proc/<pid>/cwd` must resolve inside this worktree — is the whole safety property. Pinned against **real listeners** in temp dirs: the in-worktree one is killed, the out-of-worktree one is reported in `skipped` and left **alive**. Falsifiable: drop the containment check and the stranger dies. `parseListeners` is pinned separately against captured `ss -lptnH` output, including that a Node listener reports its process name as `MainThread` — so nothing may filter on the name. |
-| the `./env.ts` import position | `env.ts` loads the repo-root `.env` and only works as the **first import in `server.ts`**: `db.ts` reads `STATE_DIR` and `DB_PATH` at module load and opens the database there, so an import moved below it opens `~/.10x/10x.db` with **no error at all**. The failure is silent and there is no linter to catch a human tidying the imports, so `env.test.ts` reads `server.ts` and fails unless that line is the first `import`. Falsifiable: moving it below the `db.ts` import reddens the test (verified). It also pins the bare side-effect form — a named export would have to be *called*, after the imports, which is already too late. |
+**Route tests run the real server as a child process** (`backend/src/test-server.ts`): `server.ts`
+is a script that migrates, listens, starts the poller and installs signal handlers at load, so it
+cannot be imported. GitHub is faked by `github-fetch-shim.ts`, loaded with `node --import`, which
+redirects `https://api.github.com/…` to a local HTTP server queued one response at a time — so
+`github.ts` keeps its hardcoded base and needs no test mode. The child's cloud driver is the fake;
+`FAKE_CLOUD_LOG` is how the test reads what the child "sent" to `claude`, and
+`FAKE_CLOUD_FAIL=start,send` makes those calls throw.
 
-The tests deliberately cover the things that have actually broken — event-name normalisation, the
-idle-or-done readiness predicate, the missing readiness poll on the plan boot, and the CAS — plus
-the naming invariants that guard them. Nothing tests plumbing. See
-[verification](./verification.md) and [gotchas](./gotchas.md).
+**A test that must see "no token" passes `GITHUB_TOKEN: ""`, never omits it** — `env.ts` loads
+the repo-root `.env` into the child, and `loadEnvFile` only skips a variable already present
+(`server-pr-no-token.test.ts` header).
+
+**DB tests use a dynamic import** after setting `DB_PATH` to a temp dir: a static import would
+hoist above the assignment and `db.ts` would read the default path.
+
+| File | Tests | What it pins, and why |
+| --- | --- | --- |
+| `cloud.test.ts` | 26 | `parseSessionUrl` (first match anywhere, both id shapes), `parseSendResult` (only `ok: true` is success), the `cli` driver against a stand-in `claude` script (argv, cwd, stdout/stderr tails on failure), `CLOUD_DRIVER` refusing an unknown value, empty env values meaning unset, and the fake driver's agent playback through a real `Sql` |
+| `cloud-routes.test.ts` | 13 | spawn, plan (including reuse), reject, cancel and delete against a server child with `FAKE_AGENT_MS`; the poller moving `done` to review; the board read carrying nothing of the old local-agent shape; the removed routes answering 404 |
+| `cloud-routes-failure.test.ts` | 4 | the hand-backs: a failed start leaves the ticket in To Do with no session; a failed Reject send restores In Review and the agent's own state |
+| `poller.test.ts` | 3 | ticks never overlap, a failing tick does not stop the loop, `stop()` waits for the tick in flight |
+| `preview.test.ts` | 5 | against a bare-repo upstream and a real listening dev command: the pushed branch is fetched and checked out, the command answers on the ticket's port, DELETE and shutdown leave nothing listening |
+| `prompts.test.ts` | 12 | substitution and both throws, both real prompt files rendering, the opening message's id line, user `{{text}}` not tripping the check, and **every agent UPDATE scoped `WHERE id = ? AND run_token = ?`** |
+| `sql.test.ts` | 14 | one contract against **both** drivers (Turso via `scripts/fake-turso.ts`): batch atomicity, CAS row count, integer round-trip, `RETURNING` |
+| `db.test.ts` | 32 | `claimTicket` — the only lock: a second click loses, a mismatched `from` loses, an unknown id loses instead of throwing, bystanders are untouched — on every edge the routes take; `toStatus`; `setPullRequest` / `setPullRequestState`. **`claimTicketWith`, `settleFinishedAgents` and `toAgentState` have no direct unit test**; they are exercised only through the route suites |
+| `ticket-store.test.ts` | 23 | `setRunFields`, the plan fields `updateTicket` owns, the `IMMUTABLE` list |
+| `transitions.test.ts` | 13 | the table's refusals — `illegal_transition` versus `transition_has_side_effects` naming its owner — that `done` is terminal, and a compile-time assertion that its restated `Status` has not drifted |
+| `ports.test.ts` / `port-slots.test.ts` | 9 / 8 | lowest-free selection, reuse after release, exhaustion at the cap, the last slot's upper bound; that the UNIQUE index — not the allocator — refuses a double assignment; the boot release |
+| `server-pr.test.ts` / `server-pr-no-token.test.ts` | 6 / 1 | Accept marking a draft ready or opening a PR from the branch with no local push, the hand-back on failure; the poller's PR reconcile and its TTL; `missing_github_token` |
+| `archive.test.ts` | 5 | Done-only, the fail-closed PR guard, archived tickets leaving every list read |
+| `github.test.ts` | 38 | PR body, token redaction, webhook narrowing (**closed-but-unmerged → `closed`**, not `merged`), `markPullRequestReady` |
+| `project-routes.test.ts`, `provision.test.ts`, `project-migration.test.ts`, `priority-migration.test.ts` | 18, 14, 5, 1 | the project admission test and immutability, cloning and seeding against real bare repos, and the migrations |
+| `lifecycle.test.ts` | 5 | the slug rule and its derivation ([naming](./naming.md)) |
+| `env.test.ts` | 1 | the `./env.ts` import stays first in `server.ts` — the failure is otherwise silent ([architecture](./architecture.md)) |
+
+*(Test counts are `test(` occurrences per file; the suite total is from a run.)*
 
 ## 3. The e2e suite
 
-`playwright.config.ts` + `e2e/`. **`workers: 1` is correctness, not speed:** the whole suite shares
-one backend, one port and one state dir. `e2e/fixtures.ts` is the contract every spec imports —
-`startBoard` (server on **4310**, avoiding 4010 and the 4100-4199 dev-server pool, readiness polled
-on `GET /projects`), `makeRepo`, `cleanupAll`, `requireHerdr`, plus the spawn helpers below. Every
-spec calls `requireHerdr()`, the agent-free ones included: they need a live Herdr socket even though
-they never start an agent.
+`playwright.config.ts` + `e2e/`. **`workers: 1` is correctness, not speed:** every spec binds one
+TCP port (4310) and one Preview port range. `e2e/fixtures.ts` is the contract every spec imports.
 
-| Spec | Project | Tests | Covers | Real agents |
-| --- | --- | --- | --- | --- |
-| `projects.spec.ts` | fast | 5 | registration, slug / repo / duplicate validation | none |
-| `tickets.spec.ts` | fast | 4 | ticket CRUD and monotonic numbering across a delete | none |
-| `board.spec.ts` | fast | 9 | the four columns and their order, empty In Review and Done, Accept/Reject button presence per column, picking up a ticket via the poll, the static asset route | none |
-| `screenshots.spec.ts` | fast | 1 | upload both sides over HTTP, the sheet rendering real decoded images at their served paths, enlarging one in a nested dialog without closing the sheet, Escape closing only the topmost dialog | none |
-| `spawn.spec.ts` | full | 3 | spawn, **the automatic move to In Review** observed on a real turn, cancel | 3 |
-| `teardown.spec.ts` | full | 2 | ticket delete, worktree-only delete (branch survives) | 2 |
-| `resilience.spec.ts` | full | 4 | backend restart, `finished` and the review column surviving a pane close, compare-and-swap, two concurrent tickets | 5 |
-| `ports.spec.ts` | full | 2 | `.env` written and git-excluded, pool exhaustion → 409, slot reused after cancel | 3 |
-| `accept.spec.ts` | full | 1 | publish the branch as a PR, ticket to Done, agent retired | 1 |
-| `reject.spec.ts` | full | 2 | re-prompt back to In Progress destroying nothing, empty reason → 400 | 2 |
+`startBoard()` spawns `node backend/src/server.ts` from the repo root on a throwaway `STATE_DIR`
+with, explicitly (because `.env` never overrides a variable already set):
 
-**33 tests in all.** The four `fast` specs are **19 of them and run in ~8 s with no agent and no
-model cost, so run them freely** *(verified)*. The other six specs are 14 tests and **16 real agent
-spawns**, so `pnpm e2e:full` costs real model turns and is not a routine check. The automatic
-In Review transition is asserted inside the existing completion test rather than in a new one,
-precisely so covering it cost **zero extra spawns**.
+| Variable | Value | Why |
+| --- | --- | --- |
+| `CLOUD_DRIVER` | `fake` | no real `claude`, no spend |
+| `FAKE_AGENT_MS` | `600` | the fake writes `working` at 0.6 s and `done` at 1.2 s |
+| `AGENT_POLL_MS` | `200` | the move to review lands quickly |
+| `TURSO_DATABASE_URL` | `""` | the local SQLite file in the temp dir, never the real store |
+| `GITHUB_TOKEN` | `""` | never the real GitHub |
+| `PORT_BLOCK_BASE` | `4700` | Previews stay clear of a real board's 4100 pool |
 
-*(Test counts verified with `playwright test --list`. The 13 spawns in the first four full specs
-were measured; the 3 added by `accept`/`reject` are counted from their `spawnTicket` calls, not
-yet observed on a run.)*
+Other helpers: `restartBoard` (a second server on the **same** state dir — what a restart is),
+`makeRepo` (a local clone on `dev` with a bare `origin`), `pushAgentBranch` (what a cloud agent
+does before `done`), `createProject` (**seeded straight into SQLite**, already `ready`, because
+`POST /projects` would clone from GitHub; that route is covered by `project-routes.test.ts`),
+`spawnTicket`, `waitForTicket` (polls the API, never sleeps), `storedTicket` (reads the row
+without trusting the API), and `cleanupAll`.
 
-**`board.spec.ts` cannot currently pass — this is pre-existing, not a regression.** Five of its
-nine tests fail against the live `todo`/`Start` split and the five-column board (verified: same
-five failures before and after `screenshots.spec.ts` was added, by running the suite against a
-`git stash` of the base branch). `docs/wiring-checklist.md` tracks the rewrite; nothing here
-depends on it passing.
+| Spec | Tests | Covers |
+| --- | --- | --- |
+| `projects.spec.ts` | 5 | registration from a remote alone, slug / repo / duplicate validation |
+| `tickets.spec.ts` | 4 | ticket CRUD and monotonic numbering across a delete |
+| `board.spec.ts` | 10 | the five columns and their order, per-column buttons, picking up a ticket via the poll, the static asset route and SPA fallback |
+| `spawn.spec.ts` | 3 | Start opens a session, the fake agent's `done` moves the card to In Review, a second Start is refused, cancel clears the session |
+| `reject.spec.ts` | 2 | Reject sends the reason into the same session and the ticket comes back to review; empty reason → 400 |
+| `preview.spec.ts` | 1 | Preview runs the agent's pushed branch locally, and stopping it frees the port |
 
-`accept.spec.ts` **skips itself without `GITHUB_TOKEN`**, because it pushes to `asaadx/10x-test`
-and opens a real PR, then closes it in a failure-proof `finally`.
+**25 tests** *(counted from `test(` calls; not run in this session — the container has no
+Playwright browser)*. `pnpm e2e` builds the frontend first, binds **4310**, and is otherwise free
+to run.
 
-**A completion spec's teardown must be `DELETE /tickets/:id`, not `/cancel`.** Cancel claims
-`in_progress → todo`, and any test that waits for a turn to finish has a ticket that already
-moved itself to In Review, where cancel answers 409 — which would leave a real agent running.
-
-**A spawn spec runs a real OMP agent, so teardown is the load-bearing part.** Every spawn is
-registered with `cleanupAll` *before* its request goes out, each test tears its own spawn down at
-the end, and `cleanupAll` falls back to `worktree.open`+`worktree.remove` straight at Herdr when
-the backend is gone. Per-test budgets are set with `test.setTimeout`: **120 s** spawn-only,
-**180 s** spawn-plus-completion, **240 s** for the two serial spawns in `ports.spec.ts`; the
-config's 30 s default stays for the non-spawn specs. Measured: spawn returns in **3.5–3.9 s** and
-the probe turn finishes **7–12 s** after that, against the 600 s `globalTimeout`.
-
-Three things the suite reads outside the HTTP API, each for a reason:
-
-- **`storedTicket`** opens the SQLite file, because `board()` derives `branch` and `agentName` when
-  the columns are null — so the API reports them either way and cannot show teardown clearing them.
-- **`liveAgentNames` / `liveWorktreeBranches`** ask Herdr directly, so "no agent, no worktree" is
-  asserted against the source of truth rather than against our own join.
-- **`restartBoard`** starts a second backend on the *same* state dir. `startBoard` would hand out a
-  fresh empty database and prove nothing about a restart.
-
-`cleanupAll` also closes each throwaway repo's implicit Herdr **source workspace** and `rmdir`s
-`~/.herdr/worktrees/<repo>/`: both outlive the last ticket worktree, and each e2e run would
-otherwise leave one of each behind ([reconciliation](./reconciliation.md)).
-
-**Repos are created on `dev`, and specs pass `baseBranch: "dev"` explicitly.** `baseBranch` defaults
-to `main` and is only handed to git at `worktree.create` time, so registering a project whose base
-branch does not exist succeeds and fails at spawn instead. *(Verified.)*
-
-**Herdr absent is survivable for reads and fatal for teardown.** *(Verified with
-`HERDR_SOCKET_PATH` pointed at a nonexistent socket.)* The server boots, `GET /projects` and
-`GET /tickets` both answer 200, and boot reconciliation only warns — every Herdr read is wrapped
-and degrades. But `teardown` rethrows any `worktree.open` failure that is not `worktree_not_found`,
-so `DELETE /tickets/:id` answers **500 `socket_error`**. That is why `requireHerdr` exists: without
-the preflight the failure reads as a mystery, not as a missing dependency.
-
-**What a UI spec may assert** — accessible semantics only, and the one spec that has not been
-migrated to them yet — is part of the frontend's contract, in [frontend](./frontend.md).
+**What a UI spec may assert** — accessible semantics only — is part of the frontend's contract, in
+[frontend](./frontend.md).
