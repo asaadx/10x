@@ -92,6 +92,7 @@ describe("cli driver", () => {
       "  start-ok) echo 'Launching…'; echo 'https://claude.ai/code/session_abc123' ;;",
       "  start-nourl) echo 'something went sideways' ;;",
       "  start-crash) echo 'partial out'; echo 'boom: not logged in' >&2; exit 3 ;;",
+      "  start-url-then-fail) echo 'https://claude.ai/code/session_late9'; exit 1 ;;",
       "  send-ok) echo '{\"ok\":true,\"session_id\":\"session_abc123\"}' ;;",
       "  send-refused) echo '{\"ok\":false,\"error\":\"no such session\"}' ;;",
       "esac",
@@ -108,6 +109,12 @@ describe("cli driver", () => {
     assert.deepEqual(got, { sessionId: "session_abc123", sessionUrl: "https://claude.ai/code/session_abc123" });
     // The multi-line message arrives as ONE argv entry; printf splits it on the newline here.
     assert.deepEqual(argv(), [dir, "--cloud", "do it", "please", "--ref", "dev"]);
+  });
+
+  test("a URL printed before the CLI fails is still the session (not orphaned)", async () => {
+    process.env.MODE = "start-url-then-fail";
+    const got = await driver.startSession({ cwd: dir, baseBranch: "main", message: "m", title: "t" });
+    assert.equal(got.sessionId, "session_late9");
   });
 
   test("no URL in stdout is an error that quotes stdout", async () => {

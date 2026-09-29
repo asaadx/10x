@@ -117,6 +117,8 @@ lifecycle without spending anything.
 - The board cannot read a session's real status — it trusts what the agent writes. A session that
   crashes without writing `failed` stays *working*; open it via **Steer**.
 - Cancel sends a "stop" message; archiving the session is manual in claude.ai.
+- If the board process crashes (not a normal Ctrl-C), a running Preview dev server keeps its
+  port; the next Preview on that port fails until you kill it (`lsof -i :4100-4199`).
 - Agents hold a DB token that can write any ticket (convention says "only your own row"). Each
   session's writes are scoped by a per-session `run_token`, which stops a *stale* session (one you
   cancelled, or a planner left open) from moving the current run — it is not a security boundary.

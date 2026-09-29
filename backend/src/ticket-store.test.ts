@@ -109,16 +109,18 @@ describe("plan column decoding", () => {
     });
   });
 
-  test("a corrupt checklist column throws naming the column, never decodes to empty", async () => {
+  // Cloud agents write these columns over Turso (prompts/*.md), so one malformed write must not
+  // throw every board read: the unusable part decodes as empty rather than failing loudly.
+  test("a corrupt checklist column decodes to empty instead of throwing the board read", async () => {
     await seed("t-decode-corrupt", 0, 0);
     await db.execute("UPDATE tickets SET task_breakdown = ? WHERE id = ?", ["[{not json", "t-decode-corrupt"]);
-    await assert.rejects(async () => await getTicket("t-decode-corrupt"), /tickets\.task_breakdown/);
+    assert.deepEqual((await getTicket("t-decode-corrupt"))?.taskBreakdown, []);
   });
 
-  test("a checklist column holding valid JSON that is not an array also throws by name", async () => {
+  test("a checklist column holding valid JSON that is not an array also decodes to empty", async () => {
     await seed("t-decode-object", 0, 0);
     await db.execute("UPDATE tickets SET acceptance_criteria = ? WHERE id = ?", ['{"text":"one","done":false}', "t-decode-object"]);
-    await assert.rejects(async () => await getTicket("t-decode-object"), /tickets\.acceptance_criteria/);
+    assert.deepEqual((await getTicket("t-decode-object"))?.acceptanceCriteria, []);
   });
 });
 

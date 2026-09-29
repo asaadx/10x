@@ -409,6 +409,9 @@ export const toStatus = (raw: string): Status =>
  * not heard about this PR" is a real and common state — most tickets never reach `done`,
  * let alone get their PR merged, so null must not read as any specific state.
  */
+export const toPullRequestNumber = (raw: unknown): number | null =>
+  typeof raw === "number" && Number.isSafeInteger(raw) && raw > 0 ? raw : null;
+
 export const toPullRequestState = (raw: string | null): PullRequestState | null =>
   raw === "open" || raw === "merged" || raw === "closed" ? raw : null;
 
@@ -440,18 +443,18 @@ export const toTicket = (r: TicketRow): Ticket => ({
   branch: r.branch,
   agentName: r.agent_name,
   sessionDir: r.session_dir,
-  prNumber: r.pr_number,
+  // The agent writes this column over Turso as text ("42"), and SQLite's INTEGER affinity turns
+  // a clean number back into one — but anything else ("", "null", "#42", a path) stays text and
+  // would reach GitHub URLs and the delete guard. Only a positive integer counts as a PR.
+  prNumber: toPullRequestNumber(r.pr_number),
   prUrl: r.pr_url,
   prState: toPullRequestState(r.pr_state),
   prAdditions: r.pr_additions,
   prDeletions: r.pr_deletions,
-  // A cast, not a check, for the same reason `jsonList` in ticket-store.ts does not validate
-  // the items it parses: only this API writes the column, and `updateTicket` tests every
-  // incoming value against `PLAYBOOKS` before it goes in, so what comes back out is what we
-  // put there. Unlike `toStatus`, which must decode a value older rows could disagree
-  // about, there is nothing here to decide. This is the seam to tighten if anything other
-  // than this API ever gains write access to `tickets.playbook`.
-  playbook: r.playbook as Playbook,
+  // A check, not a cast, since cloud agents gained write access to `tickets.playbook` over
+  // Turso (prompts/*.md): the API validates against PLAYBOOKS, an agent only promises to, and
+  // an unknown value would break the card's picker. It falls back to the column default.
+  playbook: (PLAYBOOKS as readonly string[]).includes(r.playbook) ? (r.playbook as Playbook) : "Fullstack",
   // Same cast, same reasoning: only this API writes `tickets.priority`, and `updateTicket`
   // tests every incoming value against `PRIORITIES` before it goes in.
   priority: r.priority as Priority,

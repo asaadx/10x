@@ -65,6 +65,10 @@ Rules for the database:
 
 1. **First action, before reading any code:** `tenx_state working`.
 2. Create and work on the branch `{{branch}}`, cut from `{{baseBranch}}`. Do all work there.
+   If `{{branch}}` already exists on `origin` (an earlier, cancelled attempt at this ticket),
+   use `{{branch}}-2` (or `-3`, …, the first that is free) instead of overwriting it. If this
+   environment only lets you push a branch name of its own choosing, use that. Whatever you
+   end up on is **your branch** below — always the value of `git branch --show-current`.
    Never push to `{{baseBranch}}` or to any other ticket's branch, and never merge anything.
 3. If the ticket changes anything a person would look at, capture the **before** screenshot now,
    before your first edit (see "Screenshots" below). This moment does not come back.
@@ -74,24 +78,34 @@ Rules for the database:
    and get them green. A change that does not build or that reddens the suite is not finished.
    Never run anything that spawns further agents or costs money, however thorough it would be;
    say you skipped it and why.
-6. Commit everything and push `{{branch}}` to `origin`. Work that is not pushed does not exist
+6. Commit everything and push your branch to `origin`. Work that is not pushed does not exist
    as far as the board and the reviewer are concerned.
 7. Open a **draft** pull request against `{{baseBranch}}` — or, if one already exists for
-   `{{branch}}`, reuse it:
+   your branch, reuse it:
 
    ```bash
-   gh pr create --draft --base {{baseBranch}} --head {{branch}} --title "<title>" --body "<summary>"
-   gh pr view {{branch}} --json number,url
+   BRANCH="$(git branch --show-current)"
+   gh pr create --draft --base {{baseBranch}} --head "$BRANCH" --title "<title>" --body "<summary>"
+   PR_NUMBER="$(gh pr view "$BRANCH" --json number --jq .number)"
+   PR_URL="$(gh pr view "$BRANCH" --json url --jq .url)"
    ```
 
    A human marks it ready for review from the board. Never mark it ready yourself.
 8. If the UI changed, capture the **after** screenshot and post both on the PR (below).
-9. Record the result:
+9. Record the result — the branch you actually pushed and, only if step 7 really produced a
+   PR, its number (digits only) and URL:
 
    ```bash
    tenx_sql "UPDATE tickets SET branch = ?, pr_number = ?, pr_url = ?, agent_note = ?, agent_updated_at = ? WHERE id = ? AND run_token = ?" \
-     {{branch}} "<pr number>" "<pr url>" "<one paragraph: what changed, what you assumed, what you skipped>" \
+     "$BRANCH" "$PR_NUMBER" "$PR_URL" "<one paragraph: what changed, what you assumed, what you skipped>" \
      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" {{ticketId}} {{runToken}}
+   ```
+
+   If there is no PR (gh failed and you could not fix it), leave `pr_number` and `pr_url` out:
+
+   ```bash
+   tenx_sql "UPDATE tickets SET branch = ?, agent_note = ?, agent_updated_at = ? WHERE id = ? AND run_token = ?" \
+     "$BRANCH" "<note — say why there is no PR>" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" {{ticketId}} {{runToken}}
    ```
 
 10. **Very last action:** `tenx_state done`. Nothing after it — the board moves the ticket to

@@ -326,3 +326,28 @@ describe("setPullRequestState", () => {
     assert.equal(await readString("t-pr-other", "updated_at"), before);
   });
 });
+
+describe("agent-written columns decode defensively", () => {
+  // Cloud agents write these over Turso as text (prompts/*.md). A malformed write must not throw
+  // the whole board read, and must not reach GitHub as a PR number.
+  test("junk pr_number, checklists and playbook read as safe values", async () => {
+    const { getTicket } = await import("./ticket-store.ts");
+    await seed("proj-junk", "in_review");
+    await db.execute(
+      "UPDATE tickets SET pr_number = ?, task_breakdown = ?, acceptance_criteria = ?, playbook = ? WHERE id = ?",
+      ["1/../../o/r/pulls/5", "{not json", '[{"text":"keep","done":true},{"nope":1},"x"]', "Wizardry", "proj-junk"],
+    );
+    const t = await getTicket("proj-junk");
+    assert.equal(t?.prNumber, null);
+    assert.deepEqual(t?.taskBreakdown, []);
+    assert.deepEqual(t?.acceptanceCriteria, [{ text: "keep", done: true }]);
+    assert.equal(t?.playbook, "Fullstack");
+  });
+
+  test("a clean numeric pr_number written as text round-trips as a number", async () => {
+    const { getTicket } = await import("./ticket-store.ts");
+    await seed("proj-clean", "in_review");
+    await db.execute("UPDATE tickets SET pr_number = ? WHERE id = ?", ["42", "proj-clean"]);
+    assert.equal((await getTicket("proj-clean"))?.prNumber, 42);
+  });
+});

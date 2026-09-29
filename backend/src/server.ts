@@ -753,6 +753,12 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       ...CLEARED_SESSION,
       run_token: runToken,
       session_kind: "impl",
+      // A PR state left by a cancelled run would be trusted as-is (a terminal state is never
+      // re-read), so a fresh run starts from "unknown" and the poller re-reads whatever PR
+      // the row ends up naming.
+      pr_state: null,
+      pr_additions: null,
+      pr_deletions: null,
       agent_state: "starting",
       finished: 0,
       died: 0,
@@ -776,7 +782,9 @@ async function handle(method: string, path: string, body: unknown): Promise<Repl
       // Hand the claim back and leave no half-started session on the row. If the CLI started a
       // session and then failed to report it, that session is invisible to us — the error
       // carries the CLI's own output so the human can find it in claude.ai.
-      await claimTicketWith(id, "in_progress", "todo", { ...CLEARED_SESSION, started_at: null });
+      if (!(await claimTicketWith(id, "in_progress", "todo", { ...CLEARED_SESSION, started_at: null }))) {
+        console.warn(`[${id}] session start failed and the claim could not be handed back (ticket moved on)`);
+      }
       return json({ error: "session_start_failed", message: err instanceof Error ? err.message : String(err) }, 502);
     } finally {
       inFlight.delete(id);

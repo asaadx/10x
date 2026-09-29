@@ -126,6 +126,12 @@ export function cliDriver(bin = process.env.CLAUDE_BIN || "claude"): CloudDriver
       try {
         ({ stdout, stderr } = await run(bin, ["--cloud", message, "--ref", baseBranch], { ...opts, cwd }));
       } catch (err) {
+        // The session may well be live even though the CLI then timed out or exited non-zero:
+        // if it already printed the URL, that is the session — dropping it would orphan a
+        // running agent while the board handed the ticket back to To Do.
+        const printed = (err as ExecError | undefined)?.stdout;
+        const salvaged = typeof printed === "string" ? parseSessionUrl(printed) : null;
+        if (salvaged) return salvaged;
         throw cliError("claude --cloud failed", err);
       }
       const session = parseSessionUrl(stdout);

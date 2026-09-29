@@ -92,6 +92,14 @@ const int = (row: Row, column: string): number => {
   return bad(column, v);
 };
 
+/** Like `intOrNull`, for a column an agent writes: an unusable value reads as null, not a throw. */
+const agentInt = (row: Row, column: string): number | null => {
+  const v = row[column];
+  if (typeof v === "number") return v;
+  if (typeof v === "bigint") return Number(v);
+  return null;
+};
+
 const intOrNull = (row: Row, column: string): number | null => {
   const v = row[column];
   if (v === null || v === undefined) return null;
@@ -117,6 +125,28 @@ const intOrNull = (row: Row, column: string): number | null => {
  * `updateTicket` narrows every element on the way in, so what comes back out is whatever we
  * put in. This is the seam to tighten if anything else ever gains write access.
  */
+/**
+ * A checklist column an agent may have written over Turso. Malformed JSON, a non-array or items
+ * of the wrong shape must not throw the whole board read (one bad write would take every card
+ * down), so the unusable parts are dropped instead of reported.
+ */
+const agentChecklist = (row: Row, column: string): ChecklistItem[] => {
+  const v = row[column];
+  if (typeof v !== "string") return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(v);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.flatMap((item: unknown) => {
+    if (typeof item !== "object" || item === null) return [];
+    const { text: t, done } = item as { text?: unknown; done?: unknown };
+    return typeof t === "string" ? [{ text: t, done: done === true }] : [];
+  });
+};
+
 const jsonList = <T>(row: Row, column: string): T[] => {
   const v = row[column];
   if (v === null || v === undefined) return [];
@@ -144,7 +174,9 @@ const decode = (row: Row): Ticket =>
     branch: maybeText(row, "branch"),
     agent_name: maybeText(row, "agent_name"),
     session_dir: maybeText(row, "session_dir"),
-    pr_number: intOrNull(row, "pr_number"),
+    // Agent-written (over Turso, as text): a malformed value must not throw the whole board
+    // read, so anything that is not an integer decodes as "no PR" (db.ts toPullRequestNumber).
+    pr_number: agentInt(row, "pr_number"),
     pr_url: maybeText(row, "pr_url"),
     pr_state: maybeText(row, "pr_state"),
     pr_additions: intOrNull(row, "pr_additions"),
@@ -154,8 +186,8 @@ const decode = (row: Row): Ticket =>
     // `toTicket` casts it to `Playbook`; why that is a cast and not a check is noted there.
     playbook: text(row, "playbook"),
     priority: text(row, "priority"),
-    task_breakdown: jsonList<ChecklistItem>(row, "task_breakdown"),
-    acceptance_criteria: jsonList<ChecklistItem>(row, "acceptance_criteria"),
+    task_breakdown: agentChecklist(row, "task_breakdown"),
+    acceptance_criteria: agentChecklist(row, "acceptance_criteria"),
     attachments: jsonList<Attachment>(row, "attachments"),
     screenshot_before: maybeText(row, "screenshot_before"),
     screenshot_after: maybeText(row, "screenshot_after"),
