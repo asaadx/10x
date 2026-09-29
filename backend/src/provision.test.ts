@@ -28,10 +28,10 @@ process.env.GIT_CONFIG_VALUE_0 = "trunk";
 // module load, so the assignments above must already have happened. Same reason db.test.ts
 // imports dynamically: a static import hoists above them.
 const { projectRepoPath, provisionProject, remoteHasCommits } = await import("./provision.ts");
-const { db } = await import("./db.ts");
+const { db, initDb } = await import("./db.ts");
+await initDb();
 
-after(() => {
-  db.close();
+after(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -90,6 +90,7 @@ const projectOn = (id: string, remote: { owner: string; repo: string }): Project
   ownsClone: true,
   provisionState: "pending",
   provisionError: "",
+  devCommand: "",
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
 });
@@ -110,7 +111,7 @@ function preClone(id: string, remote: { owner: string; repo: string }): string {
   return dest;
 }
 
-test("projectRepoPath puts a project directly under PROJECTS_ROOT", () => {
+test("projectRepoPath puts a project directly under PROJECTS_ROOT", async () => {
   assert.equal(projectRepoPath("hearth-home"), join(dir, "repos", "hearth-home"));
 });
 

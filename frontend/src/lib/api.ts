@@ -1,11 +1,10 @@
 import { ALL_PROJECTS } from "@/lib/board.ts";
 import { MOCK_PROJECTS, MOCK_TICKETS } from "@/mock.ts";
-import type { BoardResponse, Playbook, Priority, Project, Status, Ticket } from "@/types.ts";
+import type { BoardResponse, Playbook, Priority, Preview, Project, Status, Ticket } from "@/types.ts";
 
 /**
  * The board's whole HTTP seam: the two GETs it renders from, and the writes behind every
- * button that has one. Reject is still unwired, deliberately, so a bug there is a missing
- * function rather than a half-working button.
+ * button that has one. A button with no function here is unwired, never half-working.
  *
  * Paths are relative on purpose. `vite.config.ts` proxies `/tickets` and `/projects` to the
  * backend in dev, and in production the backend serves the built bundle itself, so the board
@@ -14,7 +13,7 @@ import type { BoardResponse, Playbook, Priority, Project, Status, Ticket } from 
 
 /**
  * Real data is the default, and only the exact string "true" turns fixtures on — matching the
- * `VITE_DIAGNOSTICS` precedent. Deliberate: an unset or misspelled variable in a production
+ * convention for every `VITE_` flag. Deliberate: an unset or misspelled variable in a production
  * build must serve the real board rather than silently serving `mock.ts`, because fixtures that
  * look plausible are far harder to notice than a board that fails loudly.
  */
@@ -130,8 +129,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
  * guarantee the shared type is for.
  *
  * Only fields the type declares NON-nullable are touched. `prState`, `prUrl`, `prNumber`,
- * `prAdditions`, `prDeletions`, `agentStatus`, `worktreePath`, `paneId`, `workspaceId`,
- * `startedAt` and both sides of `screenshots` are nullable in `backend/src/types.ts` and are
+ * `prAdditions`, `prDeletions`, `sessionUrl`, `agentState`, `agentNote`, `preview` and
+ * `startedAt` are nullable in `backend/src/types.ts` and are
  * passed through exactly as they arrive: defaulting a real null would invent data the backend
  * never sent, which is a worse failure than the crash this prevents.
  */
@@ -161,6 +160,9 @@ function normalizeTicket(ticket: WireTicket): Ticket {
     taskBreakdown: ticket.taskBreakdown ?? [],
     acceptanceCriteria: ticket.acceptanceCriteria ?? [],
     attachments: ticket.attachments ?? [],
+    // Nullable, so this invents nothing: a backend from before Preview omits the key, and
+    // `undefined` would slip past every `=== null` check a component makes.
+    preview: ticket.preview ?? null,
   };
 }
 
@@ -178,16 +180,11 @@ export async function getBoard(projectId: string): Promise<BoardResponse> {
   if (typeof body !== "object" || body === null) {
     throw requestFailed("GET", path, "malformed board: body is not an object");
   }
-  const { tickets, unowned } = body as { tickets?: unknown; unowned?: unknown };
+  const { tickets } = body as { tickets?: unknown };
   if (!Array.isArray(tickets)) {
     throw requestFailed("GET", path, "malformed board: `tickets` is not an array");
   }
-  return {
-    tickets: (tickets as WireTicket[]).map(normalizeTicket),
-    // `unowned` is the reconciler's output and a build that predates it omits the key
-    // entirely; the empty list is what "no orphaned worktrees" already means.
-    unowned: Array.isArray(unowned) ? unowned : [],
-  };
+  return { tickets: (tickets as WireTicket[]).map(normalizeTicket) };
 }
 
 export function getProjects(): Promise<Project[]> {
@@ -213,7 +210,7 @@ export function createTicket(input: {
 /**
  * The two pure moves, `backlog -> todo` and `todo -> backlog`, and nothing else: the table in
  * `backend/src/transitions.ts` answers 409 `transition_has_side_effects` for a move that owns
- * a worktree, an agent or a pull request, naming the route that does own it.
+ * a session or a pull request, naming the route that does own it.
  *
  * The route answers the moved ticket, and it is dropped: the board re-reads, and rendering a
  * single ticket from a write's response is how a card starts disagreeing with its column.
@@ -223,31 +220,31 @@ export async function moveTicket(id: string, to: Status): Promise<void> {
 }
 
 /**
- * Starts the planning agent: a workspace, a pane and an agent, created before the call
- * returns, which is why the button that calls this has to show it is working.
+ * Starts the planning agent as a Claude Code cloud session, started before the call returns,
+ * which is why the button that calls this has to show it is working.
  *
- * The ticket is NOT modified — Plan never changes status, and the planner writes its task
- * breakdown and acceptance criteria back by PATCHing the ticket itself. So there is nothing in
- * the response to render, and the poll is what surfaces the new agent.
+ * Plan never changes status. The board records the session link and `agentState = starting`;
+ * the planner writes the checklists back into the shared database itself. So there is nothing
+ * in the response to render, and the poll is what surfaces the session.
  */
 export async function startPlanning(id: string): Promise<void> {
   await request<unknown>("POST", `/tickets/${encodeURIComponent(id)}/plan`);
 }
 
 /**
- * Starts the implementation agent: `todo -> in_progress`, and the worktree, branch, port block
- * and agent are all created before the call answers. Two failures are its own and both must
- * reach the card — `409 not_in_todo` when the ticket moved underneath the click, and
- * `409 port_pool_exhausted` when every slot in the pool is held — because the server hands the
- * claim back to `todo` in both cases, so the only trace left is the message.
+ * Starts the implementation agent: `todo -> in_progress`, with a Claude Code cloud session
+ * started before the call answers. A refusal (`409 not_in_todo` when the ticket moved
+ * underneath the click) or a failed session start hands the claim back to `todo`, so the only
+ * trace left is the message on the card.
  */
 export async function spawnAgent(id: string): Promise<void> {
   await request<unknown>("POST", `/tickets/${encodeURIComponent(id)}/spawn`);
 }
 
 /**
- * Accepts the work: `in_review -> done`, pushing the branch and opening the pull request before
- * it answers. The push or the PR call failing rolls the claim back to `in_review`, so the
+ * Accepts the work: `in_review -> done`, marking the agent's draft pull request ready for review
+ * (or opening one from its branch) before it answers. The GitHub call failing rolls the claim
+ * back to `in_review`, so the
  * refresh that follows a success is exactly what must NOT happen on failure — the card would
  * otherwise read as accepted with no pull request behind it.
  */
@@ -256,34 +253,38 @@ export async function acceptTicket(id: string): Promise<void> {
 }
 
 /**
- * Discards the attempt: stops the agent and closes its pane, force-removes the worktree,
- * deletes the branch and the transcript, and returns the ticket to `todo`. Everything the
- * agent did is thrown away and this cannot be undone — see the confirm dialog this backs.
+ * Abandons the attempt: tells the session to stop (best effort), clears the session fields and
+ * returns the ticket to `todo`. The session itself stays on claude.ai — there is no CLI to
+ * archive one — and whatever the agent already pushed stays on GitHub.
  */
 export async function cancelTicket(id: string): Promise<void> {
   await request<unknown>("POST", `/tickets/${encodeURIComponent(id)}/cancel`);
 }
 
 /**
- * Stops the running agent and closes its pane, force-removes the worktree directory and
- * deletes the transcript. The branch and its commits are kept.
+ * Checks the ticket's pushed branch out locally (a detached worktree under the backend's state
+ * dir), reserves a port block, and — only when the project has a `devCommand` — starts it with
+ * `PORT` set. Answers the `Preview`; the board poll carries the same object on `ticket.preview`,
+ * which is what the card renders from, so the response is only used to fail loudly.
  */
-export async function deleteWorktree(id: string): Promise<void> {
-  await request<unknown>("DELETE", `/tickets/${encodeURIComponent(id)}/worktree`);
+export function startPreview(id: string): Promise<Preview> {
+  return request<Preview>("POST", `/tickets/${encodeURIComponent(id)}/preview`);
+}
+
+/** Kills the dev command's process group, removes the preview checkout and frees the port block. */
+export async function stopPreview(id: string): Promise<void> {
+  await request<unknown>("DELETE", `/tickets/${encodeURIComponent(id)}/preview`);
 }
 
 /**
- * Stops the agent, removes the worktree, and deletes the branch and the transcript. The
- * server refuses to delete a ticket whose pull request is still open.
+ * Removes the ticket. The server refuses to delete a ticket whose pull request is still open.
  */
 export async function deleteTicket(id: string): Promise<void> {
   await request<unknown>("DELETE", `/tickets/${encodeURIComponent(id)}`);
 }
 
 /**
- * Hides the ticket from the board for good, after stopping the agent, force-removing the
- * worktree, deleting the branch and the transcript — the same teardown depth as Cancel.
- * There is no un-archive.
+ * Hides the ticket from the board for good. There is no un-archive.
  */
 export async function archiveTicket(id: string): Promise<void> {
   await request<unknown>("POST", `/tickets/${encodeURIComponent(id)}/archive`);
@@ -308,8 +309,8 @@ export async function updateTicket(
 }
 
 /**
- * Sends the reason back to the still-live agent and returns the ticket to In Progress.
- * Nothing is deleted — the worktree, branch and agent all survive, exactly as they were.
+ * Sends the reason to the agent's cloud session and returns the ticket to In Progress. The
+ * agent keeps its full context and pushes to the same pull request.
  */
 export async function rejectTicket(id: string, reason: string): Promise<void> {
   await request<unknown>("POST", `/tickets/${encodeURIComponent(id)}/reject`, { reason });
@@ -353,11 +354,16 @@ export type CreateProjectInput = {
   seedInitialCommit?: boolean;
 };
 
-/** The three fields that stay editable. The slug and the repo are frozen at creation. */
+/**
+ * The fields that stay editable. The slug and the repo are frozen at creation. `devCommand` is
+ * patch-only: `POST /projects` does not accept it, so the dialog PATCHes it after a create.
+ */
 export type UpdateProjectInput = {
   name?: string;
   description?: string;
   baseBranch?: string;
+  /** What Preview runs in a ticket's checkout with `PORT` set; `""` starts nothing. */
+  devCommand?: string;
 };
 
 /** One of the still-open pull requests `409 pr_open` refuses a project delete with. */
@@ -569,6 +575,7 @@ async function mockCreateProject(input: CreateProjectInput): Promise<Project> {
     ownsClone: true,
     provisionState: "pending",
     provisionError: "",
+    devCommand: "",
     createdAt: now,
     updatedAt: now,
   };

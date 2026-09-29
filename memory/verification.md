@@ -2,118 +2,77 @@
 
 **Node:** verification · Parent: [INDEX.md](./INDEX.md)
 
-## Reproducing the validation
+How to reproduce the claims in [cloud](./cloud.md) from scratch, cheapest first. Only step 4
+spends anything.
 
-Probe commands, in order. Run from a scratch git repo with at least one commit.
+## 1. The whole loop, offline — the fake driver
 
 ```bash
-# 0. preconditions
-herdr status                  # server running; the socket also works OUTSIDE a pane (see 3)
-
-# 1. create worktree + branch + workspace + tab + pane
-herdr worktree create --cwd "$REPO" --branch tkt/probe-1 --base main \
-  --label tkt-probe-1 --no-focus
-# read workspace_id, root_pane.pane_id, worktree.path from the response
-
-# 2. start the agent (system prompt file lives OUTSIDE the worktree)
-herdr agent start tkt-probe-1 --kind omp --pane <pane_id> --timeout 90000 \
-  -- --append-system-prompt /abs/path/system-prompt.md --auto-approve
-
-# 3. send the ticket
-herdr agent prompt tkt-probe-1 'TICKET ...' --wait --timeout 300000
-
-# 4. verify real work landed on the branch, and main is untouched
-git -C <worktree.path> log --oneline -3
-git -C "$REPO" log --oneline -1
-
-# 5. teardown, then confirm zero residue (see teardown.md)
-herdr worktree remove --workspace <workspace_id>            # add --force if dirty
+CLOUD_DRIVER=fake FAKE_AGENT_MS=3000 AGENT_POLL_MS=1000 \
+  STATE_DIR=$(mktemp -d) TURSO_DATABASE_URL= GITHUB_TOKEN= \
+  pnpm start
 ```
 
-Event stream probe — the app's completion trigger, in 12 lines of Python:
+A throwaway `STATE_DIR` and empty `TURSO_DATABASE_URL`/`GITHUB_TOKEN` keep it off the real store
+and the real GitHub (`.env` never overrides a variable already set, so an explicit empty value
+wins). Add a project, create a ticket, promote it, Start: the card shows *starting*, then
+*working* at 3 s, then moves to In Review at 6 s plus one poll, with `branch = claude/10x-<id>`.
+Reject sends it back and the fake replays the turn. This is what `e2e/fixtures.ts` does for every
+spec ([testing](./testing.md)). Adding a project over HTTP needs `GITHUB_TOKEN` (the lookup and
+the clone both call GitHub), so with the token blanked you seed a `ready` `projects` row pointing
+at a local clone directly, as `e2e/fixtures.ts` `createProject` does — or leave the token set and
+accept that one network call.
 
-```python
-import socket, json
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect('/home/<user>/.config/herdr/herdr.sock')
-s.sendall(json.dumps({"id": "sub", "method": "events.subscribe", "params": {
-    "subscriptions": [{"type": "pane.agent_status_changed", "pane_id": "<pane_id>"}]
-}}).encode() + b"\n")
-for line in s.makefile('r'):        # first line is the ack, rest are events
-    print(line.strip())
+## 2. The Turso driver, offline — `scripts/fake-turso.ts`
+
+```bash
+node scripts/fake-turso.ts --port 8080 --db /tmp/tenx.db &
+TURSO_DATABASE_URL=http://127.0.0.1:8080 CLOUD_DRIVER=fake FAKE_AGENT_MS=3000 pnpm start
 ```
 
-Expected output:
+The board now speaks Hrana-over-HTTP for every query, exactly as against Turso. `sql.test.ts`
+runs the same contract against both drivers this way.
 
-```
-{"id":"sub","result":{"type":"subscription_started"}}
-{"data":{"agent":"omp","agent_status":"working","pane_id":"w15:p1","workspace_id":"w15"},"event":"pane.agent_status_changed"}
-{"data":{"agent":"omp","agent_status":"done","pane_id":"w15:p1","workspace_id":"w15"},"event":"pane.agent_status_changed"}
-```
+## 3. Writing a row the way an agent does
 
----
+With either store reachable over HTTP (fake-turso above, or real Turso), paste the `tenx_sql`
+helper from `prompts/implementation.md` into a shell and play the agent by hand:
 
-## Probing `state_change_seq`
-
-The claims in [agent-status](./agent-status.md) about `state_change_seq` and `revision` come from
-two throwaway probes built on `e2e/fixtures.ts`, so teardown is the same path the suite uses.
-**Never point a probe at this repo** — `makeRepo()` is the only acceptable target.
-
-Sketch, driven straight at the socket after `startBoard()` + `makeRepo()` + `spawnTicket()`:
-
-```
-poll agent.get {target} every 100ms, logging only changes to
-  agent_status · state_change_seq · revision · interactive_ready · focused · terminal_title
+```bash
+export TENX_DB_URL=http://127.0.0.1:8080 TENX_DB_TOKEN=unused   # fake-turso checks no auth
+# read the ticket's run_token straight from the store (the agent gets it in its prompt)
+tenx_sql "SELECT run_token FROM tickets WHERE id = ?" demo-1 | jq -r '.results[0].response.result.rows[0][0].value'
+tenx_sql "UPDATE tickets SET agent_state = ? WHERE id = ? AND run_token = ?" done demo-1 <token>
 ```
 
-That single loop settles most of it. What the loop alone cannot show, and how to get it:
+Check three things in the JSON: `affected_row_count` is 1 with the right token and **0 with a
+wrong one** (the stale-session guarantee); a malformed statement still exits 0 with
+`"type":"error"` ([gotchas](./gotchas.md)); and the board moves the card on its next poll.
 
-| Question | How |
-|---|---|
-| global or per-agent | spawn a **second** agent and read its first value; global continues the sequence |
-| noise immunity | against a settled agent: `agent.focus`, `pane.focus` elsewhere, `pane.rename`, `agent.send_keys`, `agent.read` |
-| where `revision` comes from | `pane.get {pane_id}` beside `agent.get`; the numbers are identical |
-| present on start/prompt | log the **raw** `agent.start` and `agent.prompt` envelopes, not the fields the app keeps |
-| persistence | `grep state_change_seq ~/.config/herdr/session.json` — no match, so it is in-memory |
+## 4. The real `claude` CLI — the one unverified dependency
 
-Do **not** restart the Herdr server to test the reset: it kills every live agent on the host,
-including ones that belong to real tickets.
+The flags are from Anthropic's docs and have **not** been run against a real account. The
+smoke test is in [`docs/prototype-cloud-setup.md`](../docs/prototype-cloud-setup.md) §2:
 
-Residue check afterwards, all five dials: `agent.list` names, `worktree.list`,
-`ls ~/.herdr/worktrees/`, the probe's `ticket/*` branches, and
-`ls ~/.omp/agent/sessions/`. A probe that drives Herdr directly bypasses the fixtures, so it owns
-its own transcript and worktree-parent cleanup.
-
----
-
-## Verifying a Herdr name before you use it
-
-Generate the schema with `herdr api schema --output herdr-api.schema.json`. It is gitignored,
-about 255 KB, and regenerated on demand. **Search it rather than loading it into context.**
-
-Where the names live:
-
-```
-methods              → schemas.request.oneOf[].properties.method.const
-subscription types   → schemas.request.$defs.Subscription.oneOf[].properties.type.const
-emitted event names  → schemas.event.$defs.EventKind.enum
-response field types → schemas.success_response.$defs.<TypeName>.properties
+```bash
+cd ~/.10x/repos/<some-project>
+claude --cloud "Say hello and stop. Do not change any files." --ref main
+#   → must print a https://claude.ai/code/session_… (or cse_…) URL
+claude -p "Thanks, that's all." --cloud <that-session-id> --output-format json
+#   → {"ok":true,...}
 ```
 
-Critically: **the schema proves a name EXISTS but NOT its wire separator.** Subscription types are
-always dotted while emitted names are mixed, and the schema lists all event kinds with
-underscores — so always normalise before comparing. A wrong event name fails silently.
+Starts one real session (and bills it). If a flag or the output shape differs, the only code to
+change is `cliDriver` in `backend/src/cloud.ts` (or point `CLAUDE_BIN` at a wrapper), and
+`parseSessionUrl` / `parseSendResult` are the two functions whose tests encode the assumed shape.
+Archive the session in claude.ai afterwards — nothing else can.
 
----
+## Residue check after a manual run
 
-## Source material
-
-- `herdr --skill` — prints the agent skill for driving Herdr from inside a pane. Authoritative.
-- `herdr api schema --output <path>` — full socket API JSON Schema (91 methods on 0.8.2). Not
-  committed to this repo; regenerate on demand.
-- `herdr api snapshot` — live `session.snapshot` as JSON.
-- `herdr <group>` with no subcommand — prints that group's syntax (`worktree`, `agent`, `pane`,
-  `workspace`, `tab`). Never run bare `herdr`; it launches the TUI.
-- <https://herdr.dev/docs/socket-api/> — socket API reference.
-- <https://herdr.dev/agent-guide.md> — concepts and human-facing setup.
-- `omp --help` — OMP flags.
+- `ls $STATE_DIR/previews/` — empty unless a Preview is running.
+- `SELECT id, port_slot FROM tickets WHERE port_slot IS NOT NULL` — only tickets with a running
+  Preview.
+- `git -C <clone> worktree list` and `git -C <clone> for-each-ref refs/10x/` — no leftovers
+  after DELETE `/preview`.
+- Any real session you started: open it in claude.ai and archive it.
+- Any real branch or PR an agent pushed to a test repo: close and delete it on GitHub.

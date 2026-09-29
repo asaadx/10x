@@ -1,13 +1,10 @@
 /**
- * The app's GitHub calls, made with `fetch` and `git` directly — no client class, no injected
- * transport. Publishing a ticket's branch as a pull request (push with a scoped token, then open
- * or adopt the PR), and the repo read that admits a project onto the board in the first place.
+ * The app's GitHub calls, made with `fetch` directly — no client class, no injected transport.
+ * Publishing a ticket's work (mark the agent's draft PR ready, or open one from the branch the
+ * agent pushed), and the repo read that admits a project onto the board in the first place.
  */
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type { PullRequestState } from "./types.ts";
 
-const run = promisify(execFile);
 
 export type PullRequest = { number: number; url: string; state: PullRequestState; additions: number | null; deletions: number | null };
 
@@ -34,28 +31,10 @@ export const pullRequestBody = (description: string, ticketId: string): string =
   `${description}\n\n10x opened this pull request for ticket ${ticketId}.`;
 
 /**
- * Every call below takes `owner`/`repo` as arguments. They used to be re-derived by shelling
- * `git remote get-url origin` inside the repo on every push, PR open and PR read — a subprocess
- * per call to recover something the project row now stores. It also meant the project's GitHub
- * identity lived only on disk, so a repo whose remote was missing or non-GitHub failed here, at
- * the finish line, rather than when it was added.
- *
- * `repoPath` stays where git itself needs a working tree to push from; it is no longer where
- * the identity comes from.
+ * Every call below takes `owner`/`repo` as arguments, read from the project row rather than
+ * re-derived from a clone's remote. There is no push here any more: a cloud session pushes its
+ * own branch, so the board only ever talks to the GitHub API (docs/prototype-cloud.md).
  */
-export const pushTicketBranch = async (
-  repoPath: string,
-  identity: { owner: string; repo: string },
-  branch: string,
-  token: string,
-): Promise<void> => {
-  try {
-    const url = `https://x-access-token:${token}@github.com/${identity.owner}/${identity.repo}.git`;
-    await run("git", ["push", url, `${branch}:${branch}`], { cwd: repoPath });
-  } catch (error) {
-    throw new Error(redact(String(error), token));
-  }
-};
 
 /** Narrows an unknown JSON value's field, or returns undefined if it isn't the wanted type. */
 function field<T>(value: unknown, key: string, isType: (v: unknown) => v is T): T | undefined {
@@ -154,6 +133,79 @@ export const openPullRequest = async (
 };
 
 /**
+ * Accept for a cloud agent's pull request: the agent opened it as a DRAFT on its own branch
+ * (prompts/implementation.md), and Accept is the human saying "this is ready". REST has no
+ * endpoint for leaving draft — only the GraphQL `markPullRequestReadyForReview` mutation does —
+ * and that mutation wants the PR's node id, so this is a REST read followed, only for a draft,
+ * by one mutation.
+ *
+ * Returns the PR as read, so the caller records state and ±LOC with no third call. An already
+ * non-draft PR is a success with no mutation: a retry after a partial failure, or a human who
+ * clicked "Ready" on GitHub first, must not fail Accept.
+ */
+export const markPullRequestReady = async (
+  identity: { owner: string; repo: string },
+  prNumber: number,
+  token: string,
+): Promise<PullRequest> => {
+  const { owner, repo } = identity;
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "Content-Type": "application/json",
+  };
+  let parsed: unknown;
+  let status: number;
+  try {
+    const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`, { headers });
+    status = response.status;
+    parsed = await response.json();
+  } catch (error) {
+    throw new Error(redact(`GitHub unreachable reading PR #${prNumber}: ${String(error)}`, token));
+  }
+  if (status !== 200) {
+    const message = stringField(parsed, "message") ?? JSON.stringify(parsed);
+    throw new Error(redact(`GitHub API error (${status}) reading PR #${prNumber}: ${message}`, token));
+  }
+  const pr = toPullRequest(parsed);
+  if (!pr) throw new Error(redact(`GitHub returned an unrecognized pull request: ${JSON.stringify(parsed)}`, token));
+
+  const draft = field(parsed, "draft", (v): v is boolean => typeof v === "boolean") ?? false;
+  if (!draft) return pr;
+  const nodeId = stringField(parsed, "node_id");
+  if (nodeId === undefined) throw new Error(`PR #${prNumber} has no node_id to mark ready`);
+
+  let result: unknown;
+  let gqlStatus: number;
+  try {
+    const response = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        query:
+          "mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) " +
+          "{ pullRequest { isDraft } } }",
+        variables: { id: nodeId },
+      }),
+    });
+    gqlStatus = response.status;
+    result = await response.json();
+  } catch (error) {
+    throw new Error(redact(`GitHub unreachable marking PR #${prNumber} ready: ${String(error)}`, token));
+  }
+  // GraphQL answers 200 with an `errors` array for a refused mutation, so the status alone
+  // proves nothing — both have to be clean.
+  const errors = typeof result === "object" && result !== null ? (result as Record<string, unknown>)["errors"] : undefined;
+  if (gqlStatus !== 200 || (Array.isArray(errors) && errors.length > 0)) {
+    const message = Array.isArray(errors)
+      ? errors.map((e) => stringField(e, "message") ?? JSON.stringify(e)).join("; ")
+      : JSON.stringify(result);
+    throw new Error(redact(`GitHub refused to mark PR #${prNumber} ready (${gqlStatus}): ${message}`, token));
+  }
+  return pr;
+};
+
+/**
  * `merged` and `closed` are terminal: a PR cannot leave them, so a stored terminal state is
  * as good as a fresh read and needs no API call. Anything else — including `null`, which
  * only ever means "no webhook has told us" — has to be asked about.
@@ -231,7 +283,7 @@ export type RepoMetadata = {
 export type GitHubApiErrorCode = "repo_not_found" | "repo_not_accessible" | "github_unavailable";
 
 /**
- * Same shape as `HerdrError`: the route layer switches on `code`, never on message text. The
+ * A coded error: the route layer switches on `code`, never on message text. The
  * codes are the wire codes the route answers with, so mapping one to a status is a lookup rather
  * than a translation.
  */

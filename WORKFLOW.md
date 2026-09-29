@@ -2,9 +2,10 @@
 
 How work gets **landed**: branching, pull requests, merging, releases.
 
-> **Not for ticket agents.** If 10x spawned you to implement one ticket, you are already on your
-> branch — commit there and stop. Everything below is for whoever integrates that work.
-> [`AGENTS.md`](./AGENTS.md) is the file that applies to you.
+> **Not for ticket agents.** If 10x started you as a cloud session to implement one ticket, your
+> opening message sets your branch and your draft pull request — follow it and stop.
+> [`AGENTS.md`](./AGENTS.md) is the file that applies to you. Everything below is for whoever
+> integrates that work.
 
 ## Git
 
@@ -20,14 +21,29 @@ own open PR branch. **Never force a merge** — no `gh pr merge --admin`, no byp
 pending check, no merging your own PR to dodge review. Every one of these needs **explicit user
 approval, per instance.** Approval for one force-push is not standing permission.
 
+## Running it locally
+
+```bash
+CLOUD_DRIVER=fake FAKE_AGENT_MS=3000 pnpm start   # build + serve the board on :4010, no real sessions
+CLOUD_DRIVER=fake FAKE_AGENT_MS=3000 pnpm dev     # API on :4010 + Vite with hot reload on :5173
+```
+
+`CLOUD_DRIVER=fake` never runs `claude`; with `FAKE_AGENT_MS` it plays the agent so a ticket
+reaches In Review on its own. Leave `TURSO_DATABASE_URL` empty to use a local SQLite file under
+`STATE_DIR`. Real sessions (`CLOUD_DRIVER` unset) cost money on every Start and Plan — set them up
+with [`docs/prototype-cloud-setup.md`](./docs/prototype-cloud-setup.md).
+
 ## Before opening a PR
 
 **Run CI locally and get it green first — a failing remote run burns GitHub runner minutes for
-information you could have had in two seconds.**
+information you could have had in seconds.**
 
 ```bash
 pnpm typecheck && pnpm test
 ```
+
+If the change touches the board's behaviour, also run `pnpm e2e` — agent-free, because every
+board it starts uses `CLOUD_DRIVER=fake` (`e2e/fixtures.ts`). CI does not run it.
 
 Then open the PR — never merge in its place:
 
@@ -37,10 +53,10 @@ gh pr create --base dev --fill
 
 **Always `--base dev`. Never open a PR against another feature branch.** If the base merges first,
 your PR merges into a branch that `dev` has already absorbed: GitHub reports it **merged** while its
-commits reach `dev` **never**. This has happened once here — PR #29 merged into
-`fix/herdr-stream-close` six seconds after #28 had merged that branch into `dev`, and the webhook
-receiver silently did not ship. Two independent PRs off `dev` are always safer than a stack, even
-when one logically follows the other.
+commits reach `dev` **never**. This has happened once here — PR #29 merged into a fix branch six
+seconds after #28 had merged that same branch into `dev`, and the webhook receiver silently did not
+ship. Two independent PRs off `dev` are always safer than a stack, even when one logically follows
+the other.
 
 ## Versioning
 

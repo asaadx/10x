@@ -1,5 +1,11 @@
 # Wiring checklist
 
+> **Historical record.** This checklist tracked wiring the React board to the backend while agents
+> still ran locally under Herdr (a terminal multiplexer). `prototype-cloud` replaced that runtime
+> with Claude Code cloud sessions, so items that mention panes, worktrees, the event subscription
+> or live Herdr are closed by removal rather than by the fix they describe. Current behaviour:
+> [`memory/cloud.md`](../memory/cloud.md) and [`memory/frontend.md`](../memory/frontend.md).
+
 The board is live. `frontend/src/lib/use-board.ts` polls `GET /tickets?project=` and
 `GET /projects` every second and renders what comes back; `frontend/src/lib/api.ts` is the whole
 HTTP seam and now carries writes as well as reads. Three card actions are real — `Plan`,
@@ -140,7 +146,7 @@ Wired or half-wired, and wrong or silently misleading.
 
 - [ ] **`unowned` orphans are returned and dropped.** `board()` answers `{tickets, unowned}` from
       `findOrphans` and no component renders `unowned`. Visibility is the entire purpose of
-      reconciliation (`memory/reconciliation.md`), so this is the one place the backend is still
+      reconciliation (a retired memory node), so this is the one place the backend is still
       ahead of the UI.
 
 - [ ] **`e2e/board.spec.ts` cannot pass, on three remaining counts.** Read, not run — it needs a
@@ -194,7 +200,7 @@ migration each). What is missing is the write path, and it differs per field.
       `screenshot_after` (`screenshots.ts`, `backend/src/server.ts`), served back at
       `GET /screenshots/<file>`. Capture itself is the `visual-diff` skill
       (`skills/visual-diff/SKILL.md`), provisioned into every implementation agent's worktree
-      at spawn (`backend/src/skills.ts`) — see `memory/spawn.md`. Deleting a ticket deletes
+      at spawn (`backend/src/skills.ts`, since deleted). Deleting a ticket deletes
       both files.
 
 - [ ] **Attachments are inert.** `attachments` is a column; `AttachmentDropZone` in

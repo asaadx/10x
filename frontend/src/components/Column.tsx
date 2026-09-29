@@ -4,7 +4,6 @@ import { TicketCard } from "@/components/TicketCard.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Spinner } from "@/components/ui/spinner.tsx";
 import { columnIsWorking } from "@/lib/board.ts";
-import type { SteerMode } from "@/lib/steer-mode.ts";
 import type { ProvisionState, Status, Ticket } from "@/types.ts";
 
 /**
@@ -30,7 +29,6 @@ type Props = {
   status: Status;
   label: string;
   tickets: Ticket[];
-  steerMode: SteerMode;
   /**
    * Which projects have their repo on disk. Keyed by id rather than a single flag, because
    * `All projects` mixes cards from several projects into one column and Start is refused per
@@ -48,17 +46,15 @@ export function Column({
   status,
   label,
   tickets,
-  steerMode,
   projectStates,
   onNewTicket,
   onOpenTicket,
   onTicketChanged,
 }: Props) {
   const headingId = `${status}-heading`;
-  // columnIsWorking already means "an agent in this column is generating": a planning agent
-  // in Backlog and an In Review agent steered by hand in Herdr (a second working cycle; see
-  // memory/operations.md) both light this. A Preview is a dev server on a port, not an agent,
-  // and deliberately does not.
+  // columnIsWorking means "an agent in this column reported starting or working": a planning
+  // session in Backlog lights it as much as an implementation one. A Preview is a dev server on
+  // a port, not an agent, and deliberately does not.
   const working = columnIsWorking(tickets);
 
   return (
@@ -108,7 +104,6 @@ export function Column({
           <TicketCard
             key={t.id}
             ticket={t}
-            steerMode={steerMode}
             provisionState={projectStates[t.projectId]}
             onOpen={(actionError) => onOpenTicket(t, actionError)}
             onChanged={onTicketChanged}

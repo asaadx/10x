@@ -1,12 +1,14 @@
 # AGENTS.md
 
 **Applies to anyone changing this code** — a human at the keyboard, an assistant, or a ticket agent
-spawned by 10x into its own worktree.
+10x started as a Claude Code cloud session.
 
 > **Landing work** — branching, pull requests, merging, releases — is
-> [`WORKFLOW.md`](./WORKFLOW.md). **If you were spawned to implement a single ticket, that file is
-> not yours**: you are already on your branch, you commit there, and you stop. Do not push, do not
-> open a pull request, do not switch branches.
+> [`WORKFLOW.md`](./WORKFLOW.md). **If 10x started you to implement a single ticket, that file is
+> not yours**: your opening message is. Work on the branch it names (`claude/10x-<ticketId>`),
+> push only that branch, open or reuse the **draft** pull request it describes, and report through
+> the ticket database exactly as it says. Never merge, never mark your PR ready, never touch
+> another branch.
 
 ## Memory
 
@@ -23,16 +25,30 @@ and open the nodes it links for your task.
   "previously we thought…" note. A reader must never have to pick between two statements.
 - **Not a substitute for reading code you are about to change.** Use it to know *where* to look.
 
-## Herdr
+## Cloud sessions
 
-**Never write a Herdr method, subscription type, or event name from memory or from a doc.** Confirm
-it against the generated schema first — [`memory/verification.md`](./memory/verification.md) has the
-command and the three JSON paths.
+`backend/src/cloud.ts` is the **only** module that runs `claude`. The flags it uses
+(`--cloud … --ref`, `-p … --cloud <id> --output-format json`) come from Anthropic's docs and have
+not been exercised against a real account yet ([`memory/cloud.md`](./memory/cloud.md)); do not
+add a new CLI call or flag anywhere else, and do not change these without running the smoke test
+in [`docs/prototype-cloud-setup.md`](./docs/prototype-cloud-setup.md).
 
-The schema proves a name **exists**, not its **wire separator**: emitted names are mixed, so
-normalise (`event.replaceAll(".", "_")`) and never match a literal event name — see
-[`memory/socket.md`](./memory/socket.md). A wrong name fails **silently**: no error, just events
-that never arrive.
+**Develop and test with `CLOUD_DRIVER=fake`.** It never starts a real session: it records the
+calls and, with `FAKE_AGENT_MS=<ms>`, plays the agent's side of the protocol (`working`, then
+`done` plus a branch) through the same database the board reads, so a ticket travels Backlog to
+Review with no network and no spend:
+
+```bash
+CLOUD_DRIVER=fake FAKE_AGENT_MS=3000 pnpm start
+```
+
+The unit suite and the e2e suite both run the board this way. With `CLOUD_DRIVER` unset the board
+uses your real `claude` login and **every Start or Plan click opens a paid cloud session**.
+
+Anything an agent writes into the ticket row (`agent_state`, `branch`, `pr_url`, …) is untrusted
+input: parse it at the boundary, never cast it. Every agent write is scoped
+`WHERE id = ? AND run_token = ?` — keep that true of any prompt you edit (`prompts.test.ts`
+checks it).
 
 ## Commits
 
@@ -46,7 +62,7 @@ mood, lowercase, no trailing period, subject ≤72 chars.
 
 `feat` `fix` `docs` `refactor` `test` `perf` `build` `ci` `chore`
 
-Scope is the touched area when it clarifies (`feat(spawn):`, `fix(db):`). Body explains **why**;
+Scope is the touched area when it clarifies (`feat(cloud):`, `fix(db):`). Body explains **why**;
 the diff already shows what. Breaking change → `!` after the type (`feat(api)!:`) **and** a
 `BREAKING CHANGE:` footer.
 
@@ -61,9 +77,9 @@ pnpm typecheck && pnpm test
 Both are free and take seconds. A commit that does not typecheck, or that reddens the suite, is not
 finished work.
 
-**Never run `pnpm e2e:full`.** It spawns **sixteen real coding agents** and costs real money.
-It needs explicit human permission, per run — being asked to "test your change" is not that
-permission.
-
-`pnpm e2e` is agent-free but needs a live Herdr socket and binds port **4310**, so two tickets
-running it at once collide. Run it only if your ticket actually touches the e2e suite.
+`pnpm e2e` is free too — every board it starts runs with `CLOUD_DRIVER=fake`, a throwaway state
+dir, and an empty `GITHUB_TOKEN` and `TURSO_DATABASE_URL` — but it builds the frontend, needs a
+Playwright browser, and binds port **4310**, so two runs at once collide. Run it when your change
+touches the board's behaviour or the e2e suite. `pnpm e2e:full` currently runs the same specs; a
+spec that needs a **real** cloud session must never be added to the `fast` project, and running one
+needs explicit human permission, per run.

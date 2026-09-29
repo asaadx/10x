@@ -1,6 +1,7 @@
-import { ChevronLeftIcon, ChevronRightIcon, ImageIcon, Trash2, Upload } from "lucide-react";
+import { GitPullRequest, Images, Trash2, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { AgentStateBadge, PreviewPanel, SessionLink } from "@/components/AgentSession.tsx";
 import { DeleteTicketDialog } from "@/components/DeleteTicketDialog.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Checkbox } from "@/components/ui/checkbox.tsx";
@@ -15,19 +16,18 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet.tsx";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog.tsx";
 import { Spinner } from "@/components/ui/spinner.tsx";
 import { createTicket, moveTicket, updateTicket } from "@/lib/api.ts";
-import { runFailed } from "@/lib/board.ts";
+import { previewOffered, runFailed } from "@/lib/board.ts";
+import { relativeTime } from "@/lib/list.ts";
 import { clearNewTicketDraft, readNewTicketDraft, writeNewTicketDraft } from "@/lib/new-ticket-draft.ts";
 import { cn } from "@/lib/utils.ts";
 import {
   PLAYBOOKS,
   PRIORITIES,
   type Playbook,
-  type Priority,      
+  type Priority,
   type Project,
-  type ScreenshotSide,
   type Status,
   type Ticket,
 } from "@/types.ts";
@@ -37,7 +37,12 @@ type Props = {
   onOpenChange: (open: boolean) => void;
   projects: Project[];
   defaultProjectId: string;
-  /** The ticket being viewed, or null to create a new one. */
+  /**
+   * The ticket being viewed, or null to create a new one. The caller passes the LIVE ticket
+   * from each poll, not a snapshot from when the sheet opened, so the agent's state, note and
+   * preview update in place. The form fields are seeded once (see the `useState` initializers)
+   * and are not overwritten by that.
+   */
   ticket: Ticket | null;
   /**
    * The column whose New ticket button opened this. `POST /tickets` always lands in `backlog`,
@@ -55,152 +60,9 @@ type Props = {
   onCreated: () => void;
   /** An edit was saved, so the board should re-read rather than wait out the poll. */
   onSaved: () => void;
+  /** A write that keeps the sheet open (Preview start/stop) landed; re-read the board now. */
+  onChanged: () => void;
 };
-
-/**
- * One labelled Before/After pane: the image when its url is captured, or a placeholder when it
- * isn't. Extracted so the two panes below share this markup instead of duplicating it.
- *
- * Clicking the thumbnail opens the shared `ScreenshotLightbox` below on this pane's own image —
- * enlargement state lives one level up in `TicketSheet` rather than here, so Before and After
- * share a single dialog instead of each mounting its own, and the lightbox can page between them
- * without one pane's state having to know the other exists. The thumbnail is a `<button>` rather
- * than an `onClick` on the `<img>` so it is keyboard-reachable and gets a focus ring.
- */
-function ScreenshotPane({
-  label,
-  url,
-  onEnlarge,
-}: {
-  label: string;
-  url: string | null;
-  onEnlarge: () => void;
-}) {
-  return (
-    <div className="grid gap-1.5">
-      <label className="text-xs text-muted-foreground">{label}</label>
-      {url ? (
-        <button
-          type="button"
-          onClick={onEnlarge}
-          aria-label={`Enlarge ${label} screenshot`}
-          className="block aspect-video w-full overflow-hidden rounded-md border focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-        >
-          <img src={url} alt={label} className="size-full object-cover" />
-        </button>
-      ) : (
-        <div className="flex aspect-video w-full flex-col items-center justify-center gap-1.5 rounded-md border bg-muted text-xs text-muted-foreground">
-          <ImageIcon aria-hidden className="size-5" />
-          No screenshot
-        </div>
-      )}
-    </div>
-  );
-}
-
-const SCREENSHOT_LABELS: Record<ScreenshotSide, string> = { before: "Before", after: "After" };
-
-/**
- * The single enlarged view shared by both `ScreenshotPane`s, so paging between Before and After
- * doesn't close and reopen a dialog. `side` is which one is open, or null when closed; each
- * pane's click sets it directly to its own side, so the lightbox opens on whichever was clicked
- * rather than always defaulting to one. `screenshots` is read straight off the ticket so a
- * missing side is never treated as "the same image twice".
- *
- * No close-X: it used to draw at `opacity-70` directly over the raw image with no backing chip,
- * invisible on a screenshot with a light corner. Escape and clicking the overlay both still
- * close it — that's Radix's own dismissable-layer behaviour, `showCloseButton` only toggles the
- * button.
- */
-function ScreenshotLightbox({
-  screenshots,
-  side,
-  onOpenChange,
-  onSelect,
-}: {
-  screenshots: { before: string | null; after: string | null };
-  side: ScreenshotSide | null;
-  onOpenChange: (open: boolean) => void;
-  onSelect: (side: ScreenshotSide) => void;
-}) {
-  const open = side !== null;
-  const bothExist = screenshots.before !== null && screenshots.after !== null;
-
-  // Left/right cycle Before <-> After, but only while open and only when there is a second
-  // side to cycle to — with one side missing, the keys have nothing to do.
-  useEffect(() => {
-    if (!open || !bothExist) return;
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "ArrowLeft") onSelect("before");
-      else if (event.key === "ArrowRight") onSelect("after");
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [open, bothExist, onSelect]);
-
-  // Radix unmounts DialogContent while closed, so this fallback is never actually shown — it
-  // only keeps the render below type-safe between the last open side and null.
-  const shown = side ?? "before";
-  const url = screenshots[shown];
-  const label = SCREENSHOT_LABELS[shown];
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent showCloseButton={false} className="max-w-4xl p-2">
-        <DialogTitle className="sr-only">{label} screenshot, enlarged</DialogTitle>
-        <div className="flex items-center gap-2">
-          {bothExist && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label="Show before screenshot"
-              onClick={() => onSelect("before")}
-              className="shrink-0"
-            >
-              <ChevronLeftIcon aria-hidden />
-            </Button>
-          )}
-          {url && (
-            <img src={url} alt={label} className="min-w-0 flex-1 max-h-[80vh] rounded-md object-contain" />
-          )}
-          {bothExist && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label="Show after screenshot"
-              onClick={() => onSelect("after")}
-              className="shrink-0"
-            >
-              <ChevronRightIcon aria-hidden />
-            </Button>
-          )}
-        </div>
-        <div className="grid justify-items-center gap-1.5">
-          <span className="text-sm font-medium">{label}</span>
-          {bothExist && (
-            <div className="flex gap-1.5" role="group" aria-label="Screenshot">
-              {(["before", "after"] as const satisfies readonly ScreenshotSide[]).map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  aria-label={`Show ${SCREENSHOT_LABELS[s]} screenshot`}
-                  aria-current={s === shown}
-                  onClick={() => onSelect(s)}
-                  className={cn(
-                    "size-2 rounded-full transition-colors",
-                    s === shown ? "bg-foreground" : "bg-muted-foreground/40 hover:bg-muted-foreground/70",
-                  )}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
 
 type ChecklistRow = { text: string; done: boolean };
 
@@ -343,6 +205,61 @@ const PRIORITY_LABELS: Record<Priority, string> = {
   high: "\u2605\u2605\u2605 High",
 };
 
+const SESSION_KIND_LABEL = { plan: "Planning session", impl: "Implementation session" } as const;
+
+/**
+ * The agent block at the top of an existing ticket: what the agent last said about itself and
+ * the way to talk to it. First in the body because a blocked agent's question is the thing
+ * someone opens the sheet to read. Always rendered for an existing ticket, with a disabled
+ * Open session, so the sheet keeps one shape whether or not a session was ever started.
+ */
+function AgentPanel({ ticket, failed }: { ticket: Ticket; failed: boolean }) {
+  const blocked = ticket.agentState === "blocked";
+  return (
+    <section aria-label="Agent" className="grid gap-2 rounded-lg border bg-muted/30 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+          <span className="text-xs font-medium">
+            {ticket.sessionKind === null ? "No session yet" : SESSION_KIND_LABEL[ticket.sessionKind]}
+          </span>
+          <AgentStateBadge state={ticket.agentState} note={ticket.agentNote} />
+          {ticket.agentUpdatedAt !== null && (
+            <span
+              className="text-[11px] text-muted-foreground"
+              title={`Last report ${new Date(ticket.agentUpdatedAt).toLocaleString()}`}
+            >
+              {relativeTime(ticket.agentUpdatedAt, Date.now())}
+            </span>
+          )}
+        </div>
+        <div className="shrink-0">
+          <SessionLink ticket={ticket} label="Open session" variant="outline" />
+        </div>
+      </div>
+      {ticket.agentNote !== null && ticket.agentNote !== "" && (
+        <div
+          className={cn(
+            "rounded-md p-2 text-xs whitespace-pre-wrap break-words select-text",
+            blocked
+              ? "border border-amber-500/40 bg-amber-500/10 text-amber-900 dark:text-amber-200"
+              : "bg-background text-foreground/90",
+          )}
+        >
+          <span className="mb-1 block text-[11px] font-medium text-muted-foreground">
+            {blocked ? "The agent is asking \u2014 answer in the session" : "Last note from the agent"}
+          </span>
+          {ticket.agentNote}
+        </div>
+      )}
+      {failed && (
+        <p className="rounded-md bg-destructive/10 p-2 text-xs text-destructive">
+          The agent reported that it could not finish. Open the session to see why, then Cancel to try again.
+        </p>
+      )}
+    </section>
+  );
+}
+
 /**
  * Opened either from a column footer's New ticket button, with `ticket` null, or from a
  * card's title/overflow menu, with `ticket` set — the one detail surface for both creating and
@@ -360,6 +277,7 @@ export function TicketSheet({
   actionError,
   onCreated,
   onSaved,
+  onChanged,
 }: Props) {
   const creating = ticket === null;
   const [title, setTitle] = useState(ticket?.title ?? "");
@@ -367,9 +285,7 @@ export function TicketSheet({
   const [projectId, setProjectId] = useState(ticket?.projectId ?? defaultProjectId);
   // Playbook decides which agent profile a spawn uses. It is editable at any point, unlike
   // Project, because it is a choice rather than something derived — and changing it after a run
-  // has started cannot affect the agent already running, only the next dispatch. The sheet
-  // already has a row called Agent for the running Herdr agent's name, so this control is named
-  // Playbook rather than colliding with it. `POST /tickets` only takes `{projectId, title,
+  // has started cannot affect the agent already running, only the next dispatch. `POST /tickets` only takes `{projectId, title,
   // description}`, so a non-default choice made here reaches the server as a follow-up PATCH
   // `submit()` sends after the create succeeds.
   // Every ticket has one: the column is NOT NULL, and its default is the first entry of
@@ -405,10 +321,6 @@ export function TicketSheet({
   // discarding a description because the network blinked would be the expensive mistake — so
   // the message sits next to the button that failed and the same click retries.
   const [submitError, setSubmitError] = useState<string | null>(null);
-  // Which side, if any, the shared screenshot lightbox is showing. Lives here rather than in
-  // `ScreenshotPane` so Before and After share one dialog instead of each mounting its own —
-  // see `ScreenshotLightbox`'s own comment for why that matters.
-  const [lightboxSide, setLightboxSide] = useState<ScreenshotSide | null>(null);
   // True whenever this create-mode session was seeded from a stored draft, so the "Restored
   // unsaved draft" note can stay up for as long as this open/close session lasts (`App.tsx`
   // keys the composer "new" for every creation attempt, so a Cancel- or Escape-driven close
@@ -576,10 +488,6 @@ export function TicketSheet({
   };
 
   const failed = !creating && runFailed(ticket);
-  // A branch/agent name is a formula over the project slug and ticket number (memory/naming.md),
-  // so it is non-empty even for a ticket that has never been spawned — dispatched is the actual
-  // existence check for those two rows.
-  const dispatched = ticket !== null && (ticket.sessionDir !== null || ticket.hasWorktree);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   return (
@@ -610,11 +518,13 @@ export function TicketSheet({
           scrolls it.
         */}
         <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-4 pb-6">
+          {!creating && <AgentPanel ticket={ticket} failed={failed} />}
+
           <div className="grid gap-1.5">
             <label htmlFor="c-project" className="text-xs text-muted-foreground">
               Project <span className="text-destructive">*</span>
             </label>
-            {/* A ticket cannot change project once created: its branch and worktree are already
+            {/* A ticket cannot change project once created: its id and branch are already
                 derived from the project slug. */}
             <NativeSelect
               id="c-project"
@@ -708,28 +618,6 @@ export function TicketSheet({
             />
           </div>
 
-          {/* A before/after pair is evidence for the change the description above just
-              described, so it reads with the description rather than after the plan below —
-              shown only when at least one side has been captured. The `screenshots` object is
-              always present on a ticket now (only its sides are nullable), so testing the
-              object itself would show this block on every ticket; testing the sides is what
-              actually means "a shot exists". `ScreenshotPane`'s placeholder covers whichever
-              side is still null. */}
-          {!creating && (ticket.screenshots.before !== null || ticket.screenshots.after !== null) && (
-            <div className="grid gap-4">
-              <ScreenshotPane
-                label="Before"
-                url={ticket.screenshots.before}
-                onEnlarge={() => setLightboxSide("before")}
-              />
-              <ScreenshotPane
-                label="After"
-                url={ticket.screenshots.after}
-                onEnlarge={() => setLightboxSide("after")}
-              />
-            </div>
-          )}
-
           <Checklist label="Task Breakdown" rows={taskBreakdown} onRowsChange={setTaskBreakdown} />
 
           <Checklist label="Acceptance Criteria" rows={acceptanceCriteria} onRowsChange={setAcceptanceCriteria} />
@@ -740,89 +628,61 @@ export function TicketSheet({
             <>
               <Separator />
 
-              {/* These three rows always render, disabled, so the sheet does not change shape
-                  between tickets. A branch name and an agent name are formulas over the project
-                  slug and ticket number (memory/naming.md), so both are non-empty strings on
-                  every ticket whether or not a run was ever spawned — filling the field with
-                  that name would claim something exists that does not, so it is left empty with
-                  a placeholder instead. */}
               <div className="grid gap-4">
+                {/* Written by the agent once it has pushed; nothing is created locally. */}
                 <div className="grid gap-1.5">
-                  <label className="text-xs text-muted-foreground">Branch</label>
+                  <label htmlFor="c-branch" className="text-xs text-muted-foreground">
+                    Branch
+                  </label>
                   <Input
+                    id="c-branch"
                     readOnly
                     disabled
-                    value={dispatched ? ticket.branch : ""}
-                    placeholder="Created when the run starts"
-                  />
-                </div>
-
-                <div className="grid gap-1.5">
-                  <label className="text-xs text-muted-foreground">Worktree</label>
-                  <Input
-                    readOnly
-                    disabled
-                    value={ticket.worktreePath ?? ""}
-                    placeholder="No worktree on disk"
-                  />
-                </div>
-
-                {/* Accept is `retireAgent`, which closes the pane and deletes the transcript
-                    (memory/teardown.md), so a Done ticket's agent is genuinely gone rather than
-                    never created — its placeholder says so instead of the generic one. */}
-                <div className="grid gap-1.5">
-                  <label className="text-xs text-muted-foreground">Agent</label>
-                  <Input
-                    readOnly
-                    disabled
-                    value={dispatched && ticket.status !== "done" ? ticket.agentName : ""}
-                    placeholder={
-                      ticket.status === "done"
-                        ? "Retired when the pull request opened"
-                        : "Spawned when the run starts"
-                    }
+                    value={ticket.branch ?? ""}
+                    placeholder="Reported by the agent once it pushes"
                   />
                 </div>
 
                 {ticket.prUrl && (
                   <div className="grid gap-1.5">
-                    <label className="text-xs text-muted-foreground">Pull request</label>
-                    <a
-                      href={ticket.prUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 text-sm underline-offset-2 hover:underline"
-                    >
-                      <span className="font-mono">PR #{ticket.prNumber}</span>
-                      {ticket.prAdditions !== null && ticket.prDeletions !== null && (
-                        <span className="font-mono text-xs">
-                          <span className="text-emerald-600 dark:text-emerald-400">+{ticket.prAdditions}</span>{" "}
-                          <span className="text-red-600 dark:text-red-400">&minus;{ticket.prDeletions}</span>
-                        </span>
-                      )}
-                    </a>
+                    <span className="text-xs text-muted-foreground">Pull request</span>
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+                      <a
+                        href={ticket.prUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 text-sm underline-offset-2 hover:underline"
+                      >
+                        <GitPullRequest aria-hidden className="size-3.5" />
+                        <span className="font-mono">{ticket.prNumber === null ? "PR" : `PR #${ticket.prNumber}`}</span>
+                        {ticket.prAdditions !== null && ticket.prDeletions !== null && (
+                          <span className="font-mono text-xs">
+                            <span className="text-emerald-600 dark:text-emerald-400">+{ticket.prAdditions}</span>{" "}
+                            <span className="text-red-600 dark:text-red-400">&minus;{ticket.prDeletions}</span>
+                          </span>
+                        )}
+                      </a>
+                      {/* The agent posts before/after shots as a comment on its own PR
+                          (`gh pr comment --attach`); nothing is uploaded to the board, so the
+                          PR's conversation is where they are. */}
+                      <a
+                        href={ticket.prUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                      >
+                        <Images aria-hidden className="size-3.5" />
+                        Screenshots on PR
+                      </a>
+                    </div>
                   </div>
                 )}
+
+                {previewOffered(ticket) || ticket.preview !== null ? (
+                  <PreviewPanel ticket={ticket} onChanged={onChanged} />
+                ) : null}
               </div>
             </>
-          )}
-
-          {failed && (
-            <p className="rounded-md bg-destructive/10 p-2 text-xs text-destructive">
-              Run died — the pane exited before finishing. The worktree was kept so you can inspect it.
-            </p>
-          )}
-
-          {/* Off unless VITE_DIAGNOSTICS=true; see .env.example at the repo root. */}
-          {!creating && import.meta.env["VITE_DIAGNOSTICS"] === "true" && ticket.diagnostics && (
-            <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 border-t pt-2 font-mono text-[11px] text-muted-foreground">
-              {Object.entries(ticket.diagnostics).map(([k, v]) => (
-                <div key={k} className="contents">
-                  <dt>{k}</dt>
-                  <dd className="text-right">{String(v)}</dd>
-                </div>
-              ))}
-            </dl>
           )}
         </div>
 
@@ -897,16 +757,6 @@ export function TicketSheet({
         </SheetFooter>
       </SheetContent>
       {!creating && <DeleteTicketDialog ticket={ticket} open={confirmDelete} onOpenChange={setConfirmDelete} />}
-      {!creating && (
-        <ScreenshotLightbox
-          screenshots={ticket.screenshots}
-          side={lightboxSide}
-          onOpenChange={(next) => {
-            if (!next) setLightboxSide(null);
-          }}
-          onSelect={setLightboxSide}
-        />
-      )}
     </Sheet>
   );
 }

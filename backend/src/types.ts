@@ -23,19 +23,27 @@
  * each one. Read it there rather than here: a second copy of the machine is how this comment
  * went stale in the first place.
  *
- * `in_review` is reached automatically when the agent's turn completes, and the ticket keeps
- * both its live agent and its port block while it sits there — a Reject has to be able to
- * re-prompt the same agent with its full context, and a Preview binds the same range.
+ * `in_review` is reached automatically when the agent reports `done` (server.ts's poller), and
+ * the ticket keeps its cloud session while it sits there — a Reject is a follow-up message
+ * into the same session, which still holds the full context.
  */
 export type Status = "backlog" | "todo" | "in_progress" | "in_review" | "done";
 
 /** The three states a PR can be in from the board's point of view, mirroring `Status`. */
 export type PullRequestState = "open" | "merged" | "closed";
 
+/** Which kind of cloud session a ticket's `sessionId` names: the planner or the implementer. */
+export type SessionKind = "plan" | "impl";
+
 /**
- * Which configured profile a ticket is dispatched with. Unlike `agentStatus`, which is left
- * as a bare `string` because Herdr owns that vocabulary, 10x owns this one, so a closed union
- * is safe and gives the board an exhaustive option list.
+ * The cloud agent's self-reported state. The board writes `starting`; the agent writes the
+ * rest into the shared database, because a session's status cannot be read any other way.
+ */
+export type AgentState = "starting" | "working" | "done" | "blocked" | "failed";
+
+/**
+ * Which configured profile a ticket is dispatched with. 10x owns this vocabulary, so a closed
+ * union is safe and gives the board an exhaustive option list.
  *
  * The array is the whole vocabulary and the type is derived from it, never the other way
  * around: the list is needed at runtime as well as at compile time, because the PATCH
@@ -88,8 +96,9 @@ export type ChecklistItem = { text: string; done: boolean };
 export type Attachment = { name: string; size: number; mime: string; path: string };
 
 /**
- * Which side of the before/after pair a screenshot upload writes. The route is
- * `POST /tickets/:id/screenshots/:side`, and `side` is the one path segment narrowed to this.
+ * Which side of a ticket's legacy before/after screenshot pair. Nothing writes these any more —
+ * cloud agents post their shots on the pull request — but the columns and the board's panes
+ * still exist until the frontend drops them.
  */
 export type ScreenshotSide = "before" | "after";
 
@@ -139,6 +148,8 @@ export type Project = {
    * irreversible act.
    */
   ownsClone: boolean;
+  /** The command Preview runs in a ticket's checkout, with `PORT` set. '' = start nothing. */
+  devCommand: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -150,18 +161,19 @@ export type Ticket = {
   title: string;
   description: string;
   status: Status;
-  /** A turn ended after `working` was observed (memory/agent-status.md). */
+  /** The agent reported `done` and the ticket moved to review; cleared by Reject and respawn. */
   finished: boolean;
-  /** The pane exited. NOT the same as finished (memory/teardown.md rule 3). */
+  /** Legacy (Herdr: the pane exited). Nothing sets it any more; kept until the frontend drops it. */
   died: boolean;
   /** Hidden from every board read once true. No un-archive — see memory/parking-lot.md. */
   archived: boolean;
-  /** Persisted, not derived — see db.ts rule 1. Null until first spawn. */
+  /** The branch the agent reports it pushed. Null until it does. */
   branch: string | null;
+  /** Legacy (Herdr agent name). Nothing sets it any more; kept until the frontend drops it. */
   agentName: string | null;
-  /** OMP transcript directory, needed by teardown and outliving the worktree (memory/reconciliation.md). */
+  /** Legacy (OMP transcript directory). Nothing sets it any more. */
   sessionDir: string | null;
-  /** Set together by `setPullRequest` once Accept opens the PR. Null until then. */
+  /** The agent's draft PR, written by the agent; or the PR Accept opened from `branch`. */
   prNumber: number | null;
   prUrl: string | null;
   // Written by the webhook receiver from the `pull_request` payload (server.ts
@@ -198,69 +210,55 @@ export type Ticket = {
   screenshots: { before: string | null; after: string | null };
   /**
    * When the AGENT began work, distinct from `createdAt`: null on a ticket that has never been
-   * spawned, and what the card's run timer counts from. Written by the spawn lifecycle through
-   * `setRunFields`, never by an edit.
+   * spawned, and what the card's run timer counts from. Stamped by the spawn claim, never by an
+   * edit.
    */
   startedAt: string | null;
+  /**
+   * The Claude Code cloud session working this ticket (docs/prototype-cloud.md). The board
+   * writes the id, url and kind when it starts one; null on a ticket that has never had one.
+   */
+  sessionId: string | null;
+  sessionUrl: string | null;
+  sessionKind: SessionKind | null;
+  /**
+   * The agent's own report, written by the agent straight into the shared database — there is
+   * no API to read a session's status, so this is the only signal the board has. Null means
+   * "no usable report", including a value outside the union (db.ts `toAgentState`).
+   */
+  agentState: AgentState | null;
+  /** The agent's last one-paragraph summary, or its question when `blocked`. */
+  agentNote: string | null;
+  /** ISO instant of the agent's last write. */
+  agentUpdatedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
 
 /**
- * Per-run spawn diagnostics.
- *
- * Deliberately NOT persisted: these describe one attempt at starting an agent and are
- * debugging output, not ticket state. Losing them on restart is correct.
- *
- * Their reason for existing is memory/spawn.md — `agent.start` returns before the agent is usable, so
- * the guard retries and polls. These fields let the UI show whether that fired, which is
- * normal rather than a fault.
+ * A local Preview of a ticket's pushed branch (docs/prototype-cloud.md "Preview"): the branch
+ * fetched into a detached worktree under `$STATE_DIR/previews/<ticketId>`, a port block
+ * reserved for it, and — only when the project has a `devCommand` — that command running.
+ * Held in server memory, so it is gone after a backend restart.
  */
-export type Diagnostics = {
-  startAttempts: number;
-  paneBusyRetries: number;
-  startReturnedStatus: string | null;
-  startReturnedReady: boolean | null;
-  startReturnedAfterMs: number | null;
-  neededReadinessPoll: boolean;
-  readinessPolls: number;
-  readyAfterMs: number | null;
-  promptAttempts: number;
-  promptNotReadyRetries: number;
-  /** True when spawn re-attached to an already-running agent rather than starting one. */
-  reusedExistingAgent: boolean;
+export type Preview = {
+  path: string;
+  port: number;
+  url: string;
+  /** The project's dev command, or `""` when none is configured and nothing was started. */
+  command: string;
+  running: boolean;
 };
 
 /**
- * A ticket-namespaced worktree no live ticket claims. Reported, never reclaimed.
- *
- * Lives here rather than in reconcile.ts, which produces it, because it is part of the
- * `GET /tickets` response and this file is the only one the frontend may reach.
- */
-export type Orphan = { branch: string; path: string };
-
-/**
- * What `GET /tickets` actually returns for each ticket: the stored row plus everything the
- * board resolves at read time. Distinct from `Ticket` on purpose — most of these fields exist
- * only in the response, and a frontend typed against `Ticket` would be quietly wrong.
+ * What `GET /tickets` returns for each ticket. Since the move to cloud sessions the board is a
+ * pure database read: everything about the agent (session link, state, last note) was written
+ * into the row by the board or by the agent itself, and the only thing resolved at read time is
+ * the in-memory Preview and whether an operation is in flight.
  */
 export type BoardTicket = Ticket & {
-  branch: string; // resolved, never null in a response
-  agentName: string; // resolved, never null in a response
-  /**
-   * Herdr's `agent_status` string, passed through untouched. Left as `string` deliberately:
-   * nothing in this codebase knows the closed set Herdr emits — `isSettled` and
-   * `isAgentReady` in lifecycle.ts test individual values against a bare `string` — and a
-   * union guessed here would silently exclude a status the board then failed to display.
-   */
-  agentStatus: string | null;
-  hasWorktree: boolean;
-  worktreePath: string | null;
-  paneId: string | null;
-  workspaceId: string | null;
   busy: boolean;
-  diagnostics: Diagnostics;
+  preview: Preview | null;
 };
 
-/** The `GET /tickets` body. `board()` in server.ts is annotated with this so it cannot drift. */
-export type BoardResponse = { tickets: BoardTicket[]; unowned: Orphan[] };
+export type BoardResponse = { tickets: BoardTicket[] };

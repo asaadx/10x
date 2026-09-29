@@ -3,8 +3,7 @@
  * body construction — plus `openPullRequest` and `fetchPullRequestSnapshot`'s metadata
  * extraction, against a real local git repo (for `origin` remote resolution, no network) with
  * `fetch` swapped for a queue of canned responses. `fetchRepoMetadata` needs no repo at all,
- * only the same canned `fetch`. `pushTicketBranch` still needs a real push and stays covered
- * only by the end-to-end test against a real throwaway repo.
+ * only the same canned `fetch`.
  */
 import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
@@ -21,6 +20,7 @@ import {
   openPullRequest,
   fetchPullRequestSnapshot,
   fetchRepoMetadata,
+  markPullRequestReady,
   GitHubApiError,
 } from "./github.ts";
 
@@ -209,6 +209,67 @@ describe("fetchPullRequestSnapshot", () => {
   test("throws on a non-200 response, with the token redacted", async () => {
     queueFetch([{ status: 404, body: { message: "Not Found" } }]);
     await assert.rejects(() => fetchPullRequestSnapshot(identity, 9, "secret-tok"), /GitHub API error \(404\)/);
+  });
+});
+
+describe("markPullRequestReady", () => {
+  /** Like queueFetch, but also records what was asked, since the mutation body is the contract. */
+  function recordFetch(responses: { status: number; body: unknown }[]): { url: string; body: string }[] {
+    const seen: { url: string; body: string }[] = [];
+    const queue = [...responses];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({ url: String(input), body: typeof init?.body === "string" ? init.body : "" });
+      const next = queue.shift();
+      if (!next) throw new Error("fetch called more times than the test queued responses for");
+      return new Response(JSON.stringify(next.body), { status: next.status });
+    }) as typeof fetch;
+    return seen;
+  }
+  const draftPr = {
+    number: 12,
+    html_url: "https://github.com/acme/proj/pull/12",
+    node_id: "PR_kwDOabc",
+    draft: true,
+    state: "open",
+    merged: false,
+    additions: 5,
+    deletions: 1,
+  };
+
+  test("a draft is read, then marked ready with its node id through GraphQL", async () => {
+    const seen = recordFetch([
+      { status: 200, body: draftPr },
+      { status: 200, body: { data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } } } },
+    ]);
+    const pr = await markPullRequestReady(identity, 12, "tok");
+    assert.deepEqual(pr, { number: 12, url: draftPr.html_url, state: "open", additions: 5, deletions: 1 });
+    assert.equal(seen[0]?.url, "https://api.github.com/repos/acme/proj/pulls/12");
+    assert.equal(seen[1]?.url, "https://api.github.com/graphql");
+    const gql = JSON.parse(seen[1]?.body ?? "{}") as { query: string; variables: { id: string } };
+    assert.match(gql.query, /markPullRequestReadyForReview/);
+    assert.equal(gql.variables.id, "PR_kwDOabc");
+  });
+
+  test("a PR that is already ready needs no mutation", async () => {
+    const seen = recordFetch([{ status: 200, body: { ...draftPr, draft: false } }]);
+    await markPullRequestReady(identity, 12, "tok");
+    assert.equal(seen.length, 1);
+  });
+
+  test("GraphQL errors inside a 200 are a failure, with the token redacted", async () => {
+    recordFetch([
+      { status: 200, body: draftPr },
+      { status: 200, body: { errors: [{ message: "Resource not accessible by secret-tok" }] } },
+    ]);
+    await assert.rejects(
+      markPullRequestReady(identity, 12, "secret-tok"),
+      (err: Error) => /refused to mark PR #12 ready/.test(err.message) && !err.message.includes("secret-tok"),
+    );
+  });
+
+  test("a missing PR is a failure", async () => {
+    recordFetch([{ status: 404, body: { message: "Not Found" } }]);
+    await assert.rejects(markPullRequestReady(identity, 12, "tok"), /\(404\)/);
   });
 });
 

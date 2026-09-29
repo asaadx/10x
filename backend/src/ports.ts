@@ -1,9 +1,9 @@
 /**
- * Port blocks for per-ticket dev servers.
+ * Port blocks for local Preview dev servers.
  *
  * Pure and import-free, in the spirit of lifecycle.ts: allocation is the part that can
- * silently hand two tickets the same port, so it has to be testable without a database, a
- * Herdr session or an agent.
+ * silently hand two Previews the same port, so it has to be testable without a database or a
+ * running server.
  *
  * A BOUNDED SLOT POOL, not `base + ticket.number`. Ticket numbers grow without bound and
  * would eventually walk into ports other software owns; a fixed pool cannot. A slot is
@@ -29,10 +29,9 @@ function envInt(name: string, fallback: number): number {
 }
 
 /**
- * How many tickets may hold a block at once. Ten is arbitrary, which is exactly why it is
- * configurable. Because a block is reserved at spawn — the port must exist before the agent
- * starts, to be injected into its environment — this is also a cap on concurrently
- * in-progress tickets: the next spawn is rejected, not queued.
+ * How many Previews may hold a block at once. Ten is arbitrary, which is exactly why it is
+ * configurable. Agents run in the cloud and hold no local port; only a Preview does, so this
+ * caps concurrently running Previews: the next one is rejected, not queued.
  */
 export const MAX_PORT_SLOTS = envInt("MAX_PORT_SLOTS", 10);
 
@@ -78,7 +77,7 @@ export function allocateSlot(held: Iterable<number>, cap = MAX_PORT_SLOTS): Slot
   return { ok: false, reason: "pool_exhausted", cap };
 }
 
-/** The file 10x writes into a ticket's worktree so the agent can read its port. */
+/** The file 10x writes into a Preview checkout so the dev server can read its port. */
 export const ENV_FILE = ".env";
 
 /**
@@ -88,9 +87,9 @@ export const ENV_FILE = ".env";
  */
 export const envFileFor = (block: PortBlock, ticket: string): string =>
   [
-    `# Written by 10x when it spawned the agent for ${ticket}.`,
-    `# This worktree owns TCP ports ${block.start}-${block.end}; every other port belongs to`,
-    "# another ticket or to the board itself. Machine-local — it is git-excluded, not tracked.",
+    `# Written by 10x when it started a Preview of ${ticket}.`,
+    `# This checkout owns TCP ports ${block.start}-${block.end}; every other port belongs to`,
+    "# another Preview or to the board itself. Machine-local — it is git-excluded, not tracked.",
     `PORT=${block.start}`,
     `PORT_RANGE_START=${block.start}`,
     `PORT_RANGE_END=${block.end}`,

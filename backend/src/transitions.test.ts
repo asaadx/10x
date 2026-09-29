@@ -113,7 +113,7 @@ describe("planStatusMove", () => {
     assert.equal(plan.ok, false);
     if (plan.ok) return;
     assert.equal(plan.error, "transition_has_side_effects");
-    assert.equal(plan.owner, "the agent-status callback");
+    assert.equal(plan.owner, "the agent poller");
   });
 
   /*

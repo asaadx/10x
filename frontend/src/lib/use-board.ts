@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getBoard, getProjects, MOCK_MODE, mockProjects } from "@/lib/api.ts";
 import { MOCK_TICKETS } from "@/mock.ts";
-import type { Orphan, Project, Ticket } from "@/types.ts";
+import type { Project, Ticket } from "@/types.ts";
 
 /**
  * The board's live read. One hook owns the poll so no component has to know a request exists.
@@ -11,16 +11,15 @@ import type { Orphan, Project, Ticket } from "@/types.ts";
 export type Board = {
   tickets: Ticket[];
   projects: Project[];
-  unowned: Orphan[];
   /** Last read failure, or null. Never clears the data it accompanies. */
   error: string | null;
 };
 
 /**
  * One second, matching the previous vanilla frontend and what `e2e/board.spec.ts` still waits
- * on. Polling is the placeholder, not the design: the backend already holds a long-lived Herdr
- * subscription and knows the moment anything changes, so the intended replacement is
- * `## Push board updates with SSE instead of polling` in `memory/parking-lot.md`.
+ * on. The board read is a pure database read (the agents write their state into the shared
+ * database), so the poll is cheap; SSE remains parked as `## Push board updates with SSE instead
+ * of polling` in `memory/parking-lot.md`.
  */
 const POLL_MS = 1000;
 
@@ -32,8 +31,6 @@ const POLL_MS = 1000;
 const mockBoard = (): Board => ({
   tickets: MOCK_TICKETS,
   projects: mockProjects.list(),
-  // The fixtures have no orphaned worktrees; the reconciler is what produces these.
-  unowned: [],
   error: null,
 });
 
@@ -44,7 +41,7 @@ const mockBoard = (): Board => ({
  */
 export function useBoard(projectId: string): Board & { refresh: () => void } {
   const [board, setBoard] = useState<Board>(() =>
-    MOCK_MODE ? mockBoard() : { tickets: [], projects: [], unowned: [], error: null },
+    MOCK_MODE ? mockBoard() : { tickets: [], projects: [], error: null },
   );
   // Written by the effect below and read by `refresh`, so a manual refresh runs the effect's
   // OWN poll — the current project's, sharing its in-flight guard — rather than a second
@@ -74,9 +71,8 @@ export function useBoard(projectId: string): Board & { refresh: () => void } {
 
     /**
      * `manual` is the whole difference between the two callers. A timer tick that lands on a
-     * request still running is DROPPED: `GET /tickets` does real Herdr work per call — an
-     * `agent.list` plus a `worktree.list` per repo — so overlapping polls multiply that load
-     * for no extra freshness. A refresh asked for by a write is instead QUEUED and run as soon
+     * request still running is DROPPED: `GET /tickets` is a round trip to the hosted database,
+     * so overlapping polls would stack requests for no extra freshness. A refresh asked for by a write is instead QUEUED and run as soon
      * as the current request lands, because dropping it would put the write's own result up to
      * a full second away, which is the wait it exists to remove. Either way exactly one
      * request is ever in flight, which is the guarantee the guard is here for.
@@ -90,7 +86,7 @@ export function useBoard(projectId: string): Board & { refresh: () => void } {
       try {
         const [response, projects] = await Promise.all([getBoard(projectId), getProjects()]);
         if (!current) return;
-        setBoard({ tickets: response.tickets, projects, unowned: response.unowned, error: null });
+        setBoard({ tickets: response.tickets, projects, error: null });
       } catch (cause) {
         if (!current) return;
         // Keep the last good data and hang the error off it. A backend restart mid-poll is a

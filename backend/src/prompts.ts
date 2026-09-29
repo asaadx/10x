@@ -16,6 +16,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { ChecklistItem, Project, SessionKind, Ticket } from "./types.ts";
 
 /** Prose, not source: a sibling of `backend/` and `frontend/`, resolved the same way. */
 const PROMPT_DIR = join(import.meta.dirname, "..", "..", "prompts");
@@ -64,4 +65,67 @@ export async function loadPrompt(
 ): Promise<string> {
   const file = join(PROMPT_DIR, `${name}.md`);
   return renderPrompt(await readFile(file, "utf8"), values, `prompts/${name}.md`);
+}
+
+/**
+ * The branch an implementation session is told to push. `claude/`-prefixed because that is what
+ * cloud sessions reliably push (docs/prototype-cloud.md); the agent still writes the branch it
+ * ACTUALLY pushed into the row, so this is a request, not a derivation anything relies on.
+ */
+export const sessionBranchFor = (ticketId: string): string => `claude/10x-${ticketId}`;
+
+/**
+ * The ticket as it stands, as prose. Its first line is `10x ticket <id> — <title>`, which is
+ * the one fixed shape in the message: the fake cloud driver reads the id back out of it
+ * (cloud.ts `ticketIdFromMessage`), exactly as the real agent has only this text to go on.
+ *
+ * Empty fields are named as empty rather than omitted, so an agent handed a title-only ticket
+ * goes straight to the description instead of asking about one it can see is blank.
+ */
+export function ticketBlock(ticket: Ticket): string {
+  const checked = (item: ChecklistItem) => `- [${item.done ? "x" : " "}] ${item.text}`;
+  return [
+    `10x ticket ${ticket.id} — ${ticket.title}`,
+    "",
+    "Description:",
+    ticket.description.trim() || "(empty)",
+    "",
+    `Playbook: ${ticket.playbook}`,
+    "",
+    "Task breakdown:",
+    ticket.taskBreakdown.map(checked).join("\n") || "(empty)",
+    "",
+    "Acceptance criteria:",
+    ticket.acceptanceCriteria.map(checked).join("\n") || "(empty)",
+  ].join("\n");
+}
+
+/**
+ * A cloud session's opening message: the ticket, then the rendered instructions, as ONE text.
+ * `claude --cloud` has no system-prompt flag we rely on, so the instructions travel in the
+ * message itself.
+ *
+ * Concatenated rather than substituted into a `{{ticket}}` marker on purpose: the ticket is
+ * user-written text, and a description that happens to contain `{{something}}` would trip the
+ * leftover-marker check in `renderPrompt` — refusing a spawn over the user's own prose. Only
+ * the values this module controls go through the marker checks.
+ */
+export async function sessionMessage(
+  kind: SessionKind,
+  ticket: Ticket,
+  project: Project,
+  runToken: string,
+): Promise<string> {
+  const repo = `${project.owner}/${project.repo}`;
+  const instructions =
+    kind === "impl"
+      ? await loadPrompt("implementation", {
+          ticketId: ticket.id,
+          runToken,
+          branch: sessionBranchFor(ticket.id),
+          baseBranch: project.baseBranch,
+          repo,
+        })
+      : await loadPrompt("plan", { ticketId: ticket.id, runToken, repo });
+  return `${ticketBlock(ticket)}\n\n---\n\n${instructions}`;
 }

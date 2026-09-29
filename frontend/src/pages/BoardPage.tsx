@@ -9,7 +9,6 @@ import { Button } from "@/components/ui/button.tsx";
 import { Spinner } from "@/components/ui/spinner.tsx";
 import { provisionProject } from "@/lib/api.ts";
 import { ALL_PROJECTS, matchesProject, ticketsForColumn } from "@/lib/board.ts";
-import type { SteerMode } from "@/lib/steer-mode.ts";
 import { COLUMNS, type Project, type ProvisionState, type SortOrder, type Status, type Ticket } from "@/types.ts";
 
 /**
@@ -102,7 +101,6 @@ type Props = {
   projects: Project[];
   error: string | null;
   refresh: () => void;
-  steerMode: SteerMode;
 };
 
 /**
@@ -117,7 +115,7 @@ type Props = {
  * still inert on purpose — each has a route, none has a caller — so a button that does
  * nothing is a missing handler rather than a broken one.
  */
-export function BoardPage({ projectId, tickets, projects, error, refresh, steerMode }: Props) {
+export function BoardPage({ projectId, tickets, projects, error, refresh }: Props) {
   const [query, setQuery] = useState("");
   // Date, newest first, is the sort the board has always defaulted to.
   const [order, setOrder] = useState<SortOrder>({ key: "date", direction: "desc" });
@@ -202,7 +200,6 @@ export function BoardPage({ projectId, tickets, projects, error, refresh, steerM
               key={status}
               status={status}
               label={label}
-              steerMode={steerMode}
               tickets={ticketsForColumn(visible, status, query, order)}
               projectStates={projectStates}
               onNewTicket={
@@ -233,11 +230,14 @@ export function BoardPage({ projectId, tickets, projects, error, refresh, steerM
         onOpenChange={setSheetOpen}
         projects={projects}
         defaultProjectId={projectId === ALL_PROJECTS ? "" : projectId}
-        ticket={sheetTicket}
+        // The live row from this poll, not the snapshot taken at open: the agent writes its
+        // state and note while the sheet is up, and Preview lands on the next read.
+        ticket={sheetTicket === null ? null : (tickets.find((t) => t.id === sheetTicket.id) ?? sheetTicket)}
         createInto={createInto}
         actionError={sheetError}
         onCreated={refresh}
         onSaved={refresh}
+        onChanged={refresh}
       />
     </>
   );

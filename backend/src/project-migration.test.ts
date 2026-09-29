@@ -75,38 +75,38 @@ process.env.DB_PATH = dbPath;
 
 // db.ts migrates at module load, so DB_PATH must point at the file above before it is imported
 // — a static import hoists over these assignments and would migrate the real ~/.10x/10x.db.
-const { db } = await import("./db.ts");
+const { db, initDb } = await import("./db.ts");
+await initDb();
 const { getProject } = await import("./projects.ts");
 
-after(() => {
-  db.close();
+after(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
 describe("projects migration", () => {
-  test("a project whose folder has a GitHub origin gets its identity backfilled", () => {
-    const project = getProject("linked");
+  test("a project whose folder has a GitHub origin gets its identity backfilled", async () => {
+    const project = await getProject("linked");
     assert.ok(project, "project vanished across the migration");
     assert.equal(project.owner, "acme");
     assert.equal(project.repo, "widgets");
   });
 
-  test("an already-cloned project stays usable — it must not be parked as unprovisioned", () => {
-    const project = getProject("linked");
+  test("an already-cloned project stays usable — it must not be parked as unprovisioned", async () => {
+    const project = await getProject("linked");
     assert.ok(project);
     assert.equal(project.provisionState, "ready");
     assert.equal(project.provisionError, "");
   });
 
-  test("columns added by the migration read back as their defaults, not NULL", () => {
-    const project = getProject("linked");
+  test("columns added by the migration read back as their defaults, not NULL", async () => {
+    const project = await getProject("linked");
     assert.ok(project);
     // NULL here would throw in rowToProject rather than arriving as a string.
     assert.equal(project.description, "");
   });
 
-  test("a project with no readable GitHub remote is marked failed, not left blank", () => {
-    const project = getProject("orphaned");
+  test("a project with no readable GitHub remote is marked failed, not left blank", async () => {
+    const project = await getProject("orphaned");
     assert.ok(project, "project vanished across the migration");
     assert.equal(project.owner, "");
     assert.equal(project.repo, "");
@@ -114,12 +114,12 @@ describe("projects migration", () => {
     assert.match(project.provisionError, /re-link/i);
   });
 
-  test("the backfill is idempotent: a second migration pass leaves resolved rows alone", () => {
+  test("the backfill is idempotent: a second migration pass leaves resolved rows alone", async () => {
     // The backfill only selects rows still holding the empty default, so re-running it must
     // not overwrite `linked` — and must not resurrect `orphaned` into a resolved state.
-    const before = getProject("linked");
-    db.exec("UPDATE projects SET updated_at = updated_at WHERE id = 'linked'");
-    const after_ = getProject("linked");
+    const before = await getProject("linked");
+    await db.execute("UPDATE projects SET updated_at = updated_at WHERE id = 'linked'");
+    const after_ = await getProject("linked");
     assert.ok(before && after_);
     assert.equal(after_.owner, before.owner);
     assert.equal(after_.repo, before.repo);

@@ -1,8 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { cleanupAll, makeRepo, requireHerdr, startBoard, type Board } from "./fixtures.ts";
+import { cleanupAll, createProject, makeRepo, startBoard, type Board } from "./fixtures.ts";
 
 const PROJECT_ID = "brd";
-const PROJECT_NAME = "Board Project";
+// What `createProject` names a seeded project.
+const PROJECT_NAME = "Project brd";
 const SEEDED_TITLE = "Seeded before the page loaded";
 const POLLED_TITLE = "Created after the page loaded";
 
@@ -20,15 +21,9 @@ async function post(path: string, data: unknown): Promise<void> {
 }
 
 test.beforeAll(async () => {
-  requireHerdr();
   board = await startBoard();
 
-  await post("/projects", {
-    id: PROJECT_ID,
-    name: PROJECT_NAME,
-    repoPath: await makeRepo(),
-    baseBranch: "dev",
-  });
+  await createProject(board, PROJECT_ID, await makeRepo());
   await post("/tickets", {
     projectId: PROJECT_ID,
     title: SEEDED_TITLE,
@@ -55,8 +50,11 @@ test("shows the project and its backlog ticket", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Backlog 1" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "In Progress 0" })).toBeVisible();
 
-  // `Start` is the backlog-only affordance; an in-progress card offers Cancel instead.
-  await expect(page.getByRole("button", { name: "Start" })).toBeVisible();
+  // A backlog card is a raw idea: it offers Plan (a planning session) and a move to To Do.
+  // Start belongs to To Do.
+  const card = page.getByRole("article", { name: `${PROJECT_ID}-1` });
+  await expect(card.getByRole("button", { name: "Plan", exact: true })).toBeVisible();
+  await expect(card.getByRole("button", { name: "Start" })).toHaveCount(0);
 });
 
 /**
@@ -92,10 +90,10 @@ test("renders an empty Done column", async ({ page }) => {
 });
 
 /**
- * The four columns are named regions; asserting their accessible names in DOM order is the
+ * The five columns are named regions; asserting their accessible names in DOM order is the
  * only way to pin "Done comes after In Review" without reaching into DOM structure.
  */
-test("shows all four columns in order", async ({ page }) => {
+test("shows all five columns in order", async ({ page }) => {
   await page.goto(board.baseUrl);
 
   // Wait for the first poll to land before reading the snapshot below: a bare `evaluateAll`
@@ -105,18 +103,18 @@ test("shows all four columns in order", async ({ page }) => {
   const names = await page.getByRole("region").evaluateAll((els) =>
     els.map((el) => el.getAttribute("aria-labelledby") && document.getElementById(el.getAttribute("aria-labelledby")!)?.textContent?.trim()),
   );
-  expect(names).toEqual(["Backlog 1", "In Progress 0", "In Review 0", "Done 0"]);
+  expect(names).toEqual(["Backlog 1", "To Do 0", "In Progress 0", "In Review 0", "Done 0"]);
 });
 
 /**
- * Accept is In-Review-only. A backlog card offers Start instead, and must never grow an
+ * Accept is In-Review-only. A backlog card offers Plan instead, and must never grow an
  * Accept button of its own.
  */
 test("a backlog card shows no Accept button", async ({ page }) => {
   await page.goto(board.baseUrl);
 
   const backlog = page.getByRole("region", { name: "Backlog 1" });
-  await expect(backlog.getByRole("button", { name: "Start" })).toBeVisible();
+  await expect(backlog.getByRole("button", { name: "Plan", exact: true })).toBeVisible();
   await expect(backlog.getByRole("button", { name: "Accept" })).toHaveCount(0);
 });
 
@@ -130,7 +128,7 @@ test("a backlog card shows no Reject button", async ({ page }) => {
   await page.goto(board.baseUrl);
 
   const backlog = page.getByRole("region", { name: "Backlog 1" });
-  await expect(backlog.getByRole("button", { name: "Start" })).toBeVisible();
+  await expect(backlog.getByRole("button", { name: "Plan", exact: true })).toBeVisible();
   await expect(backlog.getByRole("button", { name: "Reject" })).toHaveCount(0);
 });
 
@@ -161,22 +159,20 @@ test("picks up a ticket created after load without a reload", async ({ page, req
 });
 
 /**
- * The frontend is a stylesheet plus five ES modules, so the static route is load-bearing:
- * if it silently reverts to 404 the board renders unstyled and dead, and nothing else in
- * this suite would notice. This pins both halves — the assets are served with usable
- * content types, and the route stays a narrow allow-list rather than a filesystem probe.
+ * The frontend is a Vite build — an app shell plus hashed script and stylesheet bundles — so
+ * the static route is load-bearing: if it silently reverts to 404 the board renders unstyled
+ * and dead, and nothing else in this suite would notice. This pins both halves — the assets
+ * are served with usable content types, and the route stays a narrow allow-list rather than a
+ * filesystem probe. The bundle names are hashed, so they are read out of the shell itself.
  */
 test("serves the frontend's assets, and refuses everything else", async ({ request }) => {
-  const assets = [
-    ["/styles.css", "text/css"],
-    ["/js/app.js", "text/javascript"],
-    ["/js/render.js", "text/javascript"],
-    ["/js/state.js", "text/javascript"],
-    ["/js/api.js", "text/javascript"],
-    ["/js/icons.js", "text/javascript"],
-    ["/", "text/html"],
-    ["/index.html", "text/html"],
-  ];
+  const shell = await (await request.get(`${board.baseUrl}/`)).text();
+  const bundles = Array.from(shell.matchAll(/(?:src|href)="(\/assets\/[^"]+\.(js|css))"/g), (m) => [
+    m[1] ?? "",
+    m[2] === "js" ? "text/javascript" : "text/css",
+  ]);
+  expect(bundles.map(([, type]) => type).sort()).toEqual(["text/css", "text/javascript"]);
+  const assets = [...bundles, ["/", "text/html"], ["/index.html", "text/html"]];
   for (const [path, type] of assets) {
     const res = await request.get(`${board.baseUrl}${path}`);
     expect(res.status(), path).toBe(200);

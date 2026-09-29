@@ -1,36 +1,60 @@
-# GitHub: publishing, webhooks and merge state
+# GitHub: pull requests, webhooks and merge state
 
 **Node:** github · Parent: [INDEX.md](./INDEX.md)
 
-Everything 10x knows about GitHub. Publishing is **built** ([`backend/src/github.ts`](../backend/src/github.ts),
-driven by `POST /tickets/:id/accept`), and so is the webhook receiver and the live PR-state read
-the delete guard depends on ([teardown](./teardown.md)).
+Everything 10x knows about GitHub. The cloud agent pushes its own branch and opens its own
+**draft** PR (`prompts/implementation.md`); the board's part is **Accept**
+([`backend/src/github.ts`](../backend/src/github.ts), driven by `POST /tickets/:id/accept`), the
+webhook receiver, the poller's PR reconcile, and the live PR-state read the delete and archive
+guards depend on.
 
-> **Provenance.** The publishing section is verified against the source in this repo. The webhook
-> and merge-state section was observed in an earlier session against a live
-> `gh webhook forward` on `asaadx/10x-test`, with real merges and a real induced conflict. Measured
-> numbers are real. Anything unobserved is labelled *inferred*.
+> **Provenance.** The Accept and reconcile sections are verified against the source and
+> `server-pr.test.ts` / `github.test.ts` (a fake GitHub behind `github-fetch-shim.ts`); neither
+> has run against real GitHub on this branch. The webhook and merge-state section was observed in
+> an earlier session against a live `gh webhook forward` on `asaadx/10x-test`, with real merges
+> and a real induced conflict. Anything unobserved is labelled *inferred*.
 
-## Publishing a branch as a PR
+## Accept: marking the agent's PR ready
 
-`backend/src/github.ts` is two network calls, no client class and no injected transport: `git push` via
-`execFile`, then `POST /repos/{owner}/{repo}/pulls` via `fetch`. Four decisions in it are
-load-bearing.
+`github.ts` is plain `fetch`, no client class and no injected transport. Accept (claim
+`in_review → done` first) takes one of two paths:
 
-- **`redact` runs on every error path.** The push URL embeds the token, so an unredacted failure
-  would put the secret into an error message, a log line, **and the HTTP response body** the board
-  renders. It strips the literal token and any `https://user@` credential prefix. `server.ts`
+- **The agent recorded `pr_number`** (the normal case) → `markPullRequestReady`: a REST
+  `GET /repos/{o}/{r}/pulls/{n}`, and **only if `draft` is true** the GraphQL mutation
+  `markPullRequestReadyForReview` with the PR's `node_id` — REST has no endpoint for leaving
+  draft. An already non-draft PR is success with no mutation, so a retry or a human who clicked
+  "Ready" on GitHub first cannot fail Accept. GraphQL answers **200 with an `errors` array** for a
+  refused mutation, so both the status and the array are checked.
+- **The agent pushed a branch but opened no PR** → `openPullRequest` from `tickets.branch` to
+  the project's base. **No local push**: the branch is already on GitHub. A 422 "a pull request
+  already exists" **adopts** the open PR for that head rather than failing.
+
+Either way the PR as read is recorded (`setPullRequest`, then `setPullRequestState` with state and
+±LOC, both keyed on GitHub's own `html_url`) with no third call. Any failure hands the claim back
+to `in_review` and answers 502. 10x **never merges**.
+
+Decisions that stay load-bearing:
+
+- **`redact` runs on every error path.** It strips the literal token and any `https://user@`
+  credential prefix, so no error message, log line or response body carries it. `server.ts`
   deliberately does **not** log the raw error separately — doing so undoes the redaction.
-- **`owner/repo` is read from the repo's `origin` remote**, not stored. `parseRemote` accepts both
-  `https://github.com/owner/repo(.git)?` and `git@github.com:owner/repo(.git)?`. This is why
-  `Project` can get away with storing only `repoPath`; see the design smell in
-  [parking-lot](./parking-lot.md).
-- **An already-up-to-date push is success.** Git exits 0 and says so, so there is no special case.
-- **A 422 "a pull request already exists" ADOPTS the existing PR** rather than failing. That is the
-  correct behaviour for a retry after a partial failure, not an error path.
+- **`owner/repo` comes from the project row**, never from the clone's remote — the project's
+  identity is a column, validated when the project is added (`fetchRepoMetadata`, the admission
+  test behind `GET /projects/lookup`).
+- `pushTicketBranch` still exists in `github.ts` but nothing calls it; the agent pushes.
 
-Accept's ordering is in [operations](./operations.md): claim, push, open PR, `setPullRequest`, then
-retire the agent. Only the first three can hand the claim back.
+**Two tokens, two places.** The board's `GITHUB_TOKEN` (repo-root `.env`) is used for Accept, the
+guards and the reconcile. The agent's `GH_TOKEN` is a **cloud-environment** variable the user sets
+in claude.ai, used by `gh pr create` and `gh pr comment --attach` inside the session
+(`docs/prototype-cloud-setup.md`). A Preview's dev server gets neither (`preview.ts`
+`WITHHELD_ENV`).
+
+## Screenshots live on the PR
+
+The agent captures before/after with `playwright-cli` and posts them with
+`gh pr comment <n> --attach` (gh ≥ 2.99) on its own draft PR. Nothing is committed and nothing is
+uploaded to the board; the ticket sheet links to the PR. The legacy `screenshot_before/after`
+columns are no longer written.
 
 ## Webhooks
 
@@ -47,32 +71,47 @@ Three lines of glue in `server.ts` between one pure narrowing function and one w
   Every action — opened, synchronize, reopened, closed — flows through those same three lines, so
   no allow-list can fall behind GitHub's action vocabulary.
 - **The ticket is matched by `pr_url`, not `pr_number`.** PR numbers are per-repo and would collide
-  across projects; the URL is globally unique and already stored, so this needs no `owner/repo`
-  parsing. A webhook for a PR no ticket owns answers `{ok: true, matched: false}` and writes
-  nothing — normal, not an error.
+  across projects; the URL is globally unique and already stored. A webhook for a PR no ticket owns
+  answers `{ok: true, matched: false}` and writes nothing — normal, not an error. The agent writes
+  `pr_url` itself, so an agent-written URL that differs from GitHub's `html_url` matches nothing
+  until Accept rewrites it ([gotchas](./gotchas.md)).
 - **The route always answers 2xx.** GitHub retries a non-2xx, and a retry cannot fix a body we do
-  not recognise or a PR we do not own, so a 4xx would only buy repeated deliveries of the same
-  useless event. An unrecognised body answers `{ok: true, ignored: true}`.
-- Stored in three nullable columns — `pr_state`, `pr_additions`, `pr_deletions` — added by
-  `addColumnIfMissing` ([architecture](./architecture.md)). `toPullRequestState` decodes an
-  unrecognised value to **`null`, not a default**, unlike `toStatus`: "we have not heard about this
-  PR" is a real and common state, since most tickets never reach `done`.
+  not recognise or a PR we do not own. An unrecognised body answers `{ok: true, ignored: true}`.
+- Stored in three nullable columns — `pr_state`, `pr_additions`, `pr_deletions`.
+  `toPullRequestState` decodes an unrecognised value to **`null`, not a default**, unlike
+  `toStatus`: "we have not heard about this PR" is a real and common state.
 - **`gh webhook forward --repo=… --events=pull_request --url=…` works**, creates an **ephemeral**
   hook, tears it down on exit, and sends **no HMAC signature header**. Events that occur while it
-  is down are **lost, not queued** — GitHub does not replay them to an ephemeral hook.
-- **No signature verification, deliberately.** `gh webhook forward` is the only delivery path that
-  exists, and it never sends a header to verify. More to the point, the board **binds `0.0.0.0`**
-  (`server.ts` `.listen(PORT, …)`, no host) and **has no auth on any endpoint** — anyone who could
-  forge a webhook can already call `DELETE /tickets/:id`, which force-removes the worktree, deletes
-  the branch and drops the row with no audit trail. HMAC on this one route would harden the least
-  dangerous door in an unlocked house. The two `.env` secrets `WEBHOOK_10X` and `WEBHOOK_10X_TEST`
-  are wired to nothing.
+  is down are **lost, not queued**. Nothing in `package.json` starts it, and it covers one repo per
+  process.
+- **No signature verification, deliberately.** `gh webhook forward` never sends a header to
+  verify, and the board **binds `0.0.0.0`** (`server.ts` `.listen(PORT, …)`, no host) with **no
+  auth on any endpoint** — anyone who could forge a webhook can already call
+  `DELETE /tickets/:id`. HMAC on this one route would harden the least dangerous door in an
+  unlocked house. The `.env` secrets `WEBHOOK_10X` and `WEBHOOK_10X_TEST` are wired to nothing.
 - **What would change that: the endpoint becoming reachable from the public internet** — a tunnel,
-  Smee, or a hosted deploy. A tailnet does not count. The rule then needs no mode flag: **verify iff
-  a secret env var is set.** Set one in production, leave it unset locally, and `gh webhook forward`
-  never trips it. If the board ever goes public, webhook HMAC is far from the most urgent fix.
-- Because events are lossy, the receiver **cannot be the only source of PR state**. The on-demand
-  read below doubles as the recovery path.
+  Smee, or a hosted deploy. The rule then needs no mode flag: **verify iff a secret env var is
+  set.**
+
+## The poller's reconcile — PR state without a webhook
+
+Because webhook events are lossy and usually not forwarded at all, **the poller asks**:
+`reconcilePullRequests` in `server.ts` runs on every poll tick, after the move to review, and for
+every listed ticket with a `pr_number` whose `pr_state` is not terminal (`needsLiveCheck`: not
+`merged`/`closed`) does one `GET /repos/{o}/{r}/pulls/{n}` at most once per `PR_CHECK_TTL_MS`
+(60 s) per ticket, writing state and ±LOC. It is **fail-open** — no token, or a failed read,
+leaves the stored value — and runs from the poller rather than the board read so `GET /tickets`
+stays a pure database read (verified, `server-pr.test.ts`). This matters more than it used to: the
+agent writes only `pr_number`/`pr_url`, so without the reconcile nothing would ever fill in the
+PR's state or ±LOC.
+
+**Tradeoff accepted:** a merge or close between two checks of the same ticket is invisible for up
+to 60 s.
+
+**The guards read live and fail closed.** Ticket delete, project delete and Archive each read any
+non-terminal PR live before doing something irreversible: an `open` PR answers 409 `pr_open`, an
+unreadable one (or no `GITHUB_TOKEN`) answers 409 `pr_state_unknown`, and a freshly read terminal
+state is persisted — the recovery path for a missed event.
 
 ## Merge state can only be asked for
 
@@ -82,21 +121,16 @@ Three lines of glue in `server.ts` between one pure narrowing function and one w
   was sent for B**. Polling is the only way to learn it.
 - **A single naive read shows nothing.** `GET /repos/{owner}/{repo}/pulls/{n}` returned
   `mergeable: null` first, then `mergeable: false, mergeable_state: "dirty"` **~4 s later**. So
-  **`null` means retry**, never "unknown forever" — treating `null` as a terminal answer is the bug
-  this note exists to prevent.
-- The read set is small by construction: **open PRs only**, i.e. Done tickets whose PR has not
-  merged. A ~60 s cache is enough.
-- **GraphQL batching is unnecessary at this scale** and was rejected. Note for anyone re-checking
-  the arithmetic: both brackets in the original estimate (6060 and 6030 points/hr) exceed the 5000
-  ceiling — the real safe maxima are **75 and 160 tickets**.
+  **`null` means retry**, never "unknown forever". 10x does not read `mergeable` today.
+- **GraphQL batching is unnecessary at this scale** and was rejected. For anyone re-checking the
+  arithmetic: the real safe maxima under the 5000 points/hr ceiling are **75 and 160 tickets**.
 
 ## Credentials and test target
 
 - `.env` holds `GITHUB_TOKEN`, fine-grained: **Contents + Pull requests write, Metadata read**,
-  scoped to `asaadx/10x` and `asaadx/10x-test`.
-- **`asaadx/10x-test`** is the disposable e2e target: default branch `master`, plus `dev`, one
-  commit. Free rein — `accept.spec.ts` pushes to it and opens a real PR, then closes it in a
-  failure-proof `finally`. That spec **skips itself when `GITHUB_TOKEN` is unset**
-  ([testing](./testing.md)).
-- **Registering a project needs `baseBranch` passed explicitly.** It defaults to `main`, which does
-  not exist in these repos, and the failure surfaces much later as `worktree_create_failed`.
+  scoped to the repos the board publishes to. The cloud environment's `GH_TOKEN` needs
+  **Contents + Pull requests write** on the same repos.
+- **`asaadx/10x-test`** is the disposable target for trying real sessions: default branch
+  `master`, plus `dev`, one commit.
+- No test talks to real GitHub: route tests use a fake behind `github-fetch-shim.ts`, and e2e
+  starts every board with `GITHUB_TOKEN=""` ([testing](./testing.md)).

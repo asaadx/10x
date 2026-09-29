@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { cleanupAll, requireHerdr, startBoard, type Board } from "./fixtures.ts";
+import { cleanupAll, startBoard, type Board } from "./fixtures.ts";
 
 /**
  * A project is identified by its GitHub repo now, not by a path on this machine, and creating
@@ -13,7 +13,6 @@ import { cleanupAll, requireHerdr, startBoard, type Board } from "./fixtures.ts"
 let board: Board;
 
 test.beforeAll(async () => {
-  requireHerdr();
   board = await startBoard();
 });
 

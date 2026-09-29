@@ -156,6 +156,7 @@ export function ProjectDialog({
   const [description, setDescription] = useState("");
   const [slug, setSlug] = useState("");
   const [baseBranch, setBaseBranch] = useState("");
+  const [devCommand, setDevCommand] = useState("");
   const [seedCommit, setSeedCommit] = useState(true);
   const [lookup, setLookup] = useState<Lookup>({ phase: "idle" });
   const [pending, setPending] = useState(false);
@@ -180,6 +181,7 @@ export function ProjectDialog({
       setDescription(editing.description ?? "");
       setSlug(editing.id);
       setBaseBranch(editing.baseBranch);
+      setDevCommand(editing.devCommand ?? "");
       setLookup({ phase: "idle" });
       return;
     }
@@ -188,6 +190,7 @@ export function ProjectDialog({
     setDescription("");
     setSlug("");
     setBaseBranch("");
+    setDevCommand("");
     setSeedCommit(true);
     setLookup({ phase: "idle" });
   }, [open, editing]);
@@ -253,12 +256,13 @@ export function ProjectDialog({
     setPending(true);
     setFailure(null);
     try {
-      const saved =
+      let saved =
         editing !== null
           ? await updateProject(editing.id, {
               name: name.trim(),
               description: description.trim(),
               baseBranch: baseBranch.trim(),
+              devCommand: devCommand.trim(),
             })
           : await createProject({
               remote: link.trim(),
@@ -267,6 +271,12 @@ export function ProjectDialog({
               id: slug,
               seedInitialCommit: found !== null && found.empty && seedCommit,
             });
+      // `POST /projects` does not take a dev command, so a new project gets it through the
+      // same PATCH an edit uses. Not atomic with the create: if this fails the project exists
+      // without one, and the message stays up in the still-open dialog.
+      if (editing === null && devCommand.trim() !== "") {
+        saved = await updateProject(saved.id, { devCommand: devCommand.trim() });
+      }
       onSaved(saved);
       onOpenChange(false);
     } catch (error) {
@@ -355,6 +365,23 @@ export function ProjectDialog({
             />
             <p className="text-[11px] text-muted-foreground">
               Your own note about what this project is. Not sent to agents.
+            </p>
+          </div>
+
+          <div className="grid gap-1.5">
+            <FieldLabel htmlFor="p-dev" hint="optional">
+              Dev command
+            </FieldLabel>
+            <Input
+              id="p-dev"
+              value={devCommand}
+              onChange={(e) => setDevCommand(e.target.value)}
+              placeholder="pnpm dev --port $PORT"
+              className="font-mono text-xs"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Runs in the ticket's preview checkout with $PORT set. Leave empty and Preview only checks the
+              branch out.
             </p>
           </div>
 
@@ -595,18 +622,9 @@ export function DeleteProjectDialog({
             <span aria-hidden className="text-muted-foreground">
               •
             </span>
-            <span>Every running agent, stopped in Herdr</span>
-          </li>
-          <li className="flex gap-2">
-            <span aria-hidden className="text-muted-foreground">
-              •
-            </span>
-            {/* Two locations, not one: Herdr keeps worktrees outside the repo, so deleting only
-                10x's copy would leave them behind, broken and invisible to the board. */}
-            <span>
-              Every working copy and its unmerged branch, deleted from{" "}
-              <span className="font-mono text-xs">~/.herdr/worktrees/{project.id}/</span>
-            </span>
+            {/* There is no CLI to stop or archive a cloud session (docs/prototype-cloud.md), so
+                the dialog says so rather than implying they end with the project. */}
+            <span>Cloud sessions are not touched — archive them on claude.ai if you want them gone</span>
           </li>
           {/*
             Only claimed when the server will actually do it. `ownsClone` is false for a project

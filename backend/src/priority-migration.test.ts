@@ -63,17 +63,17 @@ process.env.DB_PATH = dbPath;
 // already point at the pre-existing file above before it is ever imported — a static import
 // hoists above the assignments and would migrate the real ~/.10x/10x.db instead. Same reason
 // db.test.ts and ticket-store.test.ts both use a dynamic import here.
-const { db } = await import("./db.ts");
+const { db, initDb } = await import("./db.ts");
+await initDb();
 const { getTicket } = await import("./ticket-store.ts");
 
-after(() => {
-  db.close();
+after(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
 describe("priority migration", () => {
-  test("a ticket row that predates the priority column reads back as low with no manual step", () => {
-    const ticket = getTicket("proj-1");
+  test("a ticket row that predates the priority column reads back as low with no manual step", async () => {
+    const ticket = await getTicket("proj-1");
     assert.ok(ticket, "ticket vanished across the migration");
     assert.equal(ticket.priority, "low");
   });

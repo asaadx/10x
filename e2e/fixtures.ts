@@ -1,19 +1,21 @@
 /**
- * E2E fixtures: a backend on a throwaway state dir, throwaway git repos, the Herdr
- * preflight, and the spawn helpers the agent-lifecycle specs share. Everything created
- * here is registered for `cleanupAll()`, which every spec calls from `afterAll` so a
- * failed run leaves nothing behind — no worktree, no branch, no agent, no transcript.
+ * E2E fixtures: a backend on a throwaway state dir, throwaway git repos with a local upstream,
+ * and the helpers the lifecycle specs share. Everything created here is registered for
+ * `cleanupAll()`, which every spec calls from `afterAll` so a failed run leaves nothing behind.
+ *
+ * No agent is ever real here. The board runs with `CLOUD_DRIVER=fake`, and `FAKE_AGENT_MS`
+ * makes the fake play the agent's half of the protocol — `working`, then `done` plus the branch
+ * it "pushed" — through the same database the board reads (backend/src/cloud.ts). That is the
+ * whole loop the product depends on, Backlog to Review, with no network and no money spent.
  */
 import { expect } from "@playwright/test";
 import { execFile, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdtemp, rm, rmdir } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
-import { HerdrError, request } from "../backend/src/herdr.ts";
 
 const git = promisify(execFile);
 
@@ -21,41 +23,32 @@ const REPO_ROOT = join(import.meta.dirname, "..");
 
 /**
  * 4310 avoids two ranges that are already spoken for: the real board runs on 4010, and
- * 4100-4199 is the per-ticket dev-server pool (memory/architecture.md).
+ * 4100-4199 is the Preview port pool (memory/architecture.md).
  */
 const PORT = 4310;
 
 const READY_TIMEOUT_MS = 15_000;
 
+/**
+ * How long the fake agent takes per step (`working` at 1x, `done` at 2x). Long enough that a
+ * spec can see the card In Progress, short enough that reaching review costs about a second.
+ */
+export const FAKE_AGENT_MS = 600;
+
+/**
+ * Previews bind a port block from here rather than the default 4100 pool, so a real board
+ * running beside the suite cannot collide with it.
+ */
+export const PREVIEW_PORT_BASE = 4700;
+
 export type Board = { baseUrl: string; stop(): Promise<void> };
 
 /** Temp dirs and live servers this run owns, drained by `cleanupAll`. */
 const tempDirs: string[] = [];
-/** Repos from `makeRepo`, kept apart because each leaves a Herdr source workspace behind. */
-const repos: string[] = [];
 const running = new Set<Board>();
 
-/**
- * Where each board keeps its SQLite file. `storedTicket` needs it because GET /tickets
- * derives `branch` and `agentName` when the columns are null, so the API cannot tell
- * "cleared" from "set".
- */
+/** Where each board keeps its SQLite file, for the fixtures that seed or read it directly. */
 const stateDirs = new WeakMap<Board, string>();
-
-const HERDR_SOCKET =
-  process.env.HERDR_SOCKET_PATH ?? join(homedir(), ".config", "herdr", "herdr.sock");
-
-/**
- * Preflight. Without Herdr the spawn and teardown paths fail as socket connection errors
- * deep inside a request, which reads as a mystery timeout rather than a missing dependency.
- */
-export function requireHerdr(): void {
-  if (existsSync(HERDR_SOCKET)) return;
-  throw new Error(
-    `no Herdr socket at ${HERDR_SOCKET} — Herdr must be running for the e2e suite. ` +
-      "Start it, or point HERDR_SOCKET_PATH at a live socket.",
-  );
-}
 
 async function tempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), prefix));
@@ -67,11 +60,7 @@ export async function startBoard(): Promise<Board> {
   return boardOn(await tempDir("10x-e2e-state-"));
 }
 
-/**
- * A new backend on the SAME state dir and database — which is what a restart is. Herdr keeps
- * the panes and agents running while only our store comes back, so a fresh state dir would
- * prove nothing about reconciliation.
- */
+/** A new backend on the SAME state dir and database — which is what a restart is. */
 export async function restartBoard(board: Board): Promise<Board> {
   const stateDir = stateDirs.get(board);
   if (stateDir === undefined) throw new Error("that board did not come from startBoard()");
@@ -87,10 +76,17 @@ async function boardOn(stateDir: string): Promise<Board> {
       PORT: String(PORT),
       STATE_DIR: stateDir,
       DB_PATH: join(stateDir, "10x.db"),
+      // Explicit, because the repo-root `.env` never overrides a variable already set: these
+      // are what keep the suite off the real CLI, the real database and the real GitHub.
+      CLOUD_DRIVER: "fake",
+      FAKE_AGENT_MS: String(FAKE_AGENT_MS),
+      AGENT_POLL_MS: "200",
+      TURSO_DATABASE_URL: "",
+      GITHUB_TOKEN: "",
+      PORT_BLOCK_BASE: String(PREVIEW_PORT_BASE),
     },
     stdio: ["ignore", "pipe", "pipe"],
-    // Its own process group, so `stop()` can signal the whole tree: the server shells out
-    // to git during teardown and an orphaned child would hold the port.
+    // Its own process group, so `stop()` can signal the whole tree.
     detached: true,
   });
 
@@ -119,7 +115,8 @@ async function boardOn(stateDir: string): Promise<Board> {
       running.delete(board);
       if (child.exitCode === null && child.signalCode === null) {
         try {
-          // Negative pid: the group, not just the leader.
+          // Negative pid: the group, not just the leader. The server stops its own Previews
+          // on SIGTERM (they run in process groups of their own).
           process.kill(-pid, "SIGTERM");
         } catch (err) {
           console.warn(`could not signal 10x server group ${pid}:`, err);
@@ -138,8 +135,6 @@ async function boardOn(stateDir: string): Promise<Board> {
       await res.text();
       return res.status;
     } catch (err) {
-      // ECONNREFUSED until the listener binds. Recorded rather than logged: the deadline
-      // below is what turns a persistent failure into a message.
       lastProbeError = err instanceof Error ? err.message : String(err);
       return undefined;
     }
@@ -162,6 +157,11 @@ async function boardOn(stateDir: string): Promise<Board> {
   );
 }
 
+/**
+ * A local clone on `dev` with a bare-repo `origin` beside it — a real upstream with no
+ * network. Preview fetches the agent's branch from `origin`, so a spec that wants something
+ * to preview pushes a branch there (`pushAgentBranch`), exactly as a cloud agent would.
+ */
 export async function makeRepo(): Promise<string> {
   const dir = await tempDir("10x-e2e-repo-");
   await git("git", ["init", "-q"], { cwd: dir });
@@ -169,153 +169,38 @@ export async function makeRepo(): Promise<string> {
   await git("git", ["config", "user.email", "e2e@10x.invalid"], { cwd: dir });
   await git("git", ["config", "user.name", "10x e2e"], { cwd: dir });
   await git("git", ["commit", "-q", "--allow-empty", "-m", "chore: initial commit"], { cwd: dir });
-  /*
-   * `dev`, not the git default. A project's `baseBranch` defaults to `main` and is only
-   * handed to git at spawn time, so registering a project whose base branch does not exist
-   * succeeds and then fails much later. Specs register with `baseBranch: "dev"` explicitly.
-   */
   await git("git", ["branch", "-M", "dev"], { cwd: dir });
-  /*
-   * An `origin` to fetch from. Spawn refreshes the base branch before creating a worktree so a
-   * ticket starts from the current upstream tip rather than whatever the clone last saw
-   * (memory/gotchas.md G7), and `git fetch origin` in a repo with no remote fails outright. A
-   * bare repo beside it, with `dev` pushed, is a real upstream with no network.
-   */
   const origin = `${dir}.git`;
+  tempDirs.push(origin);
   await git("git", ["init", "-q", "--bare", origin], { cwd: dir });
   await git("git", ["remote", "add", "origin", origin], { cwd: dir });
   await git("git", ["push", "-q", "origin", "dev"], { cwd: dir });
-  repos.push(dir, origin);
   return dir;
 }
 
+/**
+ * What a cloud agent does last before reporting `done`: push its branch to the upstream. The
+ * clone itself is left on `dev` — the branch exists only on `origin`, which is the situation
+ * Preview has to handle.
+ */
+export async function pushAgentBranch(repoPath: string, branch: string, file: string, content: string): Promise<void> {
+  const work = await tempDir("10x-e2e-agent-");
+  await git("git", ["clone", "-q", `${repoPath}.git`, work]);
+  await git("git", ["config", "user.email", "agent@10x.invalid"], { cwd: work });
+  await git("git", ["config", "user.name", "fake agent"], { cwd: work });
+  await git("git", ["checkout", "-q", "-b", branch, "origin/dev"], { cwd: work });
+  await writeFile(join(work, file), content, "utf8");
+  await git("git", ["add", file], { cwd: work });
+  await git("git", ["commit", "-q", "-m", "agent work"], { cwd: work });
+  await git("git", ["push", "-q", "origin", branch], { cwd: work });
+}
+
 export async function cleanupAll(): Promise<void> {
-  // Spawns first, and through the product's own destructive teardown wherever possible:
-  // that is the only path that kills the agent, the pane, the worktree, the branch and the
-  // OMP transcript together. Everything below destroys the state it needs to do that.
-  await drainSpawns();
-  // Servers next: a live one holds an open SQLite handle inside the state dir it is about
-  // to lose, and it would keep the port for the next spec file.
+  // Servers first: a live one holds an open SQLite handle inside the state dir it is about
+  // to lose, runs Previews out of it, and would keep the port for the next spec file.
   await Promise.all([...running].map((board) => board.stop()));
-  // Source workspaces before the repos they point at: they are matched on path.
-  await closeSourceWorkspaces();
   const dirs = tempDirs.splice(0, tempDirs.length);
   await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
-  await pruneWorktreeParents();
-}
-
-// ---------------------------------------------------------------------------
-// Spawn support. Everything below drives REAL agents in REAL worktrees, so anything that
-// creates one registers it for `cleanupAll` before it can fail.
-// ---------------------------------------------------------------------------
-
-/**
- * The canned agent task. Asserting the agent's OWN output is deliberate: our side effects
- * alone cannot distinguish "prompt delivered and agent worked" from "prompt silently lost",
- * and the second has already shipped here — `agent.start` returns before the agent can
- * accept a prompt (memory/spawn.md).
- */
-export const PROBE_FILE = "probe.txt";
-export const PROBE_CONTENT = "ok";
-export const PROBE_DESCRIPTION =
-  `Create a file named ${PROBE_FILE} in the root of this worktree, whose entire content is ` +
-  `the two characters: ${PROBE_CONTENT}\n` +
-  "Create no other file and change nothing else, then commit.";
-
-/** A spawn this run must tear down. Filled in as the spawn progresses, never guessed. */
-type Spawn = { baseUrl: string; repoPath: string; ticketId: string; branch: string; sessionDir: string | null };
-
-const spawns: Spawn[] = [];
-/** `dirname(worktreePath)` — Herdr's per-repo folder, which it leaves behind when empty. */
-const worktreeParents = new Set<string>();
-
-/**
- * DELETE runs the product's destructive teardown (memory/teardown.md): agent stopped, pane
- * closed, worktree force-removed, branch deleted, transcript removed. Any other answer means
- * the backend is gone or the test already tore this ticket down, so fall through to Herdr.
- *
- * Serial, not `Promise.all`: the backend rejects a second operation on the same ticket with
- * `operation_in_flight`, and two teardowns in one repo would race git.
- */
-async function drainSpawns(): Promise<void> {
-  for (const entry of spawns.splice(0, spawns.length)) {
-    const url = `${entry.baseUrl}/tickets/${encodeURIComponent(entry.ticketId)}`;
-    const deleted = await fetch(url, { method: "DELETE" }).then((res) => res.ok, () => false);
-    if (!deleted) await sweep(entry);
-  }
-}
-
-/**
- * Last-resort teardown, straight at Herdr. Resolving by branch works whether the workspace
- * is open, was closed behind our back, or never existed, and removing the worktree takes the
- * pane and the agent's whole process tree with it (memory/teardown.md).
- */
-async function sweep(entry: Spawn): Promise<void> {
-  try {
-    const opened = await request<{ workspace: { workspace_id: string } }>("worktree.open", {
-      cwd: entry.repoPath, branch: entry.branch, focus: false,
-    });
-    await request("worktree.remove", { workspace_id: opened.workspace.workspace_id, force: true });
-  } catch (err) {
-    // `worktree_not_found` is the "already clean" signal, not a failure.
-    if (!(err instanceof HerdrError) || err.code !== "worktree_not_found") {
-      console.warn(`e2e cleanup: could not remove the worktree on ${entry.branch}:`, err);
-    }
-  }
-  // The transcript lives outside the worktree and survives its removal.
-  if (entry.sessionDir) await rm(entry.sessionDir, { recursive: true, force: true });
-}
-
-/**
- * `~/.herdr/worktrees/<repo>/` survives the last worktree under it, and each throwaway repo
- * is a fresh `mkdtemp` name, so it would accumulate one empty folder per e2e run. `rmdir`
- * refuses a non-empty directory, which is the safety we want: a surviving checkout has to be
- * reported, never quietly deleted.
- */
-async function pruneWorktreeParents(): Promise<void> {
-  for (const dir of worktreeParents) {
-    if (!existsSync(dir)) continue;
-    try {
-      await rmdir(dir);
-    } catch (err) {
-      console.warn(`e2e cleanup: ${dir} is not empty — something was left behind:`, err);
-    }
-  }
-  worktreeParents.clear();
-}
-
-type WorkspaceRow = {
-  workspace_id: string;
-  worktree?: { checkout_path?: string; is_linked_worktree?: boolean } | null;
-};
-
-/**
- * `worktree.create` with a `cwd` whose repo has no open workspace implicitly creates a
- * SOURCE workspace for that repo, which outlives every ticket worktree
- * (memory/reconciliation.md). Each throwaway repo is a fresh `mkdtemp` path, so without this
- * every e2e run would leave one dead workspace behind.
- *
- * `workspace.close`, never `worktree.remove`: a source workspace is not a linked worktree and
- * removal refuses it with `not_linked_worktree`. Guarded on `is_linked_worktree` and on the
- * checkout path so a ticket worktree can never be closed here by mistake.
- */
-async function closeSourceWorkspaces(): Promise<void> {
-  const mine = repos.splice(0, repos.length);
-  if (mine.length === 0) return;
-  const listed = await request<{ workspaces?: WorkspaceRow[] }>("workspace.list", {}).catch(
-    (err: unknown) => {
-      console.warn("e2e cleanup: workspace.list failed; source workspaces may leak:", err);
-      return { workspaces: [] };
-    },
-  );
-  for (const ws of listed.workspaces ?? []) {
-    const path = ws.worktree?.checkout_path;
-    if (ws.worktree?.is_linked_worktree !== false || path === undefined) continue;
-    if (!mine.includes(path)) continue;
-    await request("workspace.close", { workspace_id: ws.workspace_id }).catch((err: unknown) => {
-      console.warn(`e2e cleanup: could not close source workspace ${ws.workspace_id}:`, err);
-    });
-  }
 }
 
 // --- HTTP and parsing -------------------------------------------------------
@@ -350,20 +235,14 @@ export async function api(board: Board, method: string, path: string, data?: unk
 /**
  * Seeded straight into the board's SQLite, not through `POST /projects`.
  *
- * A project is now identified by a GitHub repo, and creating one over HTTP makes 10x clone that
- * repo into `$PROJECTS_ROOT/<slug>` itself. This suite's repos are local fixtures built by
- * `makeRepo()` against a local bare upstream, and cloning a real GitHub repo per test would put
- * network — and a token — on the critical path of every e2e run. So the row is written directly,
- * already `ready`, pointing at the local fixture, which is exactly what the old `repoPath`
- * contract used to produce. `storedTicket` below opens the same database the same way.
+ * Creating a project over HTTP makes 10x clone a GitHub repo itself, which would put network —
+ * and a token — on the critical path of every e2e run. So the row is written directly, already
+ * `ready`, pointing at the local fixture. The HTTP contract this bypasses is covered by
+ * `backend/src/project-routes.test.ts` against a faked GitHub.
  *
- * The HTTP contract this bypasses is covered by `backend/src/project-routes.test.ts`, which
- * fakes GitHub and asserts the lookup, derivation, immutability and provisioning-guard rules.
- *
- * `baseBranch: "dev"` because that is the only branch `makeRepo` creates. Async purely so every
- * existing `await createProject(...)` call site stays correct.
+ * `baseBranch: "dev"` because that is the only branch `makeRepo` creates.
  */
-export async function createProject(board: Board, id: string, repoPath: string): Promise<void> {
+export async function createProject(board: Board, id: string, repoPath: string, devCommand = ""): Promise<void> {
   const stateDir = stateDirs.get(board);
   if (stateDir === undefined) throw new Error("that board did not come from startBoard()");
   const db = new DatabaseSync(join(stateDir, "10x.db"));
@@ -371,9 +250,9 @@ export async function createProject(board: Board, id: string, repoPath: string):
     const now = new Date().toISOString();
     db.prepare(
       `INSERT INTO projects (id, name, description, owner, repo, repo_path, base_branch,
-                             provision_state, provision_error, created_at, updated_at)
-       VALUES (?, ?, '', 'e2e', ?, ?, 'dev', 'ready', '', ?, ?)`,
-    ).run(id, `Project ${id}`, id, repoPath, now, now);
+                             provision_state, provision_error, dev_command, created_at, updated_at)
+       VALUES (?, ?, '', 'e2e', ?, ?, 'dev', 'ready', '', ?, ?, ?)`,
+    ).run(id, `Project ${id}`, id, repoPath, devCommand, now, now);
   } finally {
     db.close();
   }
@@ -398,23 +277,20 @@ export async function ticketRow(board: Board, ticketId: string): Promise<Record<
   return row;
 }
 
-/**
- * Poll the API rather than sleeping: a turn on the probe ticket is ~15s, but that is a
- * measurement, not a contract, so a fixed sleep would be either flaky or slow.
- */
+/** Poll the API rather than sleeping: the fake agent's timing is a setting, not a contract. */
 export async function waitForTicket(
   board: Board,
   ticketId: string,
   what: string,
   done: (row: Record<string, unknown>) => boolean,
-  timeoutMs: number,
+  timeoutMs = 15_000,
 ): Promise<Record<string, unknown>> {
   const deadline = Date.now() + timeoutMs;
   let last: Record<string, unknown> | undefined;
   while (Date.now() < deadline) {
     last = await ticketRow(board, ticketId);
     if (done(last)) return last;
-    await delay(500);
+    await delay(200);
   }
   throw new Error(`ticket ${ticketId} never ${what} in ${timeoutMs}ms; last: ${JSON.stringify(last)}`);
 }
@@ -422,161 +298,54 @@ export async function waitForTicket(
 // --- Spawning ---------------------------------------------------------------
 
 /**
- * POST /tickets/:id/spawn, registered for teardown BEFORE the request goes out: a spawn that
- * fails halfway still leaves a worktree, a pane and a live agent behind.
- *
- * Returns the raw result so a caller can assert on a rejection (compare-and-swap needs the
- * 409); `spawnTicket` is the assert-it-worked wrapper.
+ * Promote to To Do, then POST /tickets/:id/spawn. Start is a `todo → in_progress` move, and
+ * `POST /tickets` lands a ticket in Backlog. The promotion is best-effort and unasserted so a
+ * caller can test a refused spawn on a ticket already past To Do.
  */
-export async function postSpawn(
-  board: Board,
-  repoPath: string,
-  ticketId: string,
-): Promise<ApiResult & { elapsedMs: number }> {
-  // The board reports the branch a ticket WOULD use even before its first spawn, so cleanup
-  // can resolve the worktree by branch whatever happens below (memory/naming.md).
-  const entry: Spawn = {
-    baseUrl: board.baseUrl,
-    repoPath,
-    ticketId,
-    branch: stringField(await ticketRow(board, ticketId), "branch"),
-    sessionDir: null,
-  };
-  spawns.push(entry);
-
-  // Start is a `todo → in_progress` move, so the ticket has to be promoted first: `POST
-  // /tickets` lands a ticket in Backlog, which is right — a new ticket is a raw idea — while
-  // every spawn in this suite is a ticket that has been planned. Deliberately best-effort and
-  // unasserted: a ticket already past To Do answers 409 here, which is exactly the state a
-  // caller testing a rejected spawn has put it in.
+export async function postSpawn(board: Board, ticketId: string): Promise<ApiResult> {
   await api(board, "POST", `/tickets/${encodeURIComponent(ticketId)}/status`, { to: "todo" });
-
-  const started = Date.now();
-  const res = await api(board, "POST", `/tickets/${encodeURIComponent(ticketId)}/spawn`);
-  const elapsedMs = Date.now() - started;
-
-  // Read back the transcript directory: it is outside the worktree, survives its removal,
-  // and its path is Herdr's to report rather than ours to derive (memory/reconciliation.md).
-  const sessionDir = (await ticketRow(board, ticketId))["sessionDir"];
-  if (typeof sessionDir === "string") entry.sessionDir = sessionDir;
-  const worktreePath = res.body["worktreePath"];
-  if (typeof worktreePath === "string") worktreeParents.add(dirname(worktreePath));
-  return { ...res, elapsedMs };
+  return api(board, "POST", `/tickets/${encodeURIComponent(ticketId)}/spawn`);
 }
 
-export type Spawned = {
-  ticketId: string;
-  branch: string;
-  agentName: string;
-  worktreePath: string;
-  paneId: string;
-  workspaceId: string;
-  elapsedMs: number;
-  diagnostics: Record<string, unknown>;
-};
+export type Spawned = { ticketId: string; sessionId: string; sessionUrl: string };
 
-export async function spawnTicket(board: Board, repoPath: string, ticketId: string): Promise<Spawned> {
-  const res = await postSpawn(board, repoPath, ticketId);
+export async function spawnTicket(board: Board, ticketId: string): Promise<Spawned> {
+  const res = await postSpawn(board, ticketId);
   expect(res.status, JSON.stringify(res.body)).toBe(200);
-  // A spawn is the slowest thing in this suite, and the readiness guard's retry counts are
-  // the first thing worth knowing when one is slow or when several run at once.
-  const diag = JSON.stringify(res.body["diagnostics"]);
-  console.log(`[spawn] ${ticketId} took ${res.elapsedMs}ms; diagnostics=${diag}`);
   return {
     ticketId,
-    branch: stringField(res.body, "branch"),
-    agentName: stringField(await ticketRow(board, ticketId), "agentName"),
-    // From the response, never rebuilt from the branch: Herdr owns that mapping and
-    // lowercases it, so a rebuilt path names a directory that does not exist (memory/naming.md).
-    worktreePath: stringField(res.body, "worktreePath"),
-    paneId: stringField(res.body, "paneId"),
-    workspaceId: stringField(res.body, "workspaceId"),
-    elapsedMs: res.elapsedMs,
-    diagnostics: objectFrom(res.body["diagnostics"]),
+    sessionId: stringField(res.body, "sessionId"),
+    sessionUrl: stringField(res.body, "sessionUrl"),
   };
-}
-
-/**
- * Close a pane straight at Herdr, the way a user closing the tab does. Deliberately NOT
- * `/cancel` or `DELETE`, which run the product's own teardown and take the worktree, the
- * branch and the row with them — they can never show what a bare pane closure alone does to
- * a ticket. `pane.close` emits `pane_closed` and then `workspace_closed`, never `pane_exited`
- * (memory/socket.md), so this also exercises the half of the death path a `pane.exited`-only
- * subscription would miss.
- */
-export async function closePane(paneId: string): Promise<void> {
-  await request("pane.close", { pane_id: paneId });
-}
-
-// --- Reading the world back -------------------------------------------------
-
-export async function liveAgentNames(): Promise<string[]> {
-  const res = await request<{ agents?: { name?: string | null }[] }>("agent.list", {});
-  return (res.agents ?? []).flatMap((a) => (typeof a.name === "string" && a.name ? [a.name] : []));
-}
-
-export async function liveWorktreeBranches(repoPath: string): Promise<string[]> {
-  const res = await request<{ worktrees?: { branch?: string | null }[] }>("worktree.list", { cwd: repoPath });
-  return (res.worktrees ?? []).flatMap((w) => (typeof w.branch === "string" && w.branch ? [w.branch] : []));
-}
-
-export async function branchExists(repoPath: string, branch: string): Promise<boolean> {
-  // `git branch --list` exits 0 and prints nothing for a missing branch, so it is useless as
-  // a predicate; `rev-parse --verify` exits non-zero.
-  const ref = `refs/heads/${branch}`;
-  return git("git", ["-C", repoPath, "rev-parse", "--verify", ref]).then(() => true, () => false);
 }
 
 export type StoredTicket = {
   status: string;
-  finished: boolean;
-  died: boolean;
   branch: string | null;
-  agentName: string | null;
-  sessionDir: string | null;
+  sessionId: string | null;
+  agentState: string | null;
 };
 
 const nullableText = (v: SQLOutputValue | undefined): string | null =>
   typeof v === "string" ? v : null;
 
-/**
- * The stored row, straight out of SQLite. GET /tickets DERIVES `branch` and `agentName` when
- * the columns are null, so the API reports them either way and cannot show that teardown
- * cleared them. This is the only place that can.
- */
+/** The stored row, straight out of SQLite — what the API reports, without trusting the API. */
 export function storedTicket(board: Board, ticketId: string): StoredTicket {
   const stateDir = stateDirs.get(board);
   if (stateDir === undefined) throw new Error("that board did not come from startBoard()");
   const db = new DatabaseSync(join(stateDir, "10x.db"), { readOnly: true });
   try {
-    const sql = "SELECT status, finished, died, branch, agent_name, session_dir FROM tickets WHERE id = ?";
-    const row = db.prepare(sql).get(ticketId);
+    const row = db.prepare("SELECT status, branch, session_id, agent_state FROM tickets WHERE id = ?").get(ticketId);
     if (row === undefined) throw new Error(`no ticket ${ticketId} in the store`);
     const status = nullableText(row["status"]);
     if (status === null) throw new Error(`ticket ${ticketId} has no status`);
     return {
       status,
-      // Stored as SQLite INTEGER 0/1 (matches src/db.ts's toTicket), converted to boolean here.
-      finished: row["finished"] === 1,
-      died: row["died"] === 1,
       branch: nullableText(row["branch"]),
-      agentName: nullableText(row["agent_name"]),
-      sessionDir: nullableText(row["session_dir"]),
+      sessionId: nullableText(row["session_id"]),
+      agentState: nullableText(row["agent_state"]),
     };
   } finally {
     db.close();
   }
-}
-
-/**
- * Cancel and ticket-delete are destructive on five independent dials (memory/teardown.md).
- * Asserting only the worktree would pass while a branch, a live agent or an OMP transcript
- * leaked, so every dial is checked.
- */
-export async function expectZeroResidue(repoPath: string, run: Spawned, sessionDir: string): Promise<void> {
-  expect(existsSync(run.worktreePath), `worktree ${run.worktreePath} is still on disk`).toBe(false);
-  expect(await liveWorktreeBranches(repoPath)).not.toContain(run.branch);
-  expect(await branchExists(repoPath, run.branch), `branch ${run.branch} survived`).toBe(false);
-  expect(await liveAgentNames()).not.toContain(run.agentName);
-  expect(existsSync(sessionDir), `OMP transcript ${sessionDir} is still on disk`).toBe(false);
 }

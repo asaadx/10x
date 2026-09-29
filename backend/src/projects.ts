@@ -1,25 +1,24 @@
 /**
  * Projects: the repo a ticket lives in, and the slug every derived identifier hangs off.
  *
- * Two things here are load-bearing, both from memory/herdr-omp-lifecycle.md memory/naming.md:
+ * Three things here are load-bearing (memory/naming.md):
  *
- *  1. The slug is validated at CREATION time. It feeds the branch and the Herdr agent
- *     name, whose charsets disagree — `my.app` yields a legal git branch and an illegal
- *     agent name, so without this check the worktree gets created and only `agent.start`
- *     fails, leaving residue behind a confusing error.
+ *  1. The slug is validated at CREATION time (lifecycle.ts `PROJECT_SLUG_RE`). It is the first
+ *     half of every ticket id, which ends up in branch names, directory names and SQL an agent
+ *     types by hand, so a bad one must be refused before anything is built on it.
  *
- *  2. The slug is IMMUTABLE. Branch and agent names are computed from it and existing
- *     worktrees already carry the old value, so renaming would orphan every one of them.
+ *  2. The slug is IMMUTABLE. Ticket ids are computed from it and every existing ticket, branch
+ *     and pull request already carries the old value, so renaming would orphan all of them.
  *     `owner`/`repo` are immutable for the same class of reason — they are the project's
  *     identity, and repointing a healthy project at a different repo would orphan its open
- *     pull requests. Only `name`, `description` and `baseBranch` mutate freely.
+ *     pull requests. Only `name`, `description`, `baseBranch` and `devCommand` mutate freely.
  *
  *  3. `repoPath` is DERIVED, never supplied: `$PROJECTS_ROOT/<id>`. 10x clones the repo itself
  *     rather than borrowing a checkout the user also works in, so the base branch is never
  *     dirty, mid-rebase or on a surprise branch. A caller naming it is refused, not obeyed.
  */
-import type { SQLOutputValue } from "node:sqlite";
 import { db, nowIso, toProject } from "./db.ts";
+import type { Row } from "./sql.ts";
 import { parseRemote } from "./github.ts";
 import { projectRepoPath } from "./provision.ts";
 import type { Project, ProvisionState } from "./types.ts";
@@ -44,7 +43,7 @@ function fail(status: number, error: string, message: string, field?: string): P
  * altered underneath us. Throwing beats handing back a half-built Project that fails
  * later, far from the cause.
  */
-function rowToProject(row: Record<string, SQLOutputValue>): Project {
+function rowToProject(row: Row): Project {
   const {
     id,
     name,
@@ -55,6 +54,7 @@ function rowToProject(row: Record<string, SQLOutputValue>): Project {
     base_branch,
     provision_state,
     provision_error,
+    dev_command,
     created_at,
     updated_at,
   } = row;
@@ -68,6 +68,7 @@ function rowToProject(row: Record<string, SQLOutputValue>): Project {
     typeof base_branch !== "string" ||
     typeof provision_state !== "string" ||
     typeof provision_error !== "string" ||
+    typeof dev_command !== "string" ||
     typeof created_at !== "string" ||
     typeof updated_at !== "string"
   ) {
@@ -83,6 +84,7 @@ function rowToProject(row: Record<string, SQLOutputValue>): Project {
     base_branch,
     provision_state,
     provision_error,
+    dev_command,
     created_at,
     updated_at,
   });
@@ -185,17 +187,42 @@ function checkBaseBranch(value: unknown): Checked {
   return { ok: true, value: branch };
 }
 
-export function listProjects(): Project[] {
-  return db.prepare("SELECT * FROM projects ORDER BY created_at, id").all().map(rowToProject);
+/**
+ * Free-form shell, run by Preview with `sh -c` in a checkout of the ticket's branch — so it is
+ * whatever the user would type there (`pnpm dev`, `npm run dev -- --port $PORT`). Only this
+ * user sets it, for their own machine, so there is nothing to validate beyond shape; the cap
+ * is the same runaway-paste guard `description` has. '' clears it.
+ */
+function checkDevCommand(value: unknown): Checked {
+  if (value === null) return { ok: true, value: "" };
+  if (typeof value !== "string") {
+    return fail(400, "invalid_dev_command", "devCommand must be a string", "devCommand");
+  }
+  const command = value.trim();
+  if (command.length > 1000 || command.includes("\n")) {
+    return fail(
+      400,
+      "invalid_dev_command",
+      "devCommand must be one line of 1000 characters or fewer",
+      "devCommand",
+    );
+  }
+  return { ok: true, value: command };
 }
 
-export function getProject(id: string): Project | undefined {
-  const row = db.prepare("SELECT * FROM projects WHERE id = ?").get(id);
+export async function listProjects(): Promise<Project[]> {
+  const { rows } = await db.execute("SELECT * FROM projects ORDER BY created_at, id");
+  return rows.map(rowToProject);
+}
+
+export async function getProject(id: string): Promise<Project | undefined> {
+  const { rows } = await db.execute("SELECT * FROM projects WHERE id = ?", [id]);
+  const row = rows[0];
   return row === undefined ? undefined : rowToProject(row);
 }
 
 /**
- * Takes `{ remote, name, description?, id?, baseBranch? }`. The row lands `pending`: the clone
+ * Takes `{ remote, name, description?, id?, baseBranch?, devCommand? }`. The row lands `pending`: the clone
  * is minutes of work on a large repo and the caller kicks it off separately, so this stays the
  * fast, synchronous half — parse, validate, insert, answer.
  *
@@ -203,7 +230,7 @@ export function getProject(id: string): Project | undefined {
  * dialog can offer an edited one, since the derived slug is frozen forever and lands in every
  * branch name this project ever creates.
  */
-export function createProject(input: unknown): ProjectResult {
+export async function createProject(input: unknown): Promise<ProjectResult> {
   if (typeof input !== "object" || input === null) {
     return fail(400, "invalid_body", "expected a JSON object");
   }
@@ -229,19 +256,21 @@ export function createProject(input: unknown): ProjectResult {
   if (!description.ok) return description;
   const baseBranch = checkBaseBranch("baseBranch" in input ? input.baseBranch : "main");
   if (!baseBranch.ok) return baseBranch;
+  // Accepted at creation too, so the dialog can set it in one request rather than a create
+  // followed by a PATCH that could fail after the project already exists.
+  const devCommand = checkDevCommand("devCommand" in input ? input.devCommand : "");
+  if (!devCommand.ok) return devCommand;
 
   // ON CONFLICT DO NOTHING makes the insert its own duplicate check: no read-then-write
-  // window, and `changes` tells us which of the two happened.
+  // window, and `rowsAffected` tells us which of the two happened.
   const now = nowIso();
-  const res = db
-    .prepare(
-      `INSERT INTO projects
-         (id, name, description, owner, repo, repo_path, base_branch,
-          provision_state, provision_error, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?)
-       ON CONFLICT (id) DO NOTHING`,
-    )
-    .run(
+  const res = await db.execute(
+    `INSERT INTO projects
+       (id, name, description, owner, repo, repo_path, base_branch,
+        provision_state, provision_error, dev_command, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?, ?)
+     ON CONFLICT (id) DO NOTHING`,
+    [
       id.value,
       name.value,
       description.value,
@@ -249,24 +278,26 @@ export function createProject(input: unknown): ProjectResult {
       remote.repo,
       projectRepoPath(id.value),
       baseBranch.value,
+      devCommand.value,
       now,
       now,
-    );
-  if (res.changes !== 1) {
+    ],
+  );
+  if (res.rowsAffected !== 1) {
     return fail(409, "project_exists", `a project with id "${id.value}" already exists`, "id");
   }
 
   // Read back rather than reassembling the row by hand: the table owns the defaults for
   // provisioning state, and a second construction site here would be free to drift from them.
-  const project = getProject(id.value);
+  const project = await getProject(id.value);
   if (project === undefined) {
     throw new Error(`project "${id.value}" vanished immediately after being inserted`);
   }
   return { ok: true, project };
 }
 
-export function updateProject(id: string, input: unknown): ProjectResult {
-  const existing = getProject(id);
+export async function updateProject(id: string, input: unknown): Promise<ProjectResult> {
+  const existing = await getProject(id);
   if (existing === undefined) {
     return fail(404, "project_not_found", `no project with id "${id}"`, "id");
   }
@@ -319,6 +350,11 @@ export function updateProject(id: string, input: unknown): ProjectResult {
     if (!baseBranch.ok) return baseBranch;
     updates.push(["base_branch", baseBranch.value]);
   }
+  if ("devCommand" in input) {
+    const devCommand = checkDevCommand(input.devCommand);
+    if (!devCommand.ok) return devCommand;
+    updates.push(["dev_command", devCommand.value]);
+  }
 
   // Re-linking a failed project: accepted above, applied here, and it resets provisioning so
   // the retry starts clean rather than inheriting the old failure message.
@@ -339,13 +375,13 @@ export function updateProject(id: string, input: unknown): ProjectResult {
 
   const now = nowIso();
   const assignments = updates.map(([column]) => `${column} = ?`).join(", ");
-  db.prepare(`UPDATE projects SET ${assignments}, updated_at = ? WHERE id = ?`).run(
+  await db.execute(`UPDATE projects SET ${assignments}, updated_at = ? WHERE id = ?`, [
     ...updates.map(([, value]) => value),
     now,
     id,
-  );
+  ]);
 
-  const updated = getProject(id);
+  const updated = await getProject(id);
   if (updated === undefined) throw new Error(`project "${id}" vanished mid-update`);
   return { ok: true, project: updated };
 }
@@ -356,26 +392,35 @@ export function updateProject(id: string, input: unknown): ProjectResult {
  * it. `provision_error` is cleared on every non-failed transition so a stale message from an
  * earlier attempt can never outlive the retry that fixed it.
  */
-export function setProvisionState(
+export async function setProvisionState(
   id: string,
   state: ProvisionState,
   error = "",
-): Project | undefined {
-  db.prepare(
+): Promise<Project | undefined> {
+  await db.execute(
     "UPDATE projects SET provision_state = ?, provision_error = ?, updated_at = ? WHERE id = ?",
-  ).run(state, state === "failed" ? error : "", nowIso(), id);
+    [state, state === "failed" ? error : "", nowIso(), id],
+  );
   return getProject(id);
 }
 
 /**
- * Drops the project row; tickets follow via ON DELETE CASCADE.
+ * Drops the project row and its tickets, in one batch.
+ *
+ * The tickets are deleted explicitly rather than left to ON DELETE CASCADE: foreign keys are
+ * a per-connection PRAGMA, and against Turso every request is its own stream with no
+ * connection to have set it on. Deleting children first works whether or not the cascade
+ * would have fired, and the batch keeps "project gone, tickets left" from ever being visible.
  *
  * Deliberately NOT the whole story: agents, worktrees, branches and the clone directory are all
- * outside SQLite, and destroying them is the caller's job (memory/teardown.md). The route owns
+ * outside SQLite, and destroying them is the caller's job. The route owns
  * that sequence because it is the only layer that can refuse the delete first — a ticket with an
  * open pull request must block it, since force-removing that branch would strand a review.
  */
-export function deleteProject(id: string): { ok: boolean } {
-  const res = db.prepare("DELETE FROM projects WHERE id = ?").run(id);
-  return { ok: res.changes === 1 };
+export async function deleteProject(id: string): Promise<{ ok: boolean }> {
+  const [, res] = await db.batch([
+    { sql: "DELETE FROM tickets WHERE project_id = ?", args: [id] },
+    { sql: "DELETE FROM projects WHERE id = ?", args: [id] },
+  ]);
+  return { ok: res?.rowsAffected === 1 };
 }

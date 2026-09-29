@@ -2,8 +2,8 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "e2e",
-  // Every spec drives one Herdr session, one TCP port and one SQLite state dir. A second
-  // worker would race all three, so this is a correctness setting, not a speed knob.
+  // Every spec binds one TCP port (4310) and one Preview port range. A second worker would
+  // race both, so this is a correctness setting, not a speed knob.
   workers: 1,
   fullyParallel: false,
   timeout: 30_000,
@@ -15,15 +15,21 @@ export default defineConfig({
   // own throwaway state dir instead of sharing one long-lived server.
   //
   // Two projects, not one filtered run. "fast" is an explicit ALLOW-LIST of the specs known
-  // NOT to spawn a real coding agent. It is deliberately not "everything except a deny-list
-  // of spawning specs": a deny-list defaults new files to included, so a spec added later
-  // that spawns an agent would silently run (and spawn) under the default `npm run e2e`
-  // unless someone remembered to add it to the deny-list. An allow-list fails safe instead —
-  // a forgotten new spec just runs slower under `e2e:full`, it never spawns unexpectedly.
+  // NOT to start a real coding agent — today that is every spec, because the board runs with
+  // `CLOUD_DRIVER=fake` (e2e/fixtures.ts). It stays an allow-list rather than "everything" so
+  // that a spec added later which needs a real cloud session cannot run (and spend) under the
+  // default `pnpm e2e` unless someone deliberately lists it here.
   projects: [
     {
       name: "fast",
-      testMatch: ["projects.spec.ts", "tickets.spec.ts", "board.spec.ts", "screenshots.spec.ts"],
+      testMatch: [
+        "projects.spec.ts",
+        "tickets.spec.ts",
+        "board.spec.ts",
+        "spawn.spec.ts",
+        "reject.spec.ts",
+        "preview.spec.ts",
+      ],
     },
     {
       name: "full",
